@@ -1,0 +1,369 @@
+"""Base socket server with connection management."""
+import socket
+import threading
+import selectors
+from typing import Optional, Dict, Callable, Any
+from protocol.frame_codec import FrameCodec, FrameBuffer
+from protocol.message import Message
+from protocol.message_types import MessageType
+from logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
+class SocketConnection:
+    """
+    Represents a single socket connection with frame buffering.
+    """
+    
+    def __init__(self, sock: socket.socket, address: tuple):
+        """
+        Initialize connection.
+        
+        Args:
+            sock: Connected socket
+            address: Remote address (host, port)
+        """
+        self.socket = sock
+        self.address = address
+        self.buffer = FrameBuffer()
+        self.connection_id = f"{address[0]}:{address[1]}"
+        
+        # Request-response tracking
+        self.pending_requests: Dict[str, Any] = {}
+        
+        logger.info(f"New connection: {self.connection_id}")
+    
+    def send_message(self, message: Message) -> None:
+        """
+        Send a message over this connection.
+        
+        Args:
+            message: Message to send
+        
+        Raises:
+            OSError: If socket send fails
+        """
+        # Serialize message to bytes
+        message_bytes = message.to_bytes()
+        
+        # Encode with length prefix
+        frame = FrameCodec.encode(message_bytes)
+        
+        # Send frame
+        self.socket.sendall(frame)
+        logger.debug(f"Sent message to {self.connection_id}: type={message.type.value}, size={len(message_bytes)}")
+    
+    def receive_data(self, chunk_size: int = 4096) -> Optional[bytes]:
+        """
+        Receive data from socket.
+        
+        Args:
+            chunk_size: Maximum bytes to receive
+        
+        Returns:
+            Received data, or None if connection closed
+        
+        Raises:
+            OSError: If socket receive fails
+        """
+        try:
+            data = self.socket.recv(chunk_size)
+            if not data:
+                # Connection closed by peer
+                return None
+            return data
+        except socket.error as e:
+            logger.error(f"Socket error on {self.connection_id}: {e}")
+            raise
+    
+    def close(self) -> None:
+        """Close the connection."""
+        try:
+            self.socket.close()
+            logger.info(f"Connection closed: {self.connection_id}")
+        except Exception as e:
+            logger.error(f"Error closing connection {self.connection_id}: {e}")
+
+
+class BaseSocketServer:
+    """
+    Base socket server with connection management and message handling.
+    
+    This class provides:
+    - Accept incoming connections
+    - Manage multiple concurrent connections
+    - Frame-based message encoding/decoding
+    - Message routing to handlers
+    - Request-response matching using requestId
+    """
+    
+    def __init__(self, host: str, port: int, name: str = "SocketServer"):
+        """
+        Initialize socket server.
+        
+        Args:
+            host: Host to bind to
+            port: Port to bind to
+            name: Server name for logging
+        """
+        self.host = host
+        self.port = port
+        self.name = name
+        
+        self._server_socket: Optional[socket.socket] = None
+        self._selector = selectors.DefaultSelector()
+        self._connections: Dict[socket.socket, SocketConnection] = {}
+        self._running = False
+        self._server_thread: Optional[threading.Thread] = None
+        
+        # Message handlers: MessageType -> handler function
+        self._handlers: Dict[MessageType, Callable[[SocketConnection, Message], None]] = {}
+        
+        logger.info(f"{self.name} initialized on {host}:{port}")
+    
+    def register_handler(
+        self,
+        message_type: MessageType,
+        handler: Callable[[SocketConnection, Message], None]
+    ) -> None:
+        """
+        Register a message handler.
+        
+        Args:
+            message_type: Type of message to handle
+            handler: Handler function(connection, message)
+        """
+        self._handlers[message_type] = handler
+        logger.debug(f"Registered handler for {message_type.value}")
+    
+    def start(self) -> None:
+        """Start the server in a background thread."""
+        if self._running:
+            logger.warning(f"{self.name} already running")
+            return
+        
+        # Create server socket
+        self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server_socket.bind((self.host, self.port))
+        self._server_socket.listen(100)
+        self._server_socket.setblocking(False)
+        
+        # Register server socket for accept events
+        self._selector.register(self._server_socket, selectors.EVENT_READ, data=None)
+        
+        self._running = True
+        self._server_thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._server_thread.start()
+        
+        logger.info(f"{self.name} started on {self.host}:{self.port}")
+    
+    def stop(self) -> None:
+        """Stop the server and close all connections."""
+        if not self._running:
+            return
+        
+        logger.info(f"Stopping {self.name}...")
+        self._running = False
+        
+        # Close all client connections
+        for conn in list(self._connections.values()):
+            conn.close()
+        self._connections.clear()
+        
+        # Close server socket
+        if self._server_socket:
+            self._selector.unregister(self._server_socket)
+            self._server_socket.close()
+        
+        # Close selector
+        self._selector.close()
+        
+        # Wait for server thread
+        if self._server_thread:
+            self._server_thread.join(timeout=5.0)
+        
+        logger.info(f"{self.name} stopped")
+    
+    def _run_loop(self) -> None:
+        """Main event loop (runs in background thread)."""
+        logger.info(f"{self.name} event loop started")
+        
+        try:
+            while self._running:
+                # Wait for events with timeout
+                events = self._selector.select(timeout=1.0)
+                
+                for key, mask in events:
+                    if key.data is None:
+                        # Server socket - accept new connection
+                        self._accept_connection()
+                    else:
+                        # Client socket - read data
+                        self._handle_client_data(key.fileobj)
+        except Exception as e:
+            logger.error(f"{self.name} event loop error: {e}", exc_info=True)
+        finally:
+            logger.info(f"{self.name} event loop stopped")
+    
+    def _accept_connection(self) -> None:
+        """Accept a new client connection."""
+        try:
+            client_socket, address = self._server_socket.accept()
+            client_socket.setblocking(False)
+            
+            # Create connection object
+            connection = SocketConnection(client_socket, address)
+            self._connections[client_socket] = connection
+            
+            # Register for read events
+            self._selector.register(client_socket, selectors.EVENT_READ, data=connection)
+            
+            logger.info(f"{self.name} accepted connection from {connection.connection_id}")
+            
+            # Call connection callback if implemented
+            self._on_connection_established(connection)
+            
+        except Exception as e:
+            logger.error(f"{self.name} error accepting connection: {e}")
+    
+    def _handle_client_data(self, sock: socket.socket) -> None:
+        """
+        Handle data from a client socket.
+        
+        Args:
+            sock: Client socket with data ready
+        """
+        connection = self._connections.get(sock)
+        if not connection:
+            logger.warning(f"Received data from unknown socket")
+            return
+        
+        try:
+            # Receive data
+            data = connection.receive_data()
+            
+            if data is None:
+                # Connection closed by peer
+                self._close_connection(sock)
+                return
+            
+            # Append to buffer
+            connection.buffer.append(data)
+            
+            # Extract and process all complete frames
+            while True:
+                frame = connection.buffer.extract_frame()
+                if frame is None:
+                    break
+                
+                # Deserialize message
+                try:
+                    message = Message.from_bytes(frame)
+                    self._dispatch_message(connection, message)
+                except ValueError as e:
+                    logger.error(f"Invalid message from {connection.connection_id}: {e}")
+                    # Send error response
+                    error_msg = Message.create_error(
+                        "INVALID_MESSAGE",
+                        f"Failed to parse message: {e}"
+                    )
+                    connection.send_message(error_msg)
+        
+        except Exception as e:
+            logger.error(f"Error handling data from {connection.connection_id}: {e}", exc_info=True)
+            self._close_connection(sock)
+    
+    def _dispatch_message(self, connection: SocketConnection, message: Message) -> None:
+        """
+        Dispatch message to appropriate handler.
+        
+        Args:
+            connection: Connection that received the message
+            message: Parsed message
+        """
+        logger.debug(f"Received message from {connection.connection_id}: type={message.type.value}")
+        
+        # Look up handler
+        handler = self._handlers.get(message.type)
+        
+        if handler:
+            try:
+                handler(connection, message)
+            except Exception as e:
+                logger.error(
+                    f"Handler error for {message.type.value} from {connection.connection_id}: {e}",
+                    exc_info=True
+                )
+                # Send error response
+                error_msg = Message.create_error(
+                    "INTERNAL_ERROR",
+                    "An internal error occurred while processing your request",
+                    request_id=message.request_id
+                )
+                connection.send_message(error_msg)
+        else:
+            logger.warning(f"No handler for message type: {message.type.value}")
+            # Send error response
+            error_msg = Message.create_error(
+                "UNKNOWN_MESSAGE_TYPE",
+                f"Unknown message type: {message.type.value}",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+    
+    def _close_connection(self, sock: socket.socket) -> None:
+        """
+        Close a client connection.
+        
+        Args:
+            sock: Client socket to close
+        """
+        connection = self._connections.get(sock)
+        if not connection:
+            return
+        
+        try:
+            # Unregister from selector
+            self._selector.unregister(sock)
+        except Exception:
+            pass
+        
+        # Close connection
+        connection.close()
+        
+        # Remove from connections map
+        del self._connections[sock]
+        
+        # Call disconnection callback if implemented
+        self._on_connection_closed(connection)
+    
+    def _on_connection_established(self, connection: SocketConnection) -> None:
+        """
+        Called when a new connection is established.
+        Override in subclasses for custom behavior.
+        
+        Args:
+            connection: Newly established connection
+        """
+        pass
+    
+    def _on_connection_closed(self, connection: SocketConnection) -> None:
+        """
+        Called when a connection is closed.
+        Override in subclasses for custom behavior.
+        
+        Args:
+            connection: Closed connection
+        """
+        pass
+    
+    def get_connection_count(self) -> int:
+        """
+        Get number of active connections.
+        
+        Returns:
+            Number of connections
+        """
+        return len(self._connections)

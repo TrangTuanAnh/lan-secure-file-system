@@ -34,3 +34,4 @@ storage-node/logs/
 # Test artifacts
 **/surefire-reports/
 **/*.dumpstream
+.kiro/
