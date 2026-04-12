@@ -1,1 +1,0 @@
-"""File metadata management module."""

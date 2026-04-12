@@ -1,0 +1,102 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Documents;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Shapes;
+
+namespace frontend.Views
+{
+    /// <summary>
+    /// Interaction logic for SignupView.xaml
+    /// </summary>
+    public partial class SignupView : Window
+    {
+        public SignupView()
+        {
+            InitializeComponent();
+        }
+
+        private void Signup_Click(object sender, RoutedEventArgs e)
+        {
+            MessageBox.Show("Chưa có backend");
+            // Thêm API
+        }
+
+        private void BackToLogin_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            LoginView l = new LoginView();
+            l.Show();
+            this.Close();
+        }
+
+        private void Username_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (txtUsername.Text == "Username")
+            {
+                txtUsername.Text = "";
+                txtUsername.Foreground = Brushes.White;
+            }
+        }
+
+        private void Username_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(txtUsername.Text))
+            {
+                txtUsername.Text = "Username";
+                txtUsername.Foreground = Brushes.Gray;
+            }
+        }
+
+        private void Email_GotFocus(object sender, RoutedEventArgs e)
+        {
+            if (txtEmail.Text == "Email / Phone")
+            {
+                txtEmail.Text = "";
+                txtEmail.Foreground = Brushes.White;
+            }
+        }
+
+        private void Email_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(txtEmail.Text))
+            {
+                txtEmail.Text = "Email / Phone";
+                txtEmail.Foreground = Brushes.Gray;
+            }
+        }
+
+        private void Password_GotFocus(object sender, RoutedEventArgs e)
+        {
+            txtPasswordPlaceholder.Visibility = Visibility.Collapsed;
+        }
+
+        private void Password_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(txtPassword.Password))
+            {
+                txtPasswordPlaceholder.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void ConfirmPassword_GotFocus(object sender, RoutedEventArgs e)
+        {
+            txtConfirmPasswordPlaceholder.Visibility = Visibility.Collapsed;
+        }
+
+        private void ConfirmPassword_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(txtConfirmPassword.Password))
+            {
+                txtConfirmPasswordPlaceholder.Visibility = Visibility.Visible;
+            }
+        }
+    }
+}

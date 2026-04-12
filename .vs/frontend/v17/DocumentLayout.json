@@ -1,0 +1,276 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\readme.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\readme.md||{EFC0BB08-EA7D-40C6-A696-C870411A895B}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\app.xaml||{F11ACC28-31D1-4C80-A34B-F4E09D3D753C}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\app.xaml||{F11ACC28-31D1-4C80-A34B-F4E09D3D753C}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\services\\authservices.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\services\\authservices.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\views\\forgotpassword.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\views\\forgotpassword.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\views\\forgotpassword.xaml||{F11ACC28-31D1-4C80-A34B-F4E09D3D753C}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\views\\forgotpassword.xaml||{F11ACC28-31D1-4C80-A34B-F4E09D3D753C}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\services\\fakeapiservices.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\services\\fakeapiservices.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\views\\signupview.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\views\\signupview.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\views\\loginview.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\views\\loginview.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\views\\dashboard.xaml||{F11ACC28-31D1-4C80-A34B-F4E09D3D753C}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\views\\dashboard.xaml||{F11ACC28-31D1-4C80-A34B-F4E09D3D753C}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\views\\dashboard.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\views\\dashboard.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\viewmodels\\homeviewmodel.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\viewmodels\\homeviewmodel.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\models\\taskitem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\models\\taskitem.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\models\\room.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\models\\room.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\views\\pages\\homepage.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\views\\pages\\homepage.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|d:\\hk4\\nt106.q21.antn\\frontend\\frontend\\app.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|",
+      "RelativeMoniker": "D:0:0:{629D2736-2F86-4B20-B81C-4EAD039189DF}|frontend\\frontend.csproj|solutionrelative:frontend\\app.xaml.cs||{8B382828-6202-11D1-8870-0000F87579D2}|"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 1,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedHeight": 200,
+          "SelectedChildIndex": 7,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{b1e99781-ab81-11d0-b683-00aa00a3ee26}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 4,
+              "Title": "ForgotPassword.xaml",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\ForgotPassword.xaml",
+              "RelativeDocumentMoniker": "frontend\\Views\\ForgotPassword.xaml",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\ForgotPassword.xaml",
+              "RelativeToolTip": "frontend\\Views\\ForgotPassword.xaml",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003549|",
+              "WhenOpened": "2026-04-12T17:34:50.182Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 3,
+              "Title": "ForgotPassword.xaml.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\ForgotPassword.xaml.cs",
+              "RelativeDocumentMoniker": "frontend\\Views\\ForgotPassword.xaml.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\ForgotPassword.xaml.cs",
+              "RelativeToolTip": "frontend\\Views\\ForgotPassword.xaml.cs",
+              "ViewState": "AgIAABQAAAAAAAAAAAAkwB4AAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T17:32:46.174Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
+              "Title": "SignupView.xaml.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\SignupView.xaml.cs",
+              "RelativeDocumentMoniker": "frontend\\Views\\SignupView.xaml.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\SignupView.xaml.cs",
+              "RelativeToolTip": "frontend\\Views\\SignupView.xaml.cs",
+              "ViewState": "AgIAAAkAAAAAAAAAAAAAABoAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T17:32:30.487Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "App.xaml",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\App.xaml",
+              "RelativeDocumentMoniker": "frontend\\App.xaml",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\App.xaml",
+              "RelativeToolTip": "frontend\\App.xaml",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003549|",
+              "WhenOpened": "2026-04-12T16:37:54.898Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 7,
+              "Title": "LoginView.xaml.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\LoginView.xaml.cs",
+              "RelativeDocumentMoniker": "frontend\\Views\\LoginView.xaml.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\LoginView.xaml.cs",
+              "RelativeToolTip": "frontend\\Views\\LoginView.xaml.cs",
+              "ViewState": "AgIAABkAAAAAAAAAAAAAwB0AAAAJAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T17:29:19.285Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "AuthServices.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Services\\AuthServices.cs",
+              "RelativeDocumentMoniker": "frontend\\Services\\AuthServices.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Services\\AuthServices.cs",
+              "RelativeToolTip": "frontend\\Services\\AuthServices.cs",
+              "ViewState": "AgIAADwAAAAAAAAAAAAwwEwAAAAYAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T17:28:29.281Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "README.md",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\README.md",
+              "RelativeDocumentMoniker": "frontend\\README.md",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\README.md",
+              "RelativeToolTip": "frontend\\README.md",
+              "ViewState": "AgIAAEEAAAAAAAAAAADwv7UAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001818|",
+              "WhenOpened": "2026-04-12T17:23:42.11Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 10,
+              "Title": "HomeViewModel.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\ViewModels\\HomeViewModel.cs",
+              "RelativeDocumentMoniker": "frontend\\ViewModels\\HomeViewModel.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\ViewModels\\HomeViewModel.cs",
+              "RelativeToolTip": "frontend\\ViewModels\\HomeViewModel.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAA8AAAAeAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T16:54:54.703Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "FakeAPIServices.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Services\\FakeAPIServices.cs",
+              "RelativeDocumentMoniker": "frontend\\Services\\FakeAPIServices.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Services\\FakeAPIServices.cs",
+              "RelativeToolTip": "frontend\\Services\\FakeAPIServices.cs",
+              "ViewState": "AgIAAAYAAAAAAAAAAAAAABQAAAAeAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T16:54:15.174Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 9,
+              "Title": "Dashboard.xaml.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\Dashboard.xaml.cs",
+              "RelativeDocumentMoniker": "frontend\\Views\\Dashboard.xaml.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\Dashboard.xaml.cs",
+              "RelativeToolTip": "frontend\\Views\\Dashboard.xaml.cs",
+              "ViewState": "AgIAAAsAAAAAAAAAAAAQwBoAAAAeAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T16:36:53.537Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 8,
+              "Title": "Dashboard.xaml",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\Dashboard.xaml",
+              "RelativeDocumentMoniker": "frontend\\Views\\Dashboard.xaml",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\Dashboard.xaml",
+              "RelativeToolTip": "frontend\\Views\\Dashboard.xaml",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003549|",
+              "WhenOpened": "2026-04-12T16:43:19.562Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 11,
+              "Title": "TaskItem.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Models\\TaskItem.cs",
+              "RelativeDocumentMoniker": "frontend\\Models\\TaskItem.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Models\\TaskItem.cs",
+              "RelativeToolTip": "frontend\\Models\\TaskItem.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T17:09:18.742Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 13,
+              "Title": "HomePage.xaml.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\Pages\\HomePage.xaml.cs",
+              "RelativeDocumentMoniker": "frontend\\Views\\Pages\\HomePage.xaml.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Views\\Pages\\HomePage.xaml.cs",
+              "RelativeToolTip": "frontend\\Views\\Pages\\HomePage.xaml.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAQAAAASAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T16:57:08.95Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 12,
+              "Title": "Room.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Models\\Room.cs",
+              "RelativeDocumentMoniker": "frontend\\Models\\Room.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\Models\\Room.cs",
+              "RelativeToolTip": "frontend\\Models\\Room.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAgAAAAXAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T16:53:38.639Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 14,
+              "Title": "App.xaml.cs",
+              "DocumentMoniker": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\App.xaml.cs",
+              "RelativeDocumentMoniker": "frontend\\App.xaml.cs",
+              "ToolTip": "D:\\HK4\\NT106.Q21.ANTN\\frontend\\frontend\\App.xaml.cs",
+              "RelativeToolTip": "frontend\\App.xaml.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAA0AAAABAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2026-04-12T16:37:53.068Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

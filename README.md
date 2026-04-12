@@ -1,91 +1,181 @@
-# Đồ án LTM - Storage Node
+﻿# Frontend Overview & API Requirements
 
-Repository này hiện tập trung vào phần **Storage Node / Data Plane** của hệ thống truyền file LAN an toàn:
-- Upload/download theo chunk qua TCP socket
-- Resume upload
-- Verify SHA-256 theo chunk và whole file
-- Dedup theo nội dung
-- Mã hóa truyền bằng RSA + AES
+## 1. Hiện trạng frontend
 
-## 1) Tổng quan thành phần trong repo
+Frontend hiện đã làm xong phần giao diện và flow cơ bản, gồm:
 
-- `storage-node/src/main/java/storagenode`: mã nguồn storage node
-- `storage-node/docs/DATA_PLANE_PROTOCOL.md`: đặc tả message/frame data plane
-- `storage-node/docs/CHUNK_FORMAT.md`: format chunk, lưu trữ, mã hóa
-- `storage-node/src/test/java/storagenode/test/StorageNodeIntegrationTest.java`: test tích hợp JUnit
+### Authentication
 
-## 2) Trạng thái tính năng
+* Login
+* Signup
+* Reset password
 
-| Nhóm tính năng | Trạng thái |
-|---|---|
-| Cấu trúc lưu trữ (`temp/store/meta`, session meta, dedup registry) | Đã làm |
-| Giao thức socket data plane (frame + message type + field chuẩn) | Đã làm |
-| Upload chunk + verify ticket/hash/index/size + ACK | Đã làm |
-| Resume upload (`OPEN_UPLOAD` resume + `QUERY_MISSING`) | Đã làm |
-| Finalize upload + verify whole hash + lưu store | Đã làm |
-| Download theo chunk, hỗ trợ request out-of-order | Đã làm |
-| Bảo mật truyền (RSA/AES key exchange, ticket gate) | Đã làm |
-| Toàn vẹn dữ liệu SHA-256 chunk/file | Đã làm |
-| Dedup mức dữ liệu theo hash | Đã làm |
-| Monitoring/log | Làm một phần |
-| Tài liệu + test tự động | Đã làm |
+Các chức năng này hiện đang chạy bằng mock (FakeApiService), nhưng đã có sẵn logic để chuyển sang API thật.
 
-## 3) Các bug critical đã xử lý
+---
 
-- Chặn `chunkIndex` âm/out-of-range khi upload (`INVALID_CHUNK_INDEX`)
-- Chặn `chunkSize` sai chuẩn (`INVALID_CHUNK_SIZE`)
-- Finalize không còn làm rớt socket khi lỗi I/O, trả `FINALIZE_IO_ERROR`
-- Download không còn gửi `DOWNLOAD_COMPLETE` sớm khi client request chunk sai thứ tự
-- Bổ sung bước bootstrap public key cho `KEY_EXCHANGE` (giữ tương thích ngược)
+### Dashboard
 
-## 4) Chạy hệ thống
+* Sidebar (Home, Recent, Log)
+* Hiển thị avatar + thời gian
+* Panel Recent Tasks (bind data động)
 
-Yêu cầu:
-- Java 8
-- Maven 3.8+
+---
 
-Build:
-```bash
-cd storage-node
-mvn clean package
+### Home (quan trọng nhất)
+
+* Hiển thị danh sách room
+* Mỗi room gồm:
+
+  * Tên phòng
+  * Số file
+  * Số thành viên
+
+Danh sách này đang bind từ ViewModel → khi có API chỉ cần thay nguồn data là xong.
+
+---
+
+### Data flow
+
+Frontend đang đi theo hướng:
+
+* Service → gọi API
+* ViewModel → giữ data
+* View → hiển thị
+
+Hiện tại dùng FakeApiService, sau này thay bằng RealApiService.
+
+---
+
+## 2. Model dữ liệu cần match
+
+### Room
+
+```json
+{
+  "name": "string",
+  "fileCount": 0,
+  "memberCount": 0
+}
 ```
 
-Run node:
-```bash
-cd storage-node
-java -jar target/storage-node-1.0.0-shaded.jar storage-node.properties
+---
+
+### Recent Tasks
+
+```json
+{
+  "fileName": "string",
+  "roomName": "string",
+  "time": "string"
+}
 ```
 
-## 5) Chạy test tự động
+---
 
-```bash
-cd storage-node
-mvn test
+### Login response
+
+```json
+{
+  "token": "string",
+  "username": "string"
+}
 ```
 
-Test tích hợp hiện cover các luồng bắt buộc:
-- Upload small/large
-- Resume upload sau disconnect
-- Corrupt chunk + retry
-- Invalid chunk index/size nhưng connection vẫn sống
-- Finalize I/O error trả frame chuẩn
-- Download out-of-order không complete sớm
-- KEY_EXCHANGE bootstrap + upload mã hóa
+---
 
-## 6) Cập nhật protocol đáng chú ý
+## 3. API cần có
 
-- Upload chunk có thêm status:
-  - `INVALID_CHUNK_INDEX`
-  - `INVALID_CHUNK_SIZE`
-- Finalize có thêm status:
-  - `FINALIZE_IO_ERROR`
-- `DOWNLOAD_COMPLETE` chỉ gửi khi đã phục vụ đủ toàn bộ tập chunk của session
-- `KEY_EXCHANGE` có bootstrap:
-  - Request public key trước
-  - Sau đó gửi AES key đã mã hóa RSA
+### Auth
 
-## 7) Giới hạn hiện tại
+* POST /api/auth/login
+* POST /api/auth/signup
+* POST /api/auth/reset-password
 
-- `CoordinatorClient.notifyUploadComplete/notifyUploadFailed` mới là stub log nội bộ, chưa gọi control plane thật
-- Monitoring counters nâng cao (throughput chính xác theo request) chưa được wire đầy đủ
-- Chưa triển khai TLS (đang dùng AES session key + RSA key exchange)
+---
+
+### Data
+
+* GET /api/rooms
+* GET /api/tasks/recent
+
+---
+
+## 4. Những thứ cần chú ý khi viết API
+
+### Naming
+
+Frontend bind trực tiếp theo key, nên phải giữ đúng:
+
+* name
+* fileCount
+* memberCount
+* fileName
+* roomName
+* time
+
+Sai key là UI không hiện.
+
+---
+
+### Format JSON
+
+* Trả thẳng list, không bọc thêm object lạ
+* Không đổi tên field
+* Không đổi kiểu dữ liệu
+
+---
+
+### Status code
+
+* 200: thành công
+* 400/401: lỗi
+* Trả message rõ ràng khi fail
+
+---
+
+### Password
+
+* Không lưu plain text
+* Hash bằng bcrypt hoặc tương tự
+
+---
+
+### Token
+
+* Nên dùng JWT
+* Không trả thông tin nhạy cảm
+
+---
+
+### Time
+
+Nên dùng format:
+
+```
+2026-04-13T10:00:00
+```
+
+Frontend sẽ tự xử lý hiển thị.
+
+---
+
+## 5. Khi nối API
+
+Frontend sẽ:
+
+* gọi API bằng HttpClient
+* nhận JSON
+* map vào model
+* bind lên UI
+
+Chỉ cần API trả đúng format là dùng được ngay, không cần sửa UI.
+
+---
+
+## 6. Quy trình làm
+
+1. Backend làm API theo spec
+2. Test bằng Postman
+3. Frontend đổi FakeApiService → RealApiService
+4. chạy thử và kiểm tra UI

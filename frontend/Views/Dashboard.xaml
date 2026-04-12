@@ -1,0 +1,181 @@
+﻿<Window x:Class="frontend.Views.DashboardView"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Dashboard"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        ResizeMode="CanResizeWithGrip"
+        Background="#0D0D14">
+
+    <Viewbox Stretch="Uniform">
+        <Grid Width="1900" Height="900">
+
+            <!-- nền -->
+            <Border CornerRadius="25" Margin="10">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#262525" Offset="0"/>
+                        <GradientStop Color="#2F2A4A" Offset="0.5"/>
+                        <GradientStop Color="#1B1A2E" Offset="1"/>
+                    </LinearGradientBrush>
+                </Border.Background>
+            </Border>
+
+            <Grid Margin="30">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="420"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- ================= SIDEBAR ================= -->
+                <StackPanel Grid.Column="0">
+
+                    <Image Source="pack://application:,,,/frontend;component/Assets/sidebar.png"
+                           Width="34"
+                           Margin="0,0,0,60"/>
+
+                    <Border Width="75" Height="75"
+                            CornerRadius="20"
+                            Background="#2F2A4A"
+                            Margin="0,14">
+                        <Grid>
+                            <Image Source="pack://application:,,,/frontend;component/Assets/home.png"
+                                   Width="34"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Width="75" Height="75"
+                            CornerRadius="20"
+                            Margin="0,14">
+                        <Grid>
+                            <Image Source="pack://application:,,,/frontend;component/Assets/recent.png"
+                                   Width="34"
+                                   Opacity="0.75"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                    <Border Width="75" Height="75"
+                            CornerRadius="20"
+                            Margin="0,14">
+                        <Grid>
+                            <Image Source="pack://application:,,,/frontend;component/Assets/log.png"
+                                   Width="34"
+                                   Opacity="0.75"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
+
+                </StackPanel>
+
+                <!-- ================= MAIN ================= -->
+                <Grid Grid.Column="1">
+
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- title -->
+                    <TextBlock Text="DASHBOARD"
+                               Foreground="White"
+                               FontSize="28"
+                               FontWeight="Bold"
+                               Margin="0,10,0,0"/>
+
+                    <!-- content -->
+                    <ContentControl x:Name="MainContent"
+                                    Grid.Row="1"
+                                    Margin="0,20,0,0"/>
+
+                </Grid>
+
+                <!-- ================= RIGHT PANEL ================= -->
+                <Grid Grid.Column="2">
+
+                    <StackPanel>
+
+                        <!-- USER INFO -->
+                        <StackPanel Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    Margin="0,10,0,20">
+
+                            <Ellipse Width="50" Height="50" Margin="0,0,10,0">
+                                <Ellipse.Fill>
+                                    <ImageBrush ImageSource="/Assets/user.png"/>
+                                </Ellipse.Fill>
+                            </Ellipse>
+
+                            <TextBlock x:Name="CurrentTimeText"
+                                       Foreground="#AAAAAA"
+                                       FontSize="12"
+                                       VerticalAlignment="Center"/>
+                        </StackPanel>
+
+                        <!-- RECENT TASKS -->
+                        <Border CornerRadius="25"
+                                Background="#1F1F2E"
+                                Padding="20"
+                                Height="722">
+
+                            <StackPanel>
+
+                                <!-- title -->
+                                <TextBlock Text="Recent Tasks"
+                                           Foreground="White"
+                                           FontSize="20"
+                                           FontWeight="Bold"
+                                           Margin="0,0,0,15"/>
+
+                                <!-- list -->
+                                <ItemsControl ItemsSource="{Binding RecentTasks}">
+
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+
+                                            <Border Background="#2A2A3D"
+                                                    CornerRadius="12"
+                                                    Padding="10"
+                                                    Margin="0,5">
+
+                                                <StackPanel>
+
+                                                    <TextBlock Text="{Binding FileName}"
+                                                               Foreground="White"
+                                                               FontSize="13"/>
+
+                                                    <TextBlock Text="{Binding RoomName}"
+                                                               Foreground="#A0A0C0"
+                                                               FontSize="11"/>
+
+                                                    <TextBlock Text="{Binding Time}"
+                                                               Foreground="#777"
+                                                               FontSize="10"/>
+
+                                                </StackPanel>
+
+                                            </Border>
+
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+
+                                </ItemsControl>
+
+                            </StackPanel>
+
+                        </Border>
+
+                    </StackPanel>
+
+                </Grid>
+
+            </Grid>
+
+        </Grid>
+    </Viewbox>
+</Window>
