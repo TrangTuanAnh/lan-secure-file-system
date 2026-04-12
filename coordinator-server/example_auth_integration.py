@@ -5,6 +5,7 @@ from redis_client import RedisClient
 from auth.auth_service import AuthService
 from auth.auth_handlers import AuthHandlers
 from auth.auth_middleware import AuthMiddleware
+from audit.audit_service import AuditService
 from protocol.message import Message
 from protocol.message_types import MessageType
 from logging_config import setup_logging, get_logger
@@ -27,7 +28,8 @@ def example_authentication_flow():
     redis_client.connect()
     
     # Initialize authentication service and handlers
-    auth_service = AuthService(db, redis_client, config.server.session_ttl_seconds)
+    audit_service = AuditService(db)
+    auth_service = AuthService(db, redis_client, config.server.session_ttl_seconds, audit_service)
     auth_handlers = AuthHandlers(auth_service)
     auth_middleware = AuthMiddleware(auth_service)
     

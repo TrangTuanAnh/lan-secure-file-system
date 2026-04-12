@@ -40,6 +40,7 @@ class ServerConfig:
     upload_chunk_size: int
     storage_node_heartbeat_interval: int
     storage_node_timeout: int
+    storage_node_secret: str
 
 
 @dataclass
@@ -81,7 +82,8 @@ def load_config() -> Config:
         download_ticket_ttl_seconds=int(os.getenv('DOWNLOAD_TICKET_TTL_SECONDS', '900')),
         upload_chunk_size=int(os.getenv('UPLOAD_CHUNK_SIZE', '524288')),
         storage_node_heartbeat_interval=int(os.getenv('STORAGE_NODE_HEARTBEAT_INTERVAL', '30')),
-        storage_node_timeout=int(os.getenv('STORAGE_NODE_TIMEOUT', '90'))
+        storage_node_timeout=int(os.getenv('STORAGE_NODE_TIMEOUT', '90')),
+        storage_node_secret=os.getenv('STORAGE_NODE_SECRET', 'change-this-secret-in-production')
     )
     
     return Config(database=database, redis=redis, server=server)

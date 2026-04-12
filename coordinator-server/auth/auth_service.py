@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, Tuple
 from database import Database
 from redis_client import RedisClient
 from auth.password_hasher import PasswordHasher
+from audit.audit_service import AuditService
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -13,7 +14,13 @@ logger = get_logger(__name__)
 class AuthService:
     """Handles user authentication operations."""
     
-    def __init__(self, database: Database, redis_client: RedisClient, session_ttl: int):
+    def __init__(
+        self,
+        database: Database,
+        redis_client: RedisClient,
+        session_ttl: int,
+        audit_service: Optional[AuditService] = None
+    ):
         """
         Initialize authentication service.
         
@@ -21,11 +28,13 @@ class AuthService:
             database: Database instance
             redis_client: Redis client instance
             session_ttl: Session TTL in seconds (default 24 hours)
+            audit_service: Optional audit service for logging
         """
         self.db = database
         self.redis = redis_client
         self.session_ttl = session_ttl
         self.password_hasher = PasswordHasher()
+        self.audit = audit_service
     
     def signup(self, username: str, email: str, password: str) -> Tuple[bool, Optional[str], Optional[str]]:
         """
@@ -53,6 +62,16 @@ class AuthService:
         )
         if existing_user:
             logger.info(f"Signup failed: username '{username}' already exists")
+            # Write audit log for failed signup
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=None,
+                    action='SIGNUP',
+                    target_type='user',
+                    target_id=username,
+                    detail={'username': username, 'email': email, 'reason': 'duplicate_username'},
+                    status='FAILED'
+                )
             return False, None, "DUPLICATE_USERNAME"
         
         # Check if email already exists
@@ -62,6 +81,16 @@ class AuthService:
         )
         if existing_email:
             logger.info(f"Signup failed: email '{email}' already exists")
+            # Write audit log for failed signup
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=None,
+                    action='SIGNUP',
+                    target_type='user',
+                    target_id=email,
+                    detail={'username': username, 'email': email, 'reason': 'duplicate_email'},
+                    status='FAILED'
+                )
             return False, None, "DUPLICATE_EMAIL"
         
         # Hash password
@@ -84,6 +113,18 @@ class AuthService:
                 (user_id, username, email, password_hash, 'USER', now, now)
             )
             logger.info(f"User created: {user_id} (username={username})")
+            
+            # Write audit log for successful signup
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=user_id,
+                    action='SIGNUP',
+                    target_type='user',
+                    target_id=user_id,
+                    detail={'username': username, 'email': email},
+                    status='SUCCESS'
+                )
+            
             return True, user_id, None
         except Exception as e:
             logger.error(f"Failed to insert user: {e}")
@@ -112,6 +153,16 @@ class AuthService:
         
         if not users:
             logger.info(f"Login failed: username '{username}' not found")
+            # Write audit log for failed login
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=None,
+                    action='LOGIN',
+                    target_type='user',
+                    target_id=username,
+                    detail={'username': username, 'reason': 'user_not_found'},
+                    status='FAILED'
+                )
             return False, None, None, "INVALID_CREDENTIALS"
         
         user = users[0]
@@ -122,6 +173,16 @@ class AuthService:
         # Verify password
         if not self.password_hasher.verify(password, password_hash):
             logger.info(f"Login failed: invalid password for username '{username}'")
+            # Write audit log for failed login
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=user_id,
+                    action='LOGIN',
+                    target_type='user',
+                    target_id=user_id,
+                    detail={'username': username, 'reason': 'invalid_password'},
+                    status='FAILED'
+                )
             return False, None, None, "INVALID_CREDENTIALS"
         
         # Generate session token
@@ -139,6 +200,18 @@ class AuthService:
         try:
             self.redis.set_session(token, session_data, self.session_ttl)
             logger.info(f"User logged in: {user_id} (username={username}, token={token})")
+            
+            # Write audit log for successful login
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=user_id,
+                    action='LOGIN',
+                    target_type='user',
+                    target_id=user_id,
+                    detail={'username': username, 'token': token},
+                    status='SUCCESS'
+                )
+            
             return True, token, expires_at, None
         except Exception as e:
             logger.error(f"Failed to store session in Redis: {e}")
