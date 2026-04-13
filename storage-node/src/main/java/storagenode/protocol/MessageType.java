@@ -35,7 +35,19 @@ public enum MessageType {
     CHECK_OBJECT_RESP,      // Response: exists or not
 
     // ── General ──
-    ERROR;                  // Error response
+    ERROR,                  // Error response
+
+    // ── Control Plane (Storage Node <-> Coordinator) ──
+    STORAGE_AUTH,           // Storage Node authenticates with Coordinator
+    STORAGE_AUTH_RESPONSE,  // Coordinator confirms authentication
+    PING,                   // Heartbeat ping
+    PONG,                   // Heartbeat pong
+    VERIFY_TICKET,          // Request ticket verification from Coordinator
+    TICKET_VALID,           // Ticket is valid
+    TICKET_INVALID,         // Ticket is invalid
+    UPLOAD_COMPLETE,        // Notify Coordinator upload completed
+    UPLOAD_FAILED,          // Notify Coordinator upload failed
+    ACK;                    // Generic acknowledgment
 
     public static MessageType fromString(String s) {
         try {

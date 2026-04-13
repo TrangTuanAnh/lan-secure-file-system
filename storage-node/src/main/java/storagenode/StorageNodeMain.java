@@ -72,6 +72,18 @@ public class StorageNodeMain {
                 config.getTicketSecret(), config.getNodeId(),
                 config.getCoordinatorHost(), config.getCoordinatorPort()
             );
+            
+            // Connect to Coordinator control plane
+            try {
+                LOG.info("Connecting to Coordinator control plane...");
+                coordinator.connect();
+                LOG.info("Connected to Coordinator: " + config.getCoordinatorHost() + 
+                        ":" + config.getCoordinatorPort());
+            } catch (IOException e) {
+                LOG.warning("Failed to connect to Coordinator: " + e.getMessage());
+                LOG.warning("Running in standalone mode (local ticket verification only)");
+                LOG.warning("Upload/download will work, but Coordinator won't receive notifications");
+            }
 
             // 8. Start monitoring
             StorageMonitor monitor = new StorageMonitor(sessionManager, fileStore, dedupStore);
@@ -86,6 +98,7 @@ public class StorageNodeMain {
                 LOG.info("Shutdown signal received");
                 server.stop();
                 monitor.stop();
+                coordinator.disconnect();
             }));
 
             // 10. Start server (blocking)

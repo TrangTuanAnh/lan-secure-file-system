@@ -1,0 +1,39 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="Assets\facebook.png" />
+    <None Remove="Assets\github.png" />
+    <None Remove="Assets\google.png" />
+    <None Remove="Assets\home.png" />
+    <None Remove="Assets\log.png" />
+    <None Remove="Assets\memory.png" />
+    <None Remove="Assets\recent.png" />
+    <None Remove="Assets\setting.png" />
+    <None Remove="Assets\sidebar.png" />
+    <None Remove="Assets\user.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\ellipse1_purple.png" />
+    <Resource Include="Assets\ellipse2_purple.png" />
+    <Resource Include="Assets\facebook.png" />
+    <Resource Include="Assets\github.png" />
+    <Resource Include="Assets\google.png" />
+    <Resource Include="Assets\home.png" />
+    <Resource Include="Assets\log.png" />
+    <Resource Include="Assets\memory.png" />
+    <Resource Include="Assets\recent.png" />
+    <Resource Include="Assets\setting.png" />
+    <Resource Include="Assets\sidebar.png" />
+    <Resource Include="Assets\user.png" />
+  </ItemGroup>
+
+</Project>

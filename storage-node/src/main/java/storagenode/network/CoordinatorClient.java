@@ -33,6 +33,7 @@ public class CoordinatorClient {
     private final String nodeId;
     private final String coordinatorHost;
     private final int coordinatorPort;
+    private final ControlPlaneClient controlPlaneClient;
 
     public CoordinatorClient(String ticketSecret, String nodeId,
                              String coordinatorHost, int coordinatorPort) {
@@ -40,6 +41,11 @@ public class CoordinatorClient {
         this.nodeId = nodeId;
         this.coordinatorHost = coordinatorHost;
         this.coordinatorPort = coordinatorPort;
+        
+        // Initialize control plane client for persistent connection
+        this.controlPlaneClient = new ControlPlaneClient(
+            coordinatorHost, coordinatorPort, ticketSecret, nodeId
+        );
     }
 
     /**
@@ -84,23 +90,47 @@ public class CoordinatorClient {
     }
 
     /**
+     * Connect to Coordinator control plane.
+     * Should be called during Storage Node startup.
+     */
+    public void connect() throws java.io.IOException {
+        controlPlaneClient.connect();
+    }
+    
+    /**
+     * Disconnect from Coordinator control plane.
+     * Should be called during Storage Node shutdown.
+     */
+    public void disconnect() {
+        controlPlaneClient.disconnect();
+    }
+    
+    /**
+     * Check if connected to Coordinator.
+     */
+    public boolean isConnected() {
+        return controlPlaneClient.isConnected();
+    }
+
+    /**
      * Notify the Coordinator that an upload has been finalized.
-     * In a full integration, this sends a message to the Coordinator's control plane.
-     * Currently logs the event for integration later.
+     * Sends UPLOAD_COMPLETE message via control plane connection.
      */
     public void notifyUploadComplete(String fileId, String sha256Whole, long fileSize) {
-        // TODO: Send COMMIT_UPLOAD notification to Coordinator via socket/HTTP
-        LOG.info("NOTIFY_COORDINATOR: Upload complete fileId=" + fileId +
-                 " sha256=" + sha256Whole + " size=" + fileSize);
+        // Generate stored name based on hash (first 2 chars as subdirectory)
+        String storedName = "data/store/" + sha256Whole.substring(0, 2) + "/" + sha256Whole;
+        
+        // Delegate to control plane client
+        controlPlaneClient.notifyUploadComplete(fileId, sha256Whole, storedName, fileSize);
     }
 
     /**
      * Notify the Coordinator that an upload has failed.
+     * Sends UPLOAD_FAILED message via control plane connection.
      */
     public void notifyUploadFailed(String fileId, String reason) {
-        // TODO: Send failure notification to Coordinator
-        LOG.info("NOTIFY_COORDINATOR: Upload failed fileId=" + fileId +
-                 " reason=" + reason);
+        // Delegate to control plane client
+        controlPlaneClient.notifyUploadFailed(fileId, reason);
     }
 
     private String computeHmac(String payload) {
