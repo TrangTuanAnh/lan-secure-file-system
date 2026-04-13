@@ -15,7 +15,8 @@ namespace frontend.ViewModels
 
         public HomeViewModel()
         {
-            var api = new Services.FakeAPIServices();
+            var api = new FakeAPIServices();
+
             Rooms = api.GetRooms();
             RecentTasks = api.GetRecentTasks();
         }

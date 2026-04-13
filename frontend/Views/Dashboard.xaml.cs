@@ -1,4 +1,6 @@
-﻿using frontend.ViewModels;
+﻿using frontend.Models;
+using frontend.Services;
+using frontend.ViewModels;
 using frontend.Views.Pages;
 using System;
 using System.Collections.Generic;
@@ -22,22 +24,58 @@ namespace frontend.Views
     /// </summary>
     public partial class DashboardView : Window
     {
-        //private DispatcherTimer timer;
+        private RoomViewModel lastRoom;
 
         public DashboardView()
         {
             InitializeComponent();
-            MainContent.Content = new HomePage();
+            //MainContent.Content = new HomePage();
             DataContext = new HomeViewModel();
-            //timer = new DispatcherTimer();
-            //timer.Interval = TimeSpan.FromSeconds(1);
-            //timer.Tick += Timer_Tick;
-            //timer.Start();
+
+            MainContent.Content = new HomePage();
+            SetActiveTab("home");
+            ShowRecent(true);
         }
 
-        //private void Timer_Tick(object sender, EventArgs e)
-        //{
-        //    CurrentTimeText.Text = DateTime.Now.ToString("HH:mm:ss - dd/MM/yyyy");
-        //}
+        public void OpenRoom(Room room)
+        {
+            var api = new FakeAPIServices();
+
+            var roomVM = api.GetRoomDetail(room.Id);
+
+            MainContent.Content = new RoomPage(roomVM);
+
+            SetActiveTab("recent");
+            ShowRecent(false);
+        }
+
+        public void SetActiveTab(string tab)
+        {
+            var active = new SolidColorBrush(Color.FromRgb(47, 42, 74));
+
+            HomeTab.Background = tab == "home" ? active : Brushes.Transparent;
+            RecentTab.Background = tab == "recent" ? active : Brushes.Transparent;
+        }
+
+        public void ShowRecent(bool show)
+        {
+            RecentPanel.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        }
+        private void HomeTab_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            MainContent.Content = new HomePage();
+            SetActiveTab("home");
+            ShowRecent(true);
+        }
+
+        private void RecentTab_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (lastRoom != null)
+            {
+                MainContent.Content = new RoomPage(lastRoom);
+                SetActiveTab("recent");
+                ShowRecent(false);
+            }
+        }
     }
 }

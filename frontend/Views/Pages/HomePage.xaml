@@ -6,6 +6,13 @@
     <!-- ===== STYLE ===== -->
     <UserControl.Resources>
 
+        <Style x:Key="NoStyleButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Focusable" Value="False"/>
+        </Style>
+
         <!-- ScrollBar -->
         <Style TargetType="ScrollBar">
             <Setter Property="Width" Value="6"/>
@@ -58,43 +65,43 @@
                 <DataTemplate>
 
                     <!-- ROOM CARD -->
-                    <Border Width="240" Height="150"
+                    <Button Click="Room_Click"
+                        Style="{StaticResource NoStyleButton}"
+                        Cursor="Hand"
+                        DataContext="{Binding}">
+
+                        <Border Width="240" Height="150"
                             CornerRadius="18"
                             Background="#2F2F47"
                             Margin="20"
                             Padding="18"
-                            Style="{StaticResource RoomCardStyle}">
+                            Style="{StaticResource RoomCardStyle}"
+                            Focusable="False"
+                            DataContext="{Binding}">
 
-                        <Border.Effect>
-                            <DropShadowEffect Color="#000000"
-                                              BlurRadius="10"
-                                              ShadowDepth="0"
-                                              Opacity="0.15 "/>
-                        </Border.Effect>
+                            <Border.Effect>
+                                <DropShadowEffect Color="#000000"
+                                BlurRadius="10"
+                                ShadowDepth="0"
+                                Opacity="0.15"/>
+                            </Border.Effect>
 
-                        <StackPanel>
+                            <StackPanel>
 
-                            <!-- room name -->
-                            <TextBlock Text="{Binding Name}"
-                                       Foreground="White"
-                                       FontSize="18"
-                                       FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Name}"
+                                    Foreground="White"
+                                    FontSize="18"
+                                    FontWeight="SemiBold"/>
 
-                            <!-- file count -->
-                            <TextBlock Text="{Binding FileCount, StringFormat='Files: {0}'}"
-                                       Foreground="#D1D1E0"
-                                       FontSize="13"
-                                       Margin="0,10,0,0"/>
+                                <TextBlock Text="{Binding MemberCount, StringFormat='Members: {0}'}"
+                                    Foreground="#D1D1E0"
+                                    FontSize="12"
+                                    Margin="0,5,0,0"/>
 
-                            <!-- member count -->
-                            <TextBlock Text="{Binding MemberCount, StringFormat='Members: {0}'}"
-                                       Foreground="#D1D1E0"
-                                       FontSize="12"
-                                       Margin="0,5,0,0"/>
+                            </StackPanel>
 
-                        </StackPanel>
-
-                    </Border>
+                        </Border>
+                    </Button>
 
                 </DataTemplate>
             </ItemsControl.ItemTemplate>

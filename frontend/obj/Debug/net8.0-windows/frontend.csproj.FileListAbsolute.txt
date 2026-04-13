@@ -26,7 +26,9 @@ D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Dashboard
 D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\HomePage.baml
 D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\HomePage.g.cs
 D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\LogPage.g.cs
-D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\RecentPage.g.cs
 D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\frontend_MarkupCompile.lref
 D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\LogPage.baml
-D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\RecentPage.baml
+D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\RoomPage.baml
+D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\Views\Pages\RoomPage.g.cs
+D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\GeneratedInternalTypeHelper.g.cs
+D:\HK4\NT106.Q21.ANTN\frontend\frontend\obj\Debug\net8.0-windows\App.baml

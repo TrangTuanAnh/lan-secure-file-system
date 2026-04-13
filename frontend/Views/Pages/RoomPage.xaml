@@ -1,0 +1,150 @@
+﻿<UserControl x:Class="frontend.Views.Pages.RoomPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Background="Transparent">
+
+    <Grid Margin="20">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="280"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- ================= MEMBERS ================= -->
+        <Border Background="#1F1F2E"
+                CornerRadius="20"
+                Padding="15"
+                Margin="0,0,15,0">
+
+            <StackPanel>
+
+                <TextBlock Text="Members"
+                           Foreground="White"
+                           FontSize="18"
+                           FontWeight="SemiBold"
+                           Margin="0,0,0,10"/>
+
+                <ItemsControl ItemsSource="{Binding Members}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,6">
+
+                                <Ellipse Width="35" Height="35">
+                                    <Ellipse.Fill>
+                                        <ImageBrush ImageSource="{Binding Avatar}"/>
+                                    </Ellipse.Fill>
+                                </Ellipse>
+
+                                <StackPanel Margin="10,0,0,0">
+
+                                    <TextBlock Text="{Binding Username}"
+                                               Foreground="White"/>
+
+                                    <TextBlock Text="{Binding Role}"
+                                               Foreground="#888"
+                                               FontSize="11"/>
+
+                                </StackPanel>
+
+                            </StackPanel>
+
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <!-- OWNER ONLY -->
+                <Button Content="Add Member"
+                        Style="{StaticResource ModernButton}"
+                        Margin="0,15,0,0"
+                        Visibility="{Binding IsAdmin, Converter={StaticResource BoolToVisibilityConverter}}"/>
+
+            </StackPanel>
+
+        </Border>
+
+        <!-- ================= FILE ================= -->
+        <StackPanel Grid.Column="1">
+
+            <!-- HEADER -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,15">
+
+                <TextBlock Text="{Binding RoomName}"
+                           Foreground="White"
+                           FontSize="22"
+                           FontWeight="Bold"/>
+
+                <TextBlock Text="{Binding Role}"
+                           Foreground="#AAAAAA"
+                           Margin="10,5,0,0"/>
+
+                <Button Content="Upload"
+                        Style="{StaticResource ModernButton}"
+                        Margin="20,0,0,0"/>
+
+            </StackPanel>
+
+            <!-- FILE LIST -->
+            <ItemsControl ItemsSource="{Binding Files}">
+
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+
+                        <Border Background="#2A2A3D"
+                                CornerRadius="15"
+                                Padding="12"
+                                Margin="0,5">
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- INFO -->
+                                <StackPanel>
+
+                                    <TextBlock Text="{Binding Name}"
+                                               Foreground="White"
+                                               FontSize="14"/>
+
+                                    <TextBlock Text="{Binding Uploader}"
+                                               Foreground="#AAA"
+                                               FontSize="11"/>
+
+                                    <TextBlock Text="{Binding Size}"
+                                               Foreground="#777"
+                                               FontSize="10"/>
+
+                                </StackPanel>
+
+                                <!-- ACTION -->
+                                <StackPanel Grid.Column="1"
+                                            Orientation="Horizontal">
+
+                                    <Button Content="Download"
+                                            Style="{StaticResource ModernButton}"
+                                            Margin="5"/>
+
+                                    <Button Content="Delete"
+                                            Style="{StaticResource ModernButton}"
+                                            Margin="5"
+                                            Visibility="{Binding DataContext.IsAdmin,
+                                            RelativeSource={RelativeSource AncestorType=UserControl},
+                                            Converter={StaticResource BoolToVisibilityConverter}}"/>
+
+                                </StackPanel>
+
+                            </Grid>
+
+                        </Border>
+
+                    </DataTemplate>
+
+                </ItemsControl.ItemTemplate>
+
+            </ItemsControl>
+
+        </StackPanel>
+
+    </Grid>
+</UserControl>

@@ -1,4 +1,5 @@
-﻿using System;
+﻿using frontend.Services;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -24,10 +25,52 @@ namespace frontend.Views
             InitializeComponent();
         }
 
-        private void Signup_Click(object sender, RoutedEventArgs e)
+        private async void Signup_Click(object sender, RoutedEventArgs e)
         {
-            MessageBox.Show("Chưa có backend");
-            // Thêm API
+            var username = txtUsername.Text;
+            var email = txtEmail.Text;
+            var password = txtPassword.Password;
+            var confirmPassword = txtConfirmPassword.Password;
+
+            // ===== VALIDATE =====
+
+            if (string.IsNullOrWhiteSpace(username) ||
+                string.IsNullOrWhiteSpace(email) ||
+                string.IsNullOrWhiteSpace(password))
+            {
+                MessageBox.Show("Vui lòng nhập đầy đủ thông tin");
+                return;
+            }
+
+            if (password != confirmPassword)
+            {
+                MessageBox.Show("Mật khẩu xác nhận không khớp");
+                return;
+            }
+
+            if (password.Length < 6)
+            {
+                MessageBox.Show("Mật khẩu phải >= 6 ký tự");
+                return;
+            }
+
+            // ===== CALL API =====
+
+            var auth = new AuthServices();
+            var success = await auth.Signup(username, password, email);
+
+            if (success)
+            {
+                MessageBox.Show("Đăng ký thành công");
+
+                var login = new LoginView();
+                login.Show();
+                this.Close();
+            }
+            else
+            {
+                MessageBox.Show("Đăng ký thất bại");
+            }
         }
 
         private void BackToLogin_Click(object sender, System.Windows.Input.MouseButtonEventArgs e)

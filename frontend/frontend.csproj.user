@@ -17,7 +17,7 @@
     <Compile Update="Views\Pages\LogPage.xaml.cs">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Update="Views\Pages\RecentPage.xaml.cs">
+    <Compile Update="Views\Pages\RoomPage.xaml.cs">
       <SubType>Code</SubType>
     </Compile>
     <Compile Update="Views\SignupView.xaml.cs">

@@ -46,11 +46,15 @@ namespace frontend.Services
         }
 
         // SIGN UP
-        public async Task<bool> Signup(string username, string password)
+        public async Task<bool> Signup(string username, string password, string email)
         {
             // ===== FAKE MODE =====
-            if (!string.IsNullOrWhiteSpace(username) && !string.IsNullOrWhiteSpace(password))
+            if (!string.IsNullOrWhiteSpace(username) &&
+                !string.IsNullOrWhiteSpace(password) &&
+                !string.IsNullOrWhiteSpace(email))
+            {
                 return true;
+            }
 
             return false;
 
@@ -59,7 +63,8 @@ namespace frontend.Services
             var res = await _http.PostAsJsonAsync("/api/auth/signup", new
             {
                 username,
-                password
+                password,
+                email
             });
 
             return res.IsSuccessStatusCode;

@@ -1,4 +1,5 @@
-﻿using frontend.ViewModels;
+﻿using frontend.Models;
+using frontend.ViewModels;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -24,6 +25,19 @@ namespace frontend.Views.Pages
         {
             InitializeComponent();
             DataContext = new ViewModels.HomeViewModel();
+        }
+
+        private void Room_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as Button;
+            var room = button?.DataContext as Room;
+
+            if (room == null) return;
+
+            var dash = Window.GetWindow(this) as DashboardView;
+            if (dash == null) return;
+
+            dash.OpenRoom(room);
         }
     }
 }
