@@ -42,12 +42,15 @@ Mỗi message gồm **JSON header** (metadata) + **binary data** (tùy chọn, c
 Thiết lập encrypted session bằng RSA + AES.
 
 **Bước 1 (bootstrap public key):**
+
 ```json
 { "type": "KEY_EXCHANGE", "requestPublicKey": true, "action": "GET_PUBLIC_KEY" }
 ```
+
 **Data:** rỗng
 
 **Response: KEY_EXCHANGE_RESP**
+
 ```json
 {
   "type": "KEY_EXCHANGE_RESP",
@@ -56,15 +59,19 @@ Thiết lập encrypted session bằng RSA + AES.
   "bootstrap": true
 }
 ```
+
 **Data:** Node's RSA public key (X.509 encoded)
 
 **Bước 2 (gửi AES key đã mã hóa):**
+
 ```json
 { "type": "KEY_EXCHANGE" }
 ```
+
 **Data:** RSA-encrypted AES-256 session key
 
 **Response: KEY_EXCHANGE_RESP**
+
 ```json
 {
   "type": "KEY_EXCHANGE_RESP",
@@ -83,6 +90,7 @@ Thiết lập encrypted session bằng RSA + AES.
 Mở phiên upload mới hoặc resume phiên cũ.
 
 **Header:**
+
 ```json
 {
   "type": "OPEN_UPLOAD",
@@ -100,6 +108,7 @@ Mở phiên upload mới hoặc resume phiên cũ.
 ```
 
 **Response: OPEN_UPLOAD_RESP**
+
 ```json
 {
   "type": "OPEN_UPLOAD_RESP",
@@ -112,6 +121,7 @@ Mở phiên upload mới hoặc resume phiên cũ.
 ```
 
 Nếu resume:
+
 ```json
 {
   "type": "OPEN_UPLOAD_RESP",
@@ -126,6 +136,7 @@ Nếu resume:
 ```
 
 Nếu dedup (file đã tồn tại cùng hash):
+
 ```json
 {
   "type": "OPEN_UPLOAD_RESP",
@@ -143,6 +154,7 @@ Nếu dedup (file đã tồn tại cùng hash):
 Gửi 1 chunk lên node.
 
 **Header:**
+
 ```json
 {
   "type": "UPLOAD_CHUNK",
@@ -151,11 +163,13 @@ Gửi 1 chunk lên node.
   "chunkHash": "sha256-hex-64chars"
 }
 ```
+
 **Data:** Raw chunk bytes (hoặc AES-encrypted nếu đã KEY_EXCHANGE)
 
 **Response: ACK_CHUNK**
 
 Thành công:
+
 ```json
 {
   "type": "ACK_CHUNK",
@@ -169,6 +183,7 @@ Thành công:
 ```
 
 Hash sai:
+
 ```json
 {
   "type": "ACK_CHUNK",
@@ -181,6 +196,7 @@ Hash sai:
 ```
 
 Chunk trùng (idempotent):
+
 ```json
 {
   "type": "ACK_CHUNK",
@@ -192,6 +208,7 @@ Chunk trùng (idempotent):
 ```
 
 Chunk index không hợp lệ:
+
 ```json
 {
   "type": "ACK_CHUNK",
@@ -204,6 +221,7 @@ Chunk index không hợp lệ:
 ```
 
 Chunk size không hợp lệ:
+
 ```json
 {
   "type": "ACK_CHUNK",
@@ -223,6 +241,7 @@ Chunk size không hợp lệ:
 Hỏi danh sách chunk còn thiếu (dùng cho resume).
 
 **Header:**
+
 ```json
 {
   "type": "QUERY_MISSING",
@@ -231,6 +250,7 @@ Hỏi danh sách chunk còn thiếu (dùng cho resume).
 ```
 
 **Response: MISSING_RESP**
+
 ```json
 {
   "type": "MISSING_RESP",
@@ -249,6 +269,7 @@ Hỏi danh sách chunk còn thiếu (dùng cho resume).
 Yêu cầu node ghép file và verify hash tổng.
 
 **Header:**
+
 ```json
 {
   "type": "FINALIZE_UPLOAD",
@@ -259,6 +280,7 @@ Yêu cầu node ghép file và verify hash tổng.
 **Response: FINALIZE_RESP**
 
 Thành công:
+
 ```json
 {
   "type": "FINALIZE_RESP",
@@ -271,6 +293,7 @@ Thành công:
 ```
 
 Chưa đủ chunk:
+
 ```json
 {
   "type": "FINALIZE_RESP",
@@ -282,6 +305,7 @@ Chưa đủ chunk:
 ```
 
 Hash file tổng sai:
+
 ```json
 {
   "type": "FINALIZE_RESP",
@@ -292,6 +316,7 @@ Hash file tổng sai:
 ```
 
 Lỗi I/O khi finalize:
+
 ```json
 {
   "type": "FINALIZE_RESP",
@@ -308,6 +333,7 @@ Lỗi I/O khi finalize:
 Mở phiên download.
 
 **Header:**
+
 ```json
 {
   "type": "OPEN_DOWNLOAD",
@@ -322,6 +348,7 @@ Mở phiên download.
 ```
 
 **Response: OPEN_DOWNLOAD_RESP**
+
 ```json
 {
   "type": "OPEN_DOWNLOAD_RESP",
@@ -341,6 +368,7 @@ Mở phiên download.
 Yêu cầu 1 chunk cụ thể.
 
 **Header:**
+
 ```json
 {
   "type": "REQUEST_CHUNK",
@@ -350,6 +378,7 @@ Yêu cầu 1 chunk cụ thể.
 ```
 
 **Response: DOWNLOAD_CHUNK**
+
 ```json
 {
   "type": "DOWNLOAD_CHUNK",
@@ -360,6 +389,7 @@ Yêu cầu 1 chunk cụ thể.
   "totalChunks": 6
 }
 ```
+
 **Data:** Raw chunk bytes (hoặc AES-encrypted)
 
 ---
@@ -388,6 +418,7 @@ Kiểm tra file tồn tại theo hash (dùng cho dedup).
 ```
 
 **Response:**
+
 ```json
 { "type": "CHECK_OBJECT_RESP", "sha256Whole": "abc123...", "exists": true }
 ```
@@ -405,6 +436,7 @@ Kiểm tra file tồn tại theo hash (dùng cho dedup).
 ```
 
 **Error codes:**
+
 | Code             | Description                         |
 |------------------|-------------------------------------|
 | INVALID_TICKET   | Ticket hết hạn / sai chữ ký        |

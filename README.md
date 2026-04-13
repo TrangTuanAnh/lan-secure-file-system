@@ -1,6 +1,7 @@
 # Đồ án LTM - Storage Node
 
 Repository này hiện tập trung vào phần **Storage Node / Data Plane** của hệ thống truyền file LAN an toàn:
+
 - Upload/download theo chunk qua TCP socket
 - Resume upload
 - Verify SHA-256 theo chunk và whole file
@@ -41,16 +42,19 @@ Repository này hiện tập trung vào phần **Storage Node / Data Plane** c�
 ## 4) Chạy hệ thống
 
 Yêu cầu:
+
 - Java 8
 - Maven 3.8+
 
 Build:
+
 ```bash
 cd storage-node
 mvn clean package
 ```
 
 Run node:
+
 ```bash
 cd storage-node
 java -jar target/storage-node-1.0.0-shaded.jar storage-node.properties
@@ -64,6 +68,7 @@ mvn test
 ```
 
 Test tích hợp hiện cover các luồng bắt buộc:
+
 - Upload small/large
 - Resume upload sau disconnect
 - Corrupt chunk + retry
