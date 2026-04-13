@@ -1,181 +1,222 @@
-﻿# Frontend Overview & API Requirements
+﻿# Frontend Structure & API Notes
 
-## 1. Hiện trạng frontend
+## 1. Cấu trúc thư mục
 
-Frontend hiện đã làm xong phần giao diện và flow cơ bản, gồm:
-
-### Authentication
-
-* Login
-* Signup
-* Reset password
-
-Các chức năng này hiện đang chạy bằng mock (FakeApiService), nhưng đã có sẵn logic để chuyển sang API thật.
-
----
-
-### Dashboard
-
-* Sidebar (Home, Recent, Log)
-* Hiển thị avatar + thời gian
-* Panel Recent Tasks (bind data động)
+```
+│   App.xaml
+│   App.xaml.cs
+├───Assets          // ảnh, icon
+├───Converters      // converter (ví dụ: BoolToVisibility)
+├───Models          // model map trực tiếp từ API
+├───Services        // gọi API (AuthServices, FakeAPIServices)
+├───ViewModels      // xử lý dữ liệu cho UI
+└───Views
+    └───Pages       // HomePage, RoomPage, ...
+```
 
 ---
 
-### Home (quan trọng nhất)
+## 2. Tổng quan hiện tại
 
-* Hiển thị danh sách room
-* Mỗi room gồm:
+Frontend đã có:
 
-  * Tên phòng
-  * Số file
-  * Số thành viên
+* Login / Signup / Reset password
+* Dashboard + sidebar
+* Home (danh sách room)
+* Click room → vào RoomPage
+* Recent tasks (panel bên phải)
 
-Danh sách này đang bind từ ViewModel → khi có API chỉ cần thay nguồn data là xong.
+Data hiện tại đang lấy từ `FakeAPIServices`
 
----
+Khi có backend:
 
-### Data flow
-
-Frontend đang đi theo hướng:
-
-* Service → gọi API
-* ViewModel → giữ data
-* View → hiển thị
-
-Hiện tại dùng FakeApiService, sau này thay bằng RealApiService.
+* thay FakeAPI bằng API thật
+* UI không cần sửa
 
 ---
 
-## 2. Model dữ liệu cần match
+## 3. Flow chính
 
-### Room
+### Login
 
-```json
+* nhập username + password
+* gọi API
+* nếu ok → vào dashboard
+
+---
+
+### Signup
+
+* nhập username, email, password, confirm password
+* frontend check:
+
+  * không rỗng
+  * password >= 6
+  * confirm phải trùng
+* gọi API signup
+
+---
+
+### Home
+
+* gọi API lấy danh sách room
+* hiển thị:
+
+  * name
+  * memberCount
+
+---
+
+### Click room
+
+* lấy room.id
+* gọi API lấy chi tiết room
+* render RoomPage
+
+RoomPage gồm:
+
+* members
+* files
+* role (OWNER / USER)
+
+---
+
+### Recent tasks
+
+* gọi API riêng
+* hiển thị bên phải dashboard
+
+---
+
+## 4. Data structure (backend cần trả)
+
+### Rooms
+
+GET /api/rooms
+
+```
+[
+  {
+    "id": 1,
+    "name": "Security Team",
+    "memberCount": 5
+  }
+]
+```
+
+---
+
+### Room detail
+
+GET /api/rooms/{id}
+
+```
 {
-  "name": "string",
-  "fileCount": 0,
-  "memberCount": 0
+  "roomId": 1,
+  "roomName": "Security Team",
+  "role": "OWNER",
+
+  "members": [
+    {
+      "username": "Khang",
+      "role": "OWNER"
+    }
+  ],
+
+  "files": [
+    {
+      "name": "report.pdf",
+      "size": "2MB",
+      "uploader": "Khang",
+      "time": "2026-04-13T10:00:00"
+    }
+  ]
 }
 ```
 
 ---
 
-### Recent Tasks
+### Recent tasks
 
-```json
-{
-  "fileName": "string",
-  "roomName": "string",
-  "time": "string"
-}
+GET /api/tasks/recent
+
+```
+[
+  {
+    "fileName": "report.pdf",
+    "roomName": "Security Team",
+    "time": "2026-04-13T10:00:00"
+  }
+]
 ```
 
 ---
-
-### Login response
-
-```json
-{
-  "token": "string",
-  "username": "string"
-}
-```
-
----
-
-## 3. API cần có
 
 ### Auth
 
-* POST /api/auth/login
-* POST /api/auth/signup
-* POST /api/auth/reset-password
-
----
-
-### Data
-
-* GET /api/rooms
-* GET /api/tasks/recent
-
----
-
-## 4. Những thứ cần chú ý khi viết API
-
-### Naming
-
-Frontend bind trực tiếp theo key, nên phải giữ đúng:
-
-* name
-* fileCount
-* memberCount
-* fileName
-* roomName
-* time
-
-Sai key là UI không hiện.
-
----
-
-### Format JSON
-
-* Trả thẳng list, không bọc thêm object lạ
-* Không đổi tên field
-* Không đổi kiểu dữ liệu
-
----
-
-### Status code
-
-* 200: thành công
-* 400/401: lỗi
-* Trả message rõ ràng khi fail
-
----
-
-### Password
-
-* Không lưu plain text
-* Hash bằng bcrypt hoặc tương tự
-
----
-
-### Token
-
-* Nên dùng JWT
-* Không trả thông tin nhạy cảm
-
----
-
-### Time
-
-Nên dùng format:
+POST /api/auth/login
 
 ```
-2026-04-13T10:00:00
+{
+  "username": "string",
+  "password": "string"
+}
 ```
 
-Frontend sẽ tự xử lý hiển thị.
+---
+
+POST /api/auth/signup
+
+```
+{
+  "username": "string",
+  "password": "string",
+  "email": "string"
+}
+```
 
 ---
 
-## 5. Khi nối API
+POST /api/auth/reset-password
 
-Frontend sẽ:
-
-* gọi API bằng HttpClient
-* nhận JSON
-* map vào model
-* bind lên UI
-
-Chỉ cần API trả đúng format là dùng được ngay, không cần sửa UI.
+```
+{
+  "email": "string"
+}
+```
 
 ---
 
-## 6. Quy trình làm
+## 5. Quy tắc
 
-1. Backend làm API theo spec
-2. Test bằng Postman
-3. Frontend đổi FakeApiService → RealApiService
-4. chạy thử và kiểm tra UI
+* key phải đúng (name, memberCount, fileName, ...)
+* không bọc JSON kiểu `{ data: ... }`
+* list trả `[]`, không trả null
+* time dùng ISO (yyyy-MM-ddTHH:mm:ss)
+* password phải hash
+* role chỉ có:
+
+  * OWNER
+  * USER
+
+---
+
+## 6. Lưu ý code
+
+* HomePage dùng `Room` (model nhẹ)
+
+* RoomPage dùng `RoomViewModel` (chi tiết)
+
+* không dùng lẫn 2 cái này
+
+* click room chỉ xử lý ở HomePage
+
+* RoomPage chỉ render
+
+---
+
+## 7. Khi nối backend
+
+* bỏ FakeAPIServices
+* sửa trong Services để gọi API thật
+* giữ nguyên View + ViewModel
