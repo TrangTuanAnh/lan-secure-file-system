@@ -16,6 +16,7 @@ from health.health_service import HealthService
 from audit.audit_service import AuditService
 from ticket.ticket_service import TicketService
 from client_socket_server import ClientSocketServer
+from storage_node.storage_node_server import StorageNodeServer
 from logging_config import setup_logging, get_logger
 
 logger = get_logger(__name__)
@@ -23,16 +24,21 @@ logger = get_logger(__name__)
 # Global references for cleanup
 cleanup_service = None
 client_server = None
+storage_node_server = None
 
 
 def shutdown_handler(signum, frame):
     """Handle shutdown signals gracefully."""
-    global cleanup_service, client_server
+    global cleanup_service, client_server, storage_node_server
     logger.info(f"Received signal {signum}, shutting down...")
     
     if client_server:
         logger.info("Stopping client socket server...")
         client_server.stop()
+    
+    if storage_node_server:
+        logger.info("Stopping storage node server...")
+        storage_node_server.stop()
     
     if cleanup_service:
         logger.info("Stopping cleanup service...")
@@ -43,7 +49,7 @@ def shutdown_handler(signum, frame):
 
 def main():
     """Initialize and start the Coordinator Server."""
-    global cleanup_service, client_server
+    global cleanup_service, client_server, storage_node_server
     
     # Setup logging
     setup_logging(level='INFO')
@@ -173,6 +179,28 @@ def main():
         db.close()
         sys.exit(1)
     
+    # Initialize and start storage node server
+    try:
+        storage_node_server = StorageNodeServer(
+            host='0.0.0.0',
+            port=config.server.storage_port,
+            shared_secret=config.server.storage_node_secret,
+            ticket_service=ticket_service,
+            upload_service=upload_service,
+            timeout_seconds=config.server.storage_node_timeout
+        )
+        storage_node_server.start()
+        logger.info(f"Storage node server started on port {config.server.storage_port}")
+    except Exception as e:
+        logger.error(f"Failed to start storage node server: {e}", exc_info=True)
+        if client_server:
+            client_server.stop()
+        if cleanup_service:
+            cleanup_service.stop()
+        redis_client.close()
+        db.close()
+        sys.exit(1)
+    
     logger.info("Coordinator Server initialized successfully")
     logger.info(f"Configuration: Client Port={config.server.client_port}, "
                 f"Storage Port={config.server.storage_port}, "
@@ -190,6 +218,9 @@ def main():
         if client_server:
             logger.info("Stopping client socket server...")
             client_server.stop()
+        if storage_node_server:
+            logger.info("Stopping storage node server...")
+            storage_node_server.stop()
         if cleanup_service:
             logger.info("Stopping cleanup service...")
             cleanup_service.stop()

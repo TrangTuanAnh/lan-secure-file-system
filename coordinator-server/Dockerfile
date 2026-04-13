@@ -33,5 +33,9 @@ EXPOSE 8082
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
+# Copy entrypoint script
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Run the application
-CMD ["python", "main.py"]
+ENTRYPOINT ["/app/entrypoint.sh"]

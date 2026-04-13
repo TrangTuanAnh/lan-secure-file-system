@@ -1,0 +1,209 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # Infrastructure Services
+  # ============================================
+  
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: coordinator-postgres
+    environment:
+      POSTGRES_DB: coordinator
+      POSTGRES_USER: coordinator_user
+      POSTGRES_PASSWORD: secure_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coordinator_user -d coordinator"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ltm-network
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: coordinator-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ltm-network
+
+  # ============================================
+  # Coordinator Server (Python)
+  # ============================================
+  
+  coordinator:
+    build:
+      context: ./coordinator-server
+      dockerfile: Dockerfile
+    container_name: coordinator-server
+    environment:
+      # Database Configuration
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: coordinator
+      DB_USER: coordinator_user
+      DB_PASSWORD: secure_password
+      DB_POOL_SIZE: 20
+      
+      # Redis Configuration
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+      REDIS_POOL_SIZE: 10
+      
+      # Server Configuration
+      SERVER_CLIENT_PORT: 8080
+      SERVER_STORAGE_PORT: 8081
+      SERVER_NOTIFICATION_PORT: 8082
+      
+      # Session Configuration
+      SESSION_TTL_SECONDS: 86400
+      
+      # Ticket Configuration
+      UPLOAD_TICKET_TTL_SECONDS: 1800
+      DOWNLOAD_TICKET_TTL_SECONDS: 900
+      
+      # Upload Configuration
+      UPLOAD_CHUNK_SIZE: 524288
+      
+      # Storage Node Configuration
+      STORAGE_NODE_HEARTBEAT_INTERVAL: 30
+      STORAGE_NODE_TIMEOUT: 90
+      STORAGE_NODE_SECRET: test-secret-12345
+    ports:
+      - "8080:8080"  # Client connections
+      - "8081:8081"  # Storage node connections
+      - "8082:8082"  # Notification service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ltm-network
+    volumes:
+      - coordinator_logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import socket; s=socket.socket(); s.connect((\"localhost\", 8080)); s.close()'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # Storage Node 1 (Java)
+  # ============================================
+  
+  storage-node-1:
+    build:
+      context: ./storage-node
+      dockerfile: Dockerfile
+    container_name: storage-node-1
+    environment:
+      # Override properties via environment variables
+      NODE_ID: storage-node-1
+      NODE_PORT: 9001
+      COORDINATOR_HOST: coordinator
+      COORDINATOR_PORT: 8081
+      TICKET_SECRET: test-secret-12345
+    ports:
+      - "9001:9001"  # Data plane port
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ltm-network
+    volumes:
+      - storage_node_1_data:/app/data
+      - storage_node_1_logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9001 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # Storage Node 2 (Java) - Optional second node
+  # ============================================
+  
+  storage-node-2:
+    build:
+      context: ./storage-node
+      dockerfile: Dockerfile
+    container_name: storage-node-2
+    environment:
+      NODE_ID: storage-node-2
+      NODE_PORT: 9002
+      COORDINATOR_HOST: coordinator
+      COORDINATOR_PORT: 8081
+      TICKET_SECRET: test-secret-12345
+    ports:
+      - "9002:9002"  # Data plane port
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ltm-network
+    volumes:
+      - storage_node_2_data:/app/data
+      - storage_node_2_logs:/app/logs
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9002 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    profiles:
+      - multi-node  # Only start with: docker-compose --profile multi-node up
+
+# ============================================
+# Volumes
+# ============================================
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  coordinator_logs:
+    driver: local
+  storage_node_1_data:
+    driver: local
+  storage_node_1_logs:
+    driver: local
+  storage_node_2_data:
+    driver: local
+  storage_node_2_logs:
+    driver: local
+
+# ============================================
+# Networks
+# ============================================
+
+networks:
+  ltm-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
