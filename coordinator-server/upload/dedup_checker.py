@@ -40,7 +40,7 @@ class DeduplicationChecker:
             # Query for existing file with matching hash and READY status
             files = self.db.execute_query(
                 """
-                SELECT id, stored_name, room_id, original_name, size_bytes
+                SELECT id, stored_name, room_id, original_name, size_bytes, storage_node_id
                 FROM files
                 WHERE sha256_whole = %s AND status = %s
                 LIMIT 1
@@ -59,7 +59,8 @@ class DeduplicationChecker:
                     'stored_name': file['stored_name'],
                     'room_id': file['room_id'],
                     'original_name': file['original_name'],
-                    'size_bytes': file['size_bytes']
+                    'size_bytes': file['size_bytes'],
+                    'storage_node_id': file.get('storage_node_id')
                 }
             
             logger.debug(f"No deduplication match for hash {sha256_whole[:16]}...")
@@ -69,3 +70,40 @@ class DeduplicationChecker:
             logger.error(f"Failed to check deduplication: {e}")
             # Return None on error to proceed with normal upload
             return None
+
+    def find_deduplication_candidates(
+        self,
+        sha256_whole: str
+    ) -> list[Dict[str, Any]]:
+        """
+        Return READY files with matching content hash.
+
+        Upload load-balancing uses this to prefer a duplicate that already lives
+        on a healthy storage node.
+        """
+        try:
+            files = self.db.execute_query(
+                """
+                SELECT id, stored_name, room_id, original_name, size_bytes, storage_node_id
+                FROM files
+                WHERE sha256_whole = %s AND status = %s
+                ORDER BY created_at ASC
+                LIMIT 20
+                """,
+                (sha256_whole, 'READY')
+            )
+
+            return [
+                {
+                    'id': file['id'],
+                    'stored_name': file['stored_name'],
+                    'room_id': file['room_id'],
+                    'original_name': file['original_name'],
+                    'size_bytes': file['size_bytes'],
+                    'storage_node_id': file.get('storage_node_id')
+                }
+                for file in files
+            ]
+        except Exception as e:
+            logger.error(f"Failed to list deduplication candidates: {e}")
+            return []

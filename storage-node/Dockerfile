@@ -23,7 +23,7 @@ FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
 
 # Create directories for storage
-RUN mkdir -p /app/data/store /app/data/temp /app/data/meta /app/logs
+RUN mkdir -p /app/data/store /app/data/temp /app/data/meta /app/data/quarantine /app/logs
 
 # Copy the built JAR from builder stage
 COPY --from=builder /build/target/storage-node-*.jar /app/storage-node.jar

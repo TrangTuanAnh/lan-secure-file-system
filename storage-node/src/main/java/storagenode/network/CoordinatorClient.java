@@ -33,18 +33,26 @@ public class CoordinatorClient {
     private final String nodeId;
     private final String coordinatorHost;
     private final int coordinatorPort;
+    private final String dataHost;
+    private final int dataPort;
+    private final String storageAddress;
     private final ControlPlaneClient controlPlaneClient;
 
     public CoordinatorClient(String ticketSecret, String nodeId,
-                             String coordinatorHost, int coordinatorPort) {
+                             String coordinatorHost, int coordinatorPort,
+                             String dataHost, int dataPort, String storageAddress) {
         this.ticketSecret = ticketSecret;
         this.nodeId = nodeId;
         this.coordinatorHost = coordinatorHost;
         this.coordinatorPort = coordinatorPort;
+        this.dataHost = dataHost;
+        this.dataPort = dataPort;
+        this.storageAddress = storageAddress;
         
         // Initialize control plane client for persistent connection
         this.controlPlaneClient = new ControlPlaneClient(
-            coordinatorHost, coordinatorPort, ticketSecret, nodeId
+            coordinatorHost, coordinatorPort, ticketSecret, nodeId,
+            dataHost, dataPort, storageAddress
         );
     }
 

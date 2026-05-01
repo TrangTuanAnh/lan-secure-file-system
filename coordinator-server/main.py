@@ -17,6 +17,7 @@ from audit.audit_service import AuditService
 from ticket.ticket_service import TicketService
 from client_socket_server import ClientSocketServer
 from storage_node.storage_node_server import StorageNodeServer
+from storage_node.registry import StorageNodeRegistry
 from logging_config import setup_logging, get_logger
 
 logger = get_logger(__name__)
@@ -116,26 +117,35 @@ def main():
             config.server.upload_ticket_ttl_seconds,
             config.server.download_ticket_ttl_seconds
         )
+        storage_registry = StorageNodeRegistry(
+            timeout_seconds=config.server.storage_node_timeout
+        )
         
         # Business logic services
         notification_service = NotificationService()
         room_service = RoomService(db, authorization_service, audit_service, notification_service)
         file_service = FileService(db, authorization_service)
         upload_service = UploadService(
-            db,
-            authorization_service,
-            ticket_service,
-            audit_service,
-            notification_service,
-            config.server.upload_chunk_size
+            database=db,
+            redis_client=redis_client,
+            authorization_service=authorization_service,
+            audit_service=audit_service,
+            notification_service=notification_service,
+            chunk_size=config.server.upload_chunk_size,
+            ticket_ttl_seconds=config.server.upload_ticket_ttl_seconds,
+            storage_registry=storage_registry,
+            ticket_secret=config.server.storage_node_secret
         )
         download_service = DownloadService(
-            db,
-            authorization_service,
-            ticket_service,
-            audit_service
+            database=db,
+            redis_client=redis_client,
+            authorization_service=authorization_service,
+            audit_service=audit_service,
+            ticket_ttl_seconds=config.server.download_ticket_ttl_seconds,
+            storage_registry=storage_registry,
+            ticket_secret=config.server.storage_node_secret
         )
-        health_service = HealthService(db, redis_client)
+        health_service = HealthService(db, redis_client, storage_registry)
         
         logger.info("Services initialized successfully")
     except Exception as e:
@@ -146,7 +156,11 @@ def main():
     
     # Initialize and start cleanup service
     try:
-        cleanup_service = CleanupService(db, interval_seconds=600)  # 10 minutes
+        cleanup_service = CleanupService(
+            db,
+            interval_seconds=600,
+            storage_registry=storage_registry
+        )  # 10 minutes
         cleanup_service.start()
         logger.info("Cleanup service started")
     except Exception as e:
@@ -187,7 +201,8 @@ def main():
             shared_secret=config.server.storage_node_secret,
             ticket_service=ticket_service,
             upload_service=upload_service,
-            timeout_seconds=config.server.storage_node_timeout
+            timeout_seconds=config.server.storage_node_timeout,
+            registry=storage_registry
         )
         storage_node_server.start()
         logger.info(f"Storage node server started on port {config.server.storage_port}")

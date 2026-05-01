@@ -7,6 +7,47 @@ from upload.dedup_checker import DeduplicationChecker
 from upload.upload_service import UploadService
 
 
+class FakeStorageNode:
+    def __init__(self, node_id, storage_address, active_uploads=0, healthy=True):
+        self.node_id = node_id
+        self.storage_address = storage_address
+        self.active_uploads = active_uploads
+        self.healthy = healthy
+
+
+class FakeStorageRegistry:
+    def __init__(self, nodes):
+        self.nodes = {node.node_id: node for node in nodes}
+
+    def select_for_upload(self):
+        healthy = [
+            node for node in self.nodes.values()
+            if node.healthy and node.storage_address
+        ]
+        if not healthy:
+            return None
+        healthy.sort(key=lambda node: (node.active_uploads, node.node_id))
+        return healthy[0]
+
+    def mark_upload_started(self, node_id):
+        if node_id in self.nodes:
+            self.nodes[node_id].active_uploads += 1
+
+    def mark_upload_finished(self, node_id):
+        if node_id in self.nodes and self.nodes[node_id].active_uploads > 0:
+            self.nodes[node_id].active_uploads -= 1
+
+    def is_node_healthy(self, node_id):
+        node = self.nodes.get(node_id)
+        return bool(node and node.healthy)
+
+    def get_storage_address(self, node_id):
+        node = self.nodes.get(node_id)
+        if node and node.healthy:
+            return node.storage_address
+        return None
+
+
 class TestScanValidator(unittest.TestCase):
     """Test scan report validation."""
     
@@ -207,20 +248,23 @@ class TestUploadService(unittest.TestCase):
             user_id=self.user_id,
             global_role='USER',
             room_id=self.room_id,
-            file_info=self.file_info,
-            scan_report=self.scan_report
+            file_info=self.file_info
         )
         
         self.assertFalse(success)
         self.assertIsNone(upload_plan)
         self.assertEqual(error_code, "PERMISSION_DENIED")
     
-    def test_init_upload_invalid_scan_report(self):
-        """Test INIT_UPLOAD with invalid scan report."""
+    def test_init_upload_ignores_deprecated_scan_report(self):
+        """Test INIT_UPLOAD no longer trusts or requires client-side scan reports."""
         # Mock authorization to allow
         self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.side_effect = [
+            [],
+            [{'max_version': None}]
+        ]
+        self.mock_db.execute_update.return_value = 1
         
-        # Use infected scan report
         infected_scan = self.scan_report.copy()
         infected_scan['result'] = 'INFECTED'
         
@@ -232,9 +276,10 @@ class TestUploadService(unittest.TestCase):
             scan_report=infected_scan
         )
         
-        self.assertFalse(success)
-        self.assertIsNone(upload_plan)
-        self.assertEqual(error_code, "SCAN_FAILED")
+        self.assertTrue(success)
+        self.assertIsNone(error_code)
+        self.assertIsNotNone(upload_plan)
+        self.assertFalse(upload_plan['deduplicated'])
     
     def test_init_upload_deduplicated(self):
         """Test INIT_UPLOAD with deduplication."""
@@ -262,8 +307,7 @@ class TestUploadService(unittest.TestCase):
             user_id=self.user_id,
             global_role='USER',
             room_id=self.room_id,
-            file_info=self.file_info,
-            scan_report=self.scan_report
+            file_info=self.file_info
         )
         
         self.assertTrue(success)
@@ -293,8 +337,7 @@ class TestUploadService(unittest.TestCase):
             user_id=self.user_id,
             global_role='USER',
             room_id=self.room_id,
-            file_info=self.file_info,
-            scan_report=self.scan_report
+            file_info=self.file_info
         )
         
         self.assertTrue(success)
@@ -306,6 +349,153 @@ class TestUploadService(unittest.TestCase):
         
         # Verify ticket was stored in Redis
         self.mock_redis.set_ticket.assert_called_once()
+
+    def test_init_upload_assigns_least_active_storage_node(self):
+        """Test new uploads are assigned to the least-active healthy node."""
+        registry = FakeStorageRegistry([
+            FakeStorageNode("node-1", "node-1:9001", active_uploads=2),
+            FakeStorageNode("node-2", "node-2:9002", active_uploads=0),
+        ])
+        service = UploadService(
+            database=self.mock_db,
+            redis_client=self.mock_redis,
+            authorization_service=self.mock_authz,
+            storage_registry=registry,
+            ticket_secret="test-secret",
+            chunk_size=524288,
+            ticket_ttl_seconds=1800
+        )
+        self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.side_effect = [
+            [],
+            [{'max_version': None}]
+        ]
+        self.mock_db.execute_update.return_value = 1
+
+        success, upload_plan, error_code = service.handle_init_upload(
+            user_id=self.user_id,
+            global_role='USER',
+            room_id=self.room_id,
+            file_info=self.file_info
+        )
+
+        self.assertTrue(success)
+        self.assertIsNone(error_code)
+        self.assertEqual(upload_plan['storageNodeId'], 'node-2')
+        self.assertEqual(upload_plan['storageAddress'], 'node-2:9002')
+        self.assertIn('sessionId', upload_plan)
+        self.assertIn('ticketNodeId', upload_plan)
+        self.assertIn('ticketSignature', upload_plan)
+        self.assertEqual(registry.nodes['node-2'].active_uploads, 1)
+
+    def test_init_upload_returns_unavailable_when_no_healthy_node(self):
+        """Test INIT_UPLOAD fails closed when no storage node is healthy."""
+        registry = FakeStorageRegistry([
+            FakeStorageNode("node-1", "node-1:9001", healthy=False)
+        ])
+        service = UploadService(
+            database=self.mock_db,
+            redis_client=self.mock_redis,
+            authorization_service=self.mock_authz,
+            storage_registry=registry
+        )
+        self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.side_effect = [
+            [],
+            [{'max_version': None}]
+        ]
+
+        success, upload_plan, error_code = service.handle_init_upload(
+            user_id=self.user_id,
+            global_role='USER',
+            room_id=self.room_id,
+            file_info=self.file_info
+        )
+
+        self.assertFalse(success)
+        self.assertIsNone(upload_plan)
+        self.assertEqual(error_code, "STORAGE_NODE_UNAVAILABLE")
+        self.mock_db.execute_update.assert_not_called()
+
+    def test_init_upload_dedup_reuses_healthy_existing_node(self):
+        """Test dedup reuses the healthy node that already owns the hash."""
+        registry = FakeStorageRegistry([
+            FakeStorageNode("node-1", "node-1:9001", healthy=True),
+            FakeStorageNode("node-2", "node-2:9002", healthy=True),
+        ])
+        service = UploadService(
+            database=self.mock_db,
+            redis_client=self.mock_redis,
+            authorization_service=self.mock_authz,
+            storage_registry=registry
+        )
+        self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.side_effect = [
+            [{
+                'id': 'existing-file',
+                'stored_name': 'room-1/existing-file',
+                'room_id': 'room-1',
+                'original_name': 'test.txt',
+                'size_bytes': 1048576,
+                'storage_node_id': 'node-1'
+            }],
+            [{'max_version': 1}]
+        ]
+        self.mock_db.execute_update.return_value = 1
+
+        success, upload_plan, error_code = service.handle_init_upload(
+            user_id=self.user_id,
+            global_role='USER',
+            room_id=self.room_id,
+            file_info=self.file_info
+        )
+
+        self.assertTrue(success)
+        self.assertIsNone(error_code)
+        self.assertTrue(upload_plan['deduplicated'])
+        self.assertEqual(upload_plan['storageNodeId'], 'node-1')
+        self.assertEqual(upload_plan['storageAddress'], 'node-1:9001')
+        self.mock_redis.set_ticket.assert_not_called()
+
+    def test_init_upload_unhealthy_dedup_source_uploads_new_copy(self):
+        """Test unhealthy dedup source falls back to a normal upload."""
+        registry = FakeStorageRegistry([
+            FakeStorageNode("node-1", "node-1:9001", healthy=False),
+            FakeStorageNode("node-2", "node-2:9002", healthy=True),
+        ])
+        service = UploadService(
+            database=self.mock_db,
+            redis_client=self.mock_redis,
+            authorization_service=self.mock_authz,
+            storage_registry=registry,
+            ticket_secret="test-secret"
+        )
+        self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.side_effect = [
+            [{
+                'id': 'existing-file',
+                'stored_name': 'room-1/existing-file',
+                'room_id': 'room-1',
+                'original_name': 'test.txt',
+                'size_bytes': 1048576,
+                'storage_node_id': 'node-1'
+            }],
+            [{'max_version': 1}]
+        ]
+        self.mock_db.execute_update.return_value = 1
+
+        success, upload_plan, error_code = service.handle_init_upload(
+            user_id=self.user_id,
+            global_role='USER',
+            room_id=self.room_id,
+            file_info=self.file_info
+        )
+
+        self.assertTrue(success)
+        self.assertIsNone(error_code)
+        self.assertFalse(upload_plan['deduplicated'])
+        self.assertEqual(upload_plan['storageNodeId'], 'node-2')
+        self.assertIn('ticket', upload_plan)
     
     def test_handle_upload_complete_success(self):
         """Test UPLOAD_COMPLETE handler."""
@@ -364,6 +554,73 @@ class TestUploadService(unittest.TestCase):
         # Verify file was marked as DELETED
         call_args = self.mock_db.execute_update.call_args
         self.assertEqual(call_args[0][1][0], 'DELETED')
+
+    def test_handle_upload_complete_decrements_assigned_node(self):
+        """Test UPLOAD_COMPLETE decrements the assigned node active count."""
+        registry = FakeStorageRegistry([
+            FakeStorageNode("node-1", "node-1:9001", active_uploads=1)
+        ])
+        service = UploadService(
+            database=self.mock_db,
+            redis_client=self.mock_redis,
+            authorization_service=self.mock_authz,
+            storage_registry=registry
+        )
+        self.mock_db.execute_query.return_value = [{
+            'id': 'file-123',
+            'room_id': self.room_id,
+            'original_name': 'test.txt',
+            'uploader_id': self.user_id,
+            'sha256_whole': self.sha256_hash,
+            'storage_node_id': 'node-1'
+        }]
+        self.mock_db.execute_update.return_value = 1
+
+        success, error_code = service.handle_upload_complete(
+            file_id='file-123',
+            sha256_whole=self.sha256_hash,
+            stored_name='room-456/file-123',
+            final_size=1048576,
+            storage_node_id='node-1'
+        )
+
+        self.assertTrue(success)
+        self.assertIsNone(error_code)
+        self.assertEqual(registry.nodes['node-1'].active_uploads, 0)
+
+    def test_handle_upload_complete_rejects_reporting_node_mismatch(self):
+        """Test UPLOAD_COMPLETE rejects a node other than the assigned owner."""
+        registry = FakeStorageRegistry([
+            FakeStorageNode("node-1", "node-1:9001", active_uploads=1),
+            FakeStorageNode("node-2", "node-2:9002", active_uploads=1)
+        ])
+        service = UploadService(
+            database=self.mock_db,
+            redis_client=self.mock_redis,
+            authorization_service=self.mock_authz,
+            storage_registry=registry
+        )
+        self.mock_db.execute_query.return_value = [{
+            'id': 'file-123',
+            'room_id': self.room_id,
+            'original_name': 'test.txt',
+            'uploader_id': self.user_id,
+            'sha256_whole': self.sha256_hash,
+            'storage_node_id': 'node-1'
+        }]
+
+        success, error_code = service.handle_upload_complete(
+            file_id='file-123',
+            sha256_whole=self.sha256_hash,
+            stored_name='room-456/file-123',
+            final_size=1048576,
+            storage_node_id='node-2'
+        )
+
+        self.assertFalse(success)
+        self.assertEqual(error_code, "STORAGE_NODE_MISMATCH")
+        self.assertEqual(registry.nodes['node-1'].active_uploads, 0)
+        self.mock_db.execute_update.assert_not_called()
     
     def test_handle_upload_failed(self):
         """Test UPLOAD_FAILED handler."""

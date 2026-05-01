@@ -1,6 +1,9 @@
 package storagenode.test;
 
 import org.junit.*;
+import storagenode.antivirus.AntivirusScanner;
+import storagenode.antivirus.ClamAvClient;
+import storagenode.antivirus.NoOpAntivirusScanner;
 import storagenode.config.NodeConfig;
 import storagenode.crypto.HashUtil;
 import storagenode.crypto.RSAKeyExchange;
@@ -12,10 +15,14 @@ import storagenode.session.SessionManager;
 import storagenode.storage.DedupStore;
 import storagenode.storage.FileStore;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.SecureRandom;
@@ -344,19 +351,138 @@ public class StorageNodeIntegrationTest {
         }
     }
 
-    private UploadResult uploadWholeFile(String fileName, byte[] fileData) throws Exception {
+    @Test
+    public void antivirusCleanScanShouldAllowCommit() throws Exception {
+        byte[] fileData = randomBytes(64 * 1024);
+
+        try (FakeClamdServer clamd = FakeClamdServer.clean()) {
+            clamd.start();
+            try (TestHarness scanHarness = new TestHarness(true, "127.0.0.1", clamd.getPort(), 1000)) {
+                scanHarness.start();
+
+                UploadResult uploaded = uploadWholeFile(scanHarness, "clean-scan.bin", fileData);
+
+                assertTrue(scanHarness.fileStore.fileExists(uploaded.sha256Whole));
+                assertTrue(scanHarness.dedupStore.exists(uploaded.sha256Whole));
+                assertEquals(0, countFiles(scanHarness.quarantineDir));
+            }
+        }
+    }
+
+    @Test
+    public void antivirusInfectedScanShouldQuarantineAndRejectCommit() throws Exception {
+        byte[] fileData = "EICAR placeholder bytes".getBytes(StandardCharsets.UTF_8);
         String sessionId = UUID.randomUUID().toString();
         String fileId = UUID.randomUUID().toString();
         String sha256Whole = HashUtil.sha256(fileData);
-        int totalChunks = totalChunks(fileData.length);
 
-        try (TestClient client = harness.newClient()) {
-            Message openResp = openUpload(client, sessionId, fileId, fileName, fileData);
+        try (FakeClamdServer clamd = FakeClamdServer.infected("Eicar-Test-Signature")) {
+            clamd.start();
+            try (TestHarness scanHarness = new TestHarness(true, "127.0.0.1", clamd.getPort(), 1000)) {
+                scanHarness.start();
+
+                try (TestClient client = scanHarness.newClient()) {
+                    Message openResp = openUpload(scanHarness, client, sessionId, fileId, "infected.txt", fileData);
+                    assertEquals(MessageType.OPEN_UPLOAD_RESP, openResp.getType());
+
+                    Message ack = sendUploadChunk(client, sessionId, 0, fileData);
+                    assertEquals("OK", ack.getString("status"));
+
+                    Message finalizeResp = finalizeUpload(client, sessionId);
+                    assertEquals(MessageType.FINALIZE_RESP, finalizeResp.getType());
+                    assertEquals("VIRUS_DETECTED", finalizeResp.getString("status"));
+                    assertEquals("INFECTED", finalizeResp.getString("scanStatus"));
+                    assertEquals("Eicar-Test-Signature", finalizeResp.getString("threatName"));
+                }
+
+                assertFalse(scanHarness.fileStore.fileExists(sha256Whole));
+                assertFalse(scanHarness.dedupStore.exists(sha256Whole));
+                assertEquals(2, countFiles(scanHarness.quarantineDir));
+                assertFalse(Files.exists(scanHarness.tempDir.resolve(sessionId)));
+            }
+        }
+    }
+
+    @Test
+    public void antivirusUnavailableShouldRejectCommitFailClosed() throws Exception {
+        byte[] fileData = randomBytes(32 * 1024);
+        String sessionId = UUID.randomUUID().toString();
+        String fileId = UUID.randomUUID().toString();
+        String sha256Whole = HashUtil.sha256(fileData);
+        int unusedPort = pickFreePortForTest();
+
+        try (TestHarness scanHarness = new TestHarness(true, "127.0.0.1", unusedPort, 300)) {
+            scanHarness.start();
+
+            try (TestClient client = scanHarness.newClient()) {
+                Message openResp = openUpload(scanHarness, client, sessionId, fileId, "clamd-down.bin", fileData);
+                assertEquals(MessageType.OPEN_UPLOAD_RESP, openResp.getType());
+
+                Message ack = sendUploadChunk(client, sessionId, 0, fileData);
+                assertEquals("OK", ack.getString("status"));
+
+                Message finalizeResp = finalizeUpload(client, sessionId);
+                assertEquals(MessageType.FINALIZE_RESP, finalizeResp.getType());
+                assertEquals("SCAN_UNAVAILABLE", finalizeResp.getString("status"));
+                assertEquals("UNAVAILABLE", finalizeResp.getString("scanStatus"));
+            }
+
+            assertFalse(scanHarness.fileStore.fileExists(sha256Whole));
+            assertFalse(scanHarness.dedupStore.exists(sha256Whole));
+            assertEquals(0, countFiles(scanHarness.quarantineDir));
+            assertFalse(Files.exists(scanHarness.tempDir.resolve(sessionId)));
+        }
+    }
+
+    @Test
+    public void antivirusTimeoutShouldRejectCommitFailClosed() throws Exception {
+        byte[] fileData = randomBytes(32 * 1024);
+        String sessionId = UUID.randomUUID().toString();
+        String fileId = UUID.randomUUID().toString();
+        String sha256Whole = HashUtil.sha256(fileData);
+
+        try (FakeClamdServer clamd = FakeClamdServer.timeout(1000)) {
+            clamd.start();
+            try (TestHarness scanHarness = new TestHarness(true, "127.0.0.1", clamd.getPort(), 150)) {
+                scanHarness.start();
+
+                try (TestClient client = scanHarness.newClient()) {
+                    Message openResp = openUpload(scanHarness, client, sessionId, fileId, "clamd-timeout.bin", fileData);
+                    assertEquals(MessageType.OPEN_UPLOAD_RESP, openResp.getType());
+
+                    Message ack = sendUploadChunk(client, sessionId, 0, fileData);
+                    assertEquals("OK", ack.getString("status"));
+
+                    Message finalizeResp = finalizeUpload(client, sessionId);
+                    assertEquals(MessageType.FINALIZE_RESP, finalizeResp.getType());
+                    assertEquals("SCAN_TIMEOUT", finalizeResp.getString("status"));
+                    assertEquals("TIMEOUT", finalizeResp.getString("scanStatus"));
+                }
+
+                assertFalse(scanHarness.fileStore.fileExists(sha256Whole));
+                assertFalse(scanHarness.dedupStore.exists(sha256Whole));
+                assertEquals(0, countFiles(scanHarness.quarantineDir));
+            }
+        }
+    }
+
+    private UploadResult uploadWholeFile(String fileName, byte[] fileData) throws Exception {
+        return uploadWholeFile(harness, fileName, fileData);
+    }
+
+    private UploadResult uploadWholeFile(TestHarness targetHarness, String fileName, byte[] fileData) throws Exception {
+        String sessionId = UUID.randomUUID().toString();
+        String fileId = UUID.randomUUID().toString();
+        String sha256Whole = HashUtil.sha256(fileData);
+        int totalChunks = totalChunks(fileData.length, targetHarness);
+
+        try (TestClient client = targetHarness.newClient()) {
+            Message openResp = openUpload(targetHarness, client, sessionId, fileId, fileName, fileData);
             assertEquals(MessageType.OPEN_UPLOAD_RESP, openResp.getType());
             assertFalse(openResp.getBool("dedup"));
 
             for (int i = 0; i < totalChunks; i++) {
-                byte[] chunk = extractChunk(fileData, i, harness.chunkSize);
+                byte[] chunk = extractChunk(fileData, i, targetHarness.chunkSize);
                 Message ack = sendUploadChunk(client, sessionId, i, chunk);
                 assertEquals("OK", ack.getString("status"));
             }
@@ -369,6 +495,11 @@ public class StorageNodeIntegrationTest {
     }
 
     private Message openUpload(TestClient client, String sessionId, String fileId, String fileName, byte[] fileData) throws Exception {
+        return openUpload(harness, client, sessionId, fileId, fileName, fileData);
+    }
+
+    private Message openUpload(TestHarness targetHarness, TestClient client, String sessionId,
+                               String fileId, String fileName, byte[] fileData) throws Exception {
         long expiry = client.ticketExpiry(3600);
         String sig = client.generateTicketSignature(sessionId, fileId, expiry);
 
@@ -378,9 +509,9 @@ public class StorageNodeIntegrationTest {
                 .set("fileName", fileName)
                 .set("sha256Whole", HashUtil.sha256(fileData))
                 .set("fileSize", fileData.length)
-                .set("totalChunks", totalChunks(fileData.length))
+                .set("totalChunks", totalChunks(fileData.length, targetHarness))
                 .set("uploaderId", "uploader-test")
-                .set("ticketNodeId", harness.nodeId)
+                .set("ticketNodeId", targetHarness.nodeId)
                 .set("ticketExpiry", expiry)
                 .set("ticketSignature", sig);
 
@@ -416,10 +547,31 @@ public class StorageNodeIntegrationTest {
         return (int) Math.ceil((double) fileSize / harness.chunkSize);
     }
 
+    private static int totalChunks(int fileSize, TestHarness targetHarness) {
+        return (int) Math.ceil((double) fileSize / targetHarness.chunkSize);
+    }
+
     private static byte[] randomBytes(int size) {
         byte[] data = new byte[size];
         RNG.nextBytes(data);
         return data;
+    }
+
+    private static int pickFreePortForTest() throws IOException {
+        try (ServerSocket socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
+    private static int countFiles(Path dir) throws IOException {
+        if (dir == null || !Files.exists(dir)) return 0;
+        int count = 0;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
+            for (Path ignored : stream) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static List<Integer> toIntList(List<Double> raw) {
@@ -441,6 +593,114 @@ public class StorageNodeIntegrationTest {
         }
     }
 
+    private static class FakeClamdServer implements AutoCloseable {
+
+        private enum Mode {
+            CLEAN,
+            INFECTED,
+            TIMEOUT
+        }
+
+        private final Mode mode;
+        private final String threatName;
+        private final long delayMs;
+
+        private ServerSocket serverSocket;
+        private Thread thread;
+        private volatile boolean running;
+
+        private FakeClamdServer(Mode mode, String threatName, long delayMs) {
+            this.mode = mode;
+            this.threatName = threatName;
+            this.delayMs = delayMs;
+        }
+
+        static FakeClamdServer clean() {
+            return new FakeClamdServer(Mode.CLEAN, null, 0L);
+        }
+
+        static FakeClamdServer infected(String threatName) {
+            return new FakeClamdServer(Mode.INFECTED, threatName, 0L);
+        }
+
+        static FakeClamdServer timeout(long delayMs) {
+            return new FakeClamdServer(Mode.TIMEOUT, null, delayMs);
+        }
+
+        void start() throws IOException {
+            serverSocket = new ServerSocket(0);
+            running = true;
+            thread = new Thread(this::serveLoop, "fake-clamd");
+            thread.setDaemon(true);
+            thread.start();
+        }
+
+        int getPort() {
+            return serverSocket.getLocalPort();
+        }
+
+        private void serveLoop() {
+            while (running) {
+                try (Socket socket = serverSocket.accept()) {
+                    handle(socket);
+                } catch (IOException e) {
+                    if (running) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }
+
+        private void handle(Socket socket) throws IOException {
+            String command = readCommand(socket.getInputStream());
+            String path = command.startsWith("zSCAN ")
+                    ? command.substring("zSCAN ".length())
+                    : "stream";
+
+            if (mode == Mode.TIMEOUT) {
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return;
+            }
+
+            String response;
+            if (mode == Mode.INFECTED) {
+                response = path + ": " + threatName + " FOUND\0";
+            } else {
+                response = path + ": OK\0";
+            }
+
+            socket.getOutputStream().write(response.getBytes(StandardCharsets.UTF_8));
+            socket.getOutputStream().flush();
+        }
+
+        private static String readCommand(InputStream in) throws IOException {
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            int b;
+            while ((b = in.read()) != -1) {
+                if (b == 0 || b == '\n') {
+                    break;
+                }
+                buffer.write(b);
+            }
+            return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public void close() throws Exception {
+            running = false;
+            if (serverSocket != null) {
+                serverSocket.close();
+            }
+            if (thread != null) {
+                thread.join(TimeUnit.SECONDS.toMillis(2));
+            }
+        }
+    }
+
     private static class TestHarness implements AutoCloseable {
 
         private final String nodeId = "node-test";
@@ -452,9 +712,28 @@ public class StorageNodeIntegrationTest {
         private Path dataDir;
         private Path tempDir;
         private Path metaDir;
+        private Path quarantineDir;
         private int port;
+        private FileStore fileStore;
+        private DedupStore dedupStore;
         private StorageServer server;
         private Thread serverThread;
+        private final boolean antivirusEnabled;
+        private final String antivirusHost;
+        private final int antivirusPort;
+        private final int antivirusTimeoutMs;
+
+        private TestHarness() {
+            this(false, "127.0.0.1", 3310, 30000);
+        }
+
+        private TestHarness(boolean antivirusEnabled, String antivirusHost,
+                            int antivirusPort, int antivirusTimeoutMs) {
+            this.antivirusEnabled = antivirusEnabled;
+            this.antivirusHost = antivirusHost;
+            this.antivirusPort = antivirusPort;
+            this.antivirusTimeoutMs = antivirusTimeoutMs;
+        }
 
         void start() throws Exception {
             Logger rootLogger = Logger.getLogger("");
@@ -467,11 +746,13 @@ public class StorageNodeIntegrationTest {
             dataDir = rootDir.resolve("data").resolve("store");
             tempDir = rootDir.resolve("data").resolve("temp");
             metaDir = rootDir.resolve("data").resolve("meta");
+            quarantineDir = rootDir.resolve("data").resolve("quarantine");
             Path logDir = rootDir.resolve("logs");
 
             Files.createDirectories(dataDir);
             Files.createDirectories(tempDir);
             Files.createDirectories(metaDir);
+            Files.createDirectories(quarantineDir);
             Files.createDirectories(logDir);
 
             port = pickFreePort();
@@ -479,18 +760,32 @@ public class StorageNodeIntegrationTest {
             writeConfig(propsFile, logDir);
 
             NodeConfig config = new NodeConfig(propsFile.toString());
-            FileStore fileStore = new FileStore(config.getDataDir(), config.getTempDir(), config.getChunkSize());
-            DedupStore dedupStore = new DedupStore(config.getMetaDir());
+            fileStore = new FileStore(
+                    config.getDataDir(),
+                    config.getTempDir(),
+                    config.getQuarantineDir(),
+                    config.getChunkSize()
+            );
+            dedupStore = new DedupStore(config.getMetaDir());
             SessionManager sessionManager = new SessionManager(fileStore, 60, 30);
             RSAKeyExchange rsaKeyExchange = new RSAKeyExchange(config.getRsaKeySize());
             CoordinatorClient coordinator = new CoordinatorClient(
                     config.getTicketSecret(),
                     config.getNodeId(),
                     config.getCoordinatorHost(),
-                    config.getCoordinatorPort()
+                    config.getCoordinatorPort(),
+                    config.getAdvertisedHost(),
+                    config.getAdvertisedPort(),
+                    config.getStorageAddress()
             );
+            AntivirusScanner antivirusScanner = antivirusEnabled
+                    ? new ClamAvClient(antivirusHost, antivirusPort, antivirusTimeoutMs)
+                    : new NoOpAntivirusScanner();
 
-            server = new StorageServer(config, sessionManager, fileStore, dedupStore, coordinator, rsaKeyExchange);
+            server = new StorageServer(
+                    config, sessionManager, fileStore, dedupStore,
+                    coordinator, rsaKeyExchange, antivirusScanner
+            );
             serverThread = new Thread(() -> {
                 try {
                     server.start();
@@ -536,10 +831,19 @@ public class StorageNodeIntegrationTest {
             props.setProperty("node.port", String.valueOf(port));
             props.setProperty("node.host", host);
             props.setProperty("node.id", nodeId);
+            props.setProperty("node.advertised.host", host);
+            props.setProperty("node.advertised.port", String.valueOf(port));
+            props.setProperty("node.storage.address", host + ":" + port);
 
             props.setProperty("storage.data.dir", dataDir.toString());
             props.setProperty("storage.temp.dir", tempDir.toString());
             props.setProperty("storage.meta.dir", metaDir.toString());
+            props.setProperty("antivirus.enabled", String.valueOf(antivirusEnabled));
+            props.setProperty("antivirus.host", antivirusHost);
+            props.setProperty("antivirus.port", String.valueOf(antivirusPort));
+            props.setProperty("antivirus.timeout.ms", String.valueOf(antivirusTimeoutMs));
+            props.setProperty("antivirus.quarantine.dir", quarantineDir.toString());
+            props.setProperty("antivirus.fail.closed", "true");
 
             props.setProperty("chunk.size", String.valueOf(chunkSize));
             props.setProperty("coordinator.host", host);

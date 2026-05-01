@@ -1,5 +1,8 @@
 package storagenode.network;
 
+import storagenode.antivirus.AntivirusScanner;
+import storagenode.antivirus.ScanResult;
+import storagenode.antivirus.ScanStatus;
 import storagenode.crypto.AESCrypto;
 import storagenode.crypto.HashUtil;
 import storagenode.crypto.RSAKeyExchange;
@@ -38,6 +41,8 @@ public class ClientHandler implements Runnable {
     private final CoordinatorClient coordinator;
     private final RSAKeyExchange rsaKeyExchange;
     private final int chunkSize;
+    private final AntivirusScanner antivirusScanner;
+    private final boolean antivirusFailClosed;
 
     private InputStream in;
     private OutputStream out;
@@ -47,7 +52,8 @@ public class ClientHandler implements Runnable {
     public ClientHandler(Socket socket, SessionManager sessionManager,
                          FileStore fileStore, DedupStore dedupStore,
                          CoordinatorClient coordinator, RSAKeyExchange rsaKeyExchange,
-                         int chunkSize) {
+                         int chunkSize, AntivirusScanner antivirusScanner,
+                         boolean antivirusFailClosed) {
         this.socket = socket;
         this.sessionManager = sessionManager;
         this.fileStore = fileStore;
@@ -55,6 +61,8 @@ public class ClientHandler implements Runnable {
         this.coordinator = coordinator;
         this.rsaKeyExchange = rsaKeyExchange;
         this.chunkSize = chunkSize;
+        this.antivirusScanner = antivirusScanner;
+        this.antivirusFailClosed = antivirusFailClosed;
     }
 
     @Override
@@ -348,12 +356,38 @@ public class ClientHandler implements Runnable {
 
         session.setStatus(UploadSession.Status.FINALIZING);
 
+        Path assembledPath;
         Path storedPath;
+        ScanResult scanResult = null;
         try {
-            // Assemble file and verify hash
-            storedPath = fileStore.assembleAndStore(
-                sessionId, session.getTotalChunks(), session.getSha256Whole()
-            );
+            // Assemble file, verify hash, scan, then commit to permanent storage.
+            assembledPath = fileStore.assembleTempFile(sessionId, session.getTotalChunks());
+            if (!fileStore.verifyAssembledHash(assembledPath, session.getSha256Whole(), sessionId)) {
+                session.setStatus(UploadSession.Status.FAILED);
+                Message resp = new Message(MessageType.FINALIZE_RESP)
+                        .set("sessionId", sessionId)
+                        .set("status", "HASH_MISMATCH")
+                        .set("message", "Whole-file hash verification failed");
+                send(resp);
+                coordinator.notifyUploadFailed(session.getFileId(), "Hash mismatch after assembly");
+                return;
+            }
+
+            scanResult = antivirusScanner.scan(assembledPath);
+            if (!scanResult.isClean() &&
+                    (scanResult.getStatus() == ScanStatus.INFECTED || antivirusFailClosed)) {
+                handleScanRejectedUpload(session, assembledPath, scanResult);
+                return;
+            }
+
+            if (!scanResult.isClean()) {
+                LOG.warning("Antivirus scan failed open for session=" + sessionId +
+                        " status=" + scanResult.getStatus() +
+                        " message=" + scanResult.getMessage());
+            }
+
+            storedPath = fileStore.commitAssembledFile(assembledPath, session.getSha256Whole());
+            fileStore.cleanSessionDir(sessionId);
         } catch (IOException e) {
             session.setStatus(UploadSession.Status.FAILED);
             Message resp = new Message(MessageType.FINALIZE_RESP)
@@ -363,18 +397,6 @@ public class ClientHandler implements Runnable {
             send(resp);
             coordinator.notifyUploadFailed(session.getFileId(), "Finalize I/O error: " + e.getMessage());
             LOG.warning("Finalize I/O error for session " + sessionId + ": " + e.getMessage());
-            return;
-        }
-
-        if (storedPath == null) {
-            // Hash mismatch
-            session.setStatus(UploadSession.Status.FAILED);
-            Message resp = new Message(MessageType.FINALIZE_RESP)
-                    .set("sessionId", sessionId)
-                    .set("status", "HASH_MISMATCH")
-                    .set("message", "Whole-file hash verification failed");
-            send(resp);
-            coordinator.notifyUploadFailed(session.getFileId(), "Hash mismatch after assembly");
             return;
         }
 
@@ -395,6 +417,7 @@ public class ClientHandler implements Runnable {
                 .set("sha256Whole", session.getSha256Whole())
                 .set("storedPath", storedPath.toString())
                 .set("message", "File stored successfully");
+        addScanFields(resp, scanResult);
         send(resp);
 
         LOG.info("Upload finalized: session=" + sessionId +
@@ -510,6 +533,77 @@ public class ClientHandler implements Runnable {
                 .set("sha256Whole", sha256)
                 .set("exists", exists);
         send(resp);
+    }
+
+    private void handleScanRejectedUpload(UploadSession session, Path assembledPath,
+                                          ScanResult scanResult) throws IOException {
+        session.setStatus(UploadSession.Status.FAILED);
+
+        String sessionId = session.getSessionId();
+        String status = finalizeStatusForScan(scanResult.getStatus());
+        String message = finalizeMessageForScan(scanResult);
+
+        if (scanResult.getStatus() == ScanStatus.INFECTED) {
+            try {
+                Path quarantinePath = fileStore.quarantineFile(session, assembledPath, scanResult);
+                LOG.warning("Infected upload quarantined: session=" + sessionId +
+                        " path=" + quarantinePath);
+            } catch (IOException e) {
+                LOG.warning("Failed to quarantine infected upload session=" + sessionId +
+                        ": " + e.getMessage());
+            }
+        }
+
+        try {
+            fileStore.cleanSessionDir(sessionId);
+        } catch (IOException e) {
+            LOG.warning("Failed to clean rejected upload session=" + sessionId + ": " + e.getMessage());
+        }
+
+        sessionManager.removeUploadSession(sessionId);
+        coordinator.notifyUploadFailed(session.getFileId(), message);
+
+        Message resp = new Message(MessageType.FINALIZE_RESP)
+                .set("sessionId", sessionId)
+                .set("status", status)
+                .set("message", message);
+        addScanFields(resp, scanResult);
+        send(resp);
+    }
+
+    private static String finalizeStatusForScan(ScanStatus scanStatus) {
+        switch (scanStatus) {
+            case INFECTED:
+                return "VIRUS_DETECTED";
+            case TIMEOUT:
+                return "SCAN_TIMEOUT";
+            case UNAVAILABLE:
+                return "SCAN_UNAVAILABLE";
+            default:
+                return "SCAN_ERROR";
+        }
+    }
+
+    private static String finalizeMessageForScan(ScanResult scanResult) {
+        if (scanResult.getStatus() == ScanStatus.INFECTED) {
+            return "Virus detected: " + scanResult.getThreatName();
+        }
+        if (scanResult.getMessage() != null && !scanResult.getMessage().isEmpty()) {
+            return "Antivirus scan failed: " + scanResult.getMessage();
+        }
+        return "Antivirus scan failed: " + scanResult.getStatus();
+    }
+
+    private void addScanFields(Message msg, ScanResult scanResult) {
+        if (scanResult == null || scanResult.getStatus() == ScanStatus.DISABLED) {
+            return;
+        }
+        msg.set("scanStatus", scanResult.getStatus().name())
+                .set("scanner", scanResult.getScanner())
+                .set("scanDurationMs", scanResult.getDurationMs());
+        if (scanResult.getThreatName() != null) {
+            msg.set("threatName", scanResult.getThreatName());
+        }
     }
 
     // ═══════════════════════ HELPERS ═══════════════════════

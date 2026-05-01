@@ -304,6 +304,14 @@ docker-compose logs storage-node-1 | grep "Connected"
 docker-compose logs storage-node-2 | grep "Connected"
 ```
 
+Coordinator picks an upload target from healthy authenticated nodes using
+least active uploads. To add another node, copy the `storage-node-2` pattern:
+create a unique data volume, logs volume, ClamAV database volume, one
+`clamd-storage-node-N` sidecar that mounts that node data volume at
+`/app/data:ro`, then set unique `NODE_ID`, `NODE_PORT`,
+`NODE_ADVERTISED_HOST`, `NODE_ADVERTISED_PORT`, `NODE_STORAGE_ADDRESS`, and
+`ANTIVIRUS_HOST` environment values on the storage node service.
+
 ### Custom Configuration
 
 **Override coordinator config:**

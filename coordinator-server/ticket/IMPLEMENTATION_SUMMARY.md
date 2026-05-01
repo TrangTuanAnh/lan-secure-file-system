@@ -104,7 +104,7 @@ Error Response:
 ### Upload Flow
 
 1. **INIT_UPLOAD** (Client → Coordinator)
-   - Upload service validates permissions and scan report
+   - Upload service validates permissions and file metadata
    - Calls `ticket_service.generate_upload_ticket()`
    - Returns UPLOAD_PLAN with ticket to client
 

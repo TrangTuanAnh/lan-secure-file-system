@@ -12,16 +12,18 @@ logger = get_logger(__name__)
 class CleanupService:
     """Service for cleaning up orphaned upload sessions."""
     
-    def __init__(self, db: Database, interval_seconds: int = 600):
+    def __init__(self, db: Database, interval_seconds: int = 600, storage_registry=None):
         """
         Initialize cleanup service.
         
         Args:
             db: Database instance
             interval_seconds: Cleanup interval in seconds (default: 600 = 10 minutes)
+            storage_registry: Optional Storage Node registry for active upload counts
         """
         self.db = db
         self.interval_seconds = interval_seconds
+        self.storage_registry = storage_registry
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._running = False
@@ -78,7 +80,7 @@ class CleanupService:
                 SET status = 'DELETED'
                 WHERE status = 'UPLOADING'
                   AND created_at < NOW() - INTERVAL '1 hour'
-                RETURNING id
+                RETURNING id, storage_node_id
             """
             
             with self.db.get_cursor() as cursor:
@@ -91,6 +93,11 @@ class CleanupService:
                 # Log file IDs for debugging
                 file_ids = [str(record['id']) for record in cleaned_records]
                 logger.debug(f"Cleaned file IDs: {file_ids}")
+                if self.storage_registry:
+                    for record in cleaned_records:
+                        node_id = record.get('storage_node_id')
+                        if node_id:
+                            self.storage_registry.mark_upload_finished(node_id)
             else:
                 logger.debug("No orphaned uploads found")
             

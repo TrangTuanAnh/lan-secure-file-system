@@ -2,13 +2,13 @@
 
 ## Overview
 
-The upload control module manages the file upload control plane for the Coordinator Server. It handles upload initialization, scan report validation, deduplication checking, and upload completion/failure notifications from Storage Nodes.
+The upload control module manages the file upload control plane for the Coordinator Server. It handles upload initialization, deduplication checking, and upload completion/failure notifications from Storage Nodes. Antivirus enforcement now happens only inside Storage Node during finalize, before the object is committed to storage.
 
 ## Components Implemented
 
-### 1. Scan Report Validator (`scan_validator.py`)
+### 1. Legacy Scan Report Validator (`scan_validator.py`)
 
-**Purpose**: Validates antivirus scan reports before authorizing uploads.
+**Purpose**: Legacy helper for old client-side scan reports. It is no longer wired into INIT_UPLOAD authorization; Storage Node performs the authoritative scan.
 
 **Key Features**:
 - Verifies scan result equals 'CLEAN'
@@ -37,13 +37,11 @@ The upload control module manages the file upload control plane for the Coordina
 
 #### INIT_UPLOAD Handler
 - Verifies user has ADMIN, OWNER, or MEMBER role in room
-- Validates scan report using ScanValidator
 - Checks for deduplication using DeduplicationChecker
 - **If deduplicated**: Creates file record with status='READY', returns deduplicated=true
 - **If not deduplicated**: 
   - Calculates totalChunks (ceiling of fileSize / chunkSize)
   - Inserts file record with status='UPLOADING'
-  - Inserts scan_report record
   - Generates upload ticket with 30-minute expiration
   - Stores ticket metadata in Redis
   - Returns UPLOAD_PLAN with ticket, storageAddress, chunkSize, totalChunks
@@ -88,8 +86,6 @@ Client → INIT_UPLOAD → Coordinator
   ↓
 Check Permissions (ADMIN/OWNER/MEMBER)
   ↓
-Validate Scan Report
-  ↓
 Check Deduplication
   ↓
 If Deduplicated:
@@ -98,7 +94,6 @@ If Deduplicated:
   
 If Not Deduplicated:
   - Create file record (status=UPLOADING)
-  - Insert scan report
   - Generate ticket
   - Store ticket in Redis
   - Return UPLOAD_PLAN (ticket, storageAddress, etc.)
@@ -144,7 +139,7 @@ Return ACK → Storage Node
 - **SELECT**: Queries for deduplication and version calculation
 
 ### Scan Reports Table
-- **INSERT**: Stores scan report metadata for each upload
+- Legacy table; INIT_UPLOAD no longer inserts client-side scan report metadata.
 
 ### Audit Logs Table
 - **INSERT**: Records upload actions with SUCCESS or FAILED status
@@ -161,9 +156,6 @@ Return ACK → Storage Node
 ### Error Codes Returned
 - `PERMISSION_DENIED`: User lacks upload permission in room
 - `INVALID_INPUT`: Missing or invalid file information
-- `SCAN_FAILED`: Scan result is not CLEAN
-- `SCAN_HASH_MISMATCH`: Scan report hash doesn't match file hash
-- `SCAN_EXPIRED`: Scan report older than 10 minutes
 - `FILE_NOT_FOUND`: File record not found in database
 - `HASH_MISMATCH`: Assembled file hash doesn't match expected value
 - `DATABASE_ERROR`: Database operation failed
@@ -175,7 +167,7 @@ Return ACK → Storage Node
 - **100% pass rate**
 
 ### Test Categories
-1. **Scan Validator Tests** (7 tests)
+1. **Legacy Scan Validator Tests**
    - Success case
    - INFECTED result
    - Hash mismatch

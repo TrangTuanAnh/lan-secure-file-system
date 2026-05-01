@@ -42,14 +42,13 @@ class UploadHandlers:
         # Extract required fields
         room_id = payload.get('roomId')
         file_info = payload.get('fileInfo')
-        scan_report = payload.get('scanReport')
-        storage_address = payload.get('storageAddress', 'localhost:9000')
+        storage_address = payload.get('storageAddress')
         
         # Validate required fields
-        if not room_id or not file_info or not scan_report:
+        if not room_id or not file_info:
             return Message.create_error(
                 "INVALID_INPUT",
-                "roomId, fileInfo, and scanReport are required",
+                "roomId and fileInfo are required",
                 request_id=message.request_id
             )
         
@@ -59,7 +58,6 @@ class UploadHandlers:
             global_role=global_role,
             room_id=room_id,
             file_info=file_info,
-            scan_report=scan_report,
             storage_address=storage_address
         )
         
@@ -67,9 +65,7 @@ class UploadHandlers:
             error_messages = {
                 "PERMISSION_DENIED": "You do not have permission to upload files to this room",
                 "INVALID_INPUT": "Invalid file information provided",
-                "SCAN_FAILED": "File scan result is not clean",
-                "SCAN_HASH_MISMATCH": "Scan report hash does not match file hash",
-                "SCAN_EXPIRED": "Scan report is older than 10 minutes",
+                "STORAGE_NODE_UNAVAILABLE": "No healthy storage node is available",
                 "DATABASE_ERROR": "Database error occurred"
             }
             return Message.create_error(
@@ -105,6 +101,7 @@ class UploadHandlers:
         sha256_whole = payload.get('sha256Whole')
         stored_name = payload.get('storedName')
         final_size = payload.get('finalSize')
+        storage_node_id = payload.get('storageNodeId')
         
         # Validate required fields
         if not all([file_id, sha256_whole, stored_name, final_size is not None]):
@@ -119,13 +116,15 @@ class UploadHandlers:
             file_id=file_id,
             sha256_whole=sha256_whole,
             stored_name=stored_name,
-            final_size=final_size
+            final_size=final_size,
+            storage_node_id=storage_node_id
         )
         
         if not success:
             error_messages = {
                 "FILE_NOT_FOUND": "File not found",
                 "HASH_MISMATCH": "File hash does not match expected value",
+                "STORAGE_NODE_MISMATCH": "Storage node does not match the file assignment",
                 "DATABASE_ERROR": "Database error occurred"
             }
             return Message.create_error(
@@ -159,6 +158,7 @@ class UploadHandlers:
         # Extract required fields
         file_id = payload.get('fileId')
         reason = payload.get('reason', 'unknown')
+        storage_node_id = payload.get('storageNodeId')
         
         # Validate required fields
         if not file_id:
@@ -171,12 +171,14 @@ class UploadHandlers:
         # Call upload service
         success, error_code = self.upload_service.handle_upload_failed(
             file_id=file_id,
-            reason=reason
+            reason=reason,
+            storage_node_id=storage_node_id
         )
         
         if not success:
             error_messages = {
                 "FILE_NOT_FOUND": "File not found",
+                "STORAGE_NODE_MISMATCH": "Storage node does not match the file assignment",
                 "DATABASE_ERROR": "Database error occurred"
             }
             return Message.create_error(

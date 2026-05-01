@@ -1,5 +1,8 @@
 package storagenode;
 
+import storagenode.antivirus.AntivirusScanner;
+import storagenode.antivirus.ClamAvClient;
+import storagenode.antivirus.NoOpAntivirusScanner;
 import storagenode.config.NodeConfig;
 import storagenode.crypto.RSAKeyExchange;
 import storagenode.monitor.StorageMonitor;
@@ -48,9 +51,25 @@ public class StorageNodeMain {
             // 3. Initialize storage
             LOG.info("Initializing storage directories...");
             FileStore fileStore = new FileStore(
-                config.getDataDir(), config.getTempDir(), config.getChunkSize()
+                config.getDataDir(), config.getTempDir(), config.getQuarantineDir(), config.getChunkSize()
             );
             DedupStore dedupStore = new DedupStore(config.getMetaDir());
+
+            AntivirusScanner antivirusScanner;
+            if (config.isAntivirusEnabled()) {
+                antivirusScanner = new ClamAvClient(
+                    config.getAntivirusHost(),
+                    config.getAntivirusPort(),
+                    config.getAntivirusTimeoutMs()
+                );
+                LOG.info("Antivirus enabled: clamd at " + config.getAntivirusHost() +
+                        ":" + config.getAntivirusPort() +
+                        ", timeout=" + config.getAntivirusTimeoutMs() + "ms" +
+                        ", failClosed=" + config.isAntivirusFailClosed());
+            } else {
+                antivirusScanner = new NoOpAntivirusScanner();
+                LOG.warning("Antivirus scanning is disabled");
+            }
 
             // 4. Initialize session manager
             SessionManager sessionManager = new SessionManager(
@@ -70,7 +89,9 @@ public class StorageNodeMain {
             // 7. Initialize coordinator client
             CoordinatorClient coordinator = new CoordinatorClient(
                 config.getTicketSecret(), config.getNodeId(),
-                config.getCoordinatorHost(), config.getCoordinatorPort()
+                config.getCoordinatorHost(), config.getCoordinatorPort(),
+                config.getAdvertisedHost(), config.getAdvertisedPort(),
+                config.getStorageAddress()
             );
             
             // Connect to Coordinator control plane
@@ -91,7 +112,7 @@ public class StorageNodeMain {
 
             // 9. Shutdown hook
             StorageServer server = new StorageServer(
-                config, sessionManager, fileStore, dedupStore, coordinator, rsaKeyExchange
+                config, sessionManager, fileStore, dedupStore, coordinator, rsaKeyExchange, antivirusScanner
             );
 
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {

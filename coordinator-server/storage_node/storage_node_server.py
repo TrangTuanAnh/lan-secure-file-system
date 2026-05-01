@@ -1,51 +1,17 @@
 """Storage Node socket server for persistent connections."""
-import os
 import time
 import threading
-from typing import Dict, Optional, Any
+from typing import Optional
 from datetime import datetime, timezone
 from protocol.socket_server import BaseSocketServer, SocketConnection
 from protocol.message import Message
 from protocol.message_types import MessageType
 from ticket.ticket_service import TicketService
 from upload.upload_service import UploadService
+from storage_node.registry import StorageNodeInfo, StorageNodeRegistry
 from logging_config import get_logger
 
 logger = get_logger(__name__)
-
-
-class StorageNodeInfo:
-    """Information about a connected Storage Node."""
-    
-    def __init__(self, connection: SocketConnection, node_id: str):
-        """
-        Initialize Storage Node info.
-        
-        Args:
-            connection: Socket connection
-            node_id: Unique identifier for the node
-        """
-        self.connection = connection
-        self.node_id = node_id
-        self.last_ping_time = time.time()
-        self.authenticated = False
-        self.connected_at = datetime.now(timezone.utc)
-    
-    def update_ping_time(self) -> None:
-        """Update the last ping timestamp."""
-        self.last_ping_time = time.time()
-    
-    def is_healthy(self, timeout_seconds: int) -> bool:
-        """
-        Check if node is healthy based on last ping time.
-        
-        Args:
-            timeout_seconds: Timeout threshold in seconds
-        
-        Returns:
-            True if node has sent PING within timeout period
-        """
-        return (time.time() - self.last_ping_time) < timeout_seconds
 
 
 class StorageNodeServer(BaseSocketServer):
@@ -68,7 +34,8 @@ class StorageNodeServer(BaseSocketServer):
         shared_secret: str,
         ticket_service: TicketService,
         upload_service: UploadService,
-        timeout_seconds: int = 90
+        timeout_seconds: int = 90,
+        registry: Optional[StorageNodeRegistry] = None
     ):
         """
         Initialize Storage Node server.
@@ -80,6 +47,7 @@ class StorageNodeServer(BaseSocketServer):
             ticket_service: Ticket service for verification
             upload_service: Upload service for completion handling
             timeout_seconds: Timeout for marking nodes unavailable (default 90s)
+            registry: Shared storage node registry used for load balancing
         """
         super().__init__(host, port, name="StorageNodeServer")
         
@@ -87,10 +55,7 @@ class StorageNodeServer(BaseSocketServer):
         self.ticket_service = ticket_service
         self.upload_service = upload_service
         self.timeout_seconds = timeout_seconds
-        
-        # Track connected Storage Nodes
-        self._nodes: Dict[SocketConnection, StorageNodeInfo] = {}
-        self._nodes_lock = threading.Lock()
+        self.registry = registry or StorageNodeRegistry(timeout_seconds=timeout_seconds)
         
         # Health check thread
         self._health_check_thread: Optional[threading.Thread] = None
@@ -142,10 +107,7 @@ class StorageNodeServer(BaseSocketServer):
         Args:
             connection: Newly established connection
         """
-        # Create node info (not authenticated yet)
-        with self._nodes_lock:
-            node_info = StorageNodeInfo(connection, connection.connection_id)
-            self._nodes[connection] = node_info
+        self.registry.add_connection(connection)
         
         logger.info(f"Storage Node connection established: {connection.connection_id}")
     
@@ -156,8 +118,7 @@ class StorageNodeServer(BaseSocketServer):
         Args:
             connection: Closed connection
         """
-        with self._nodes_lock:
-            node_info = self._nodes.pop(connection, None)
+        node_info = self.registry.remove_connection(connection)
         
         if node_info:
             logger.info(
@@ -202,19 +163,48 @@ class StorageNodeServer(BaseSocketServer):
             connection.send_message(error_msg)
             return
         
-        # Mark node as authenticated
-        with self._nodes_lock:
-            node_info = self._nodes.get(connection)
-            if node_info:
-                node_info.authenticated = True
-                node_info.update_ping_time()
-        
-        logger.info(f"Storage Node authenticated: {connection.connection_id}")
+        node_id = message.payload.get('nodeId') or connection.connection_id
+        data_host = message.payload.get('dataHost')
+        data_port = message.payload.get('dataPort')
+        storage_address = message.payload.get('storageAddress')
+
+        if not data_host:
+            address = getattr(connection, 'address', None)
+            if address:
+                data_host = address[0]
+
+        if data_port is not None:
+            try:
+                data_port = int(data_port)
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"STORAGE_AUTH invalid dataPort from {connection.connection_id}: {data_port}"
+                )
+                error_msg = Message.create_error(
+                    "INVALID_DATA_PORT",
+                    "dataPort must be an integer",
+                    request_id=message.request_id
+                )
+                connection.send_message(error_msg)
+                return
+
+        node_info = self.registry.authenticate(
+            connection=connection,
+            node_id=node_id,
+            data_host=data_host,
+            data_port=data_port,
+            storage_address=storage_address
+        )
+
+        logger.info(
+            f"Storage Node authenticated: node_id={node_info.node_id}, "
+            f"storageAddress={node_info.storage_address}"
+        )
         
         # Send success response
         response = Message.create_response(
             MessageType.STORAGE_AUTH_RESPONSE,
-            {"status": "authenticated"},
+            {"status": "authenticated", "nodeId": node_info.node_id},
             request_id=message.request_id
         )
         connection.send_message(response)
@@ -233,21 +223,18 @@ class StorageNodeServer(BaseSocketServer):
             connection: Connection that sent the message
             message: PING message
         """
-        # Check if node is authenticated
-        with self._nodes_lock:
-            node_info = self._nodes.get(connection)
-            if not node_info or not node_info.authenticated:
-                logger.warning(f"PING from unauthenticated node: {connection.connection_id}")
-                error_msg = Message.create_error(
-                    "NOT_AUTHENTICATED",
-                    "Must authenticate before sending PING",
-                    request_id=message.request_id
-                )
-                connection.send_message(error_msg)
-                return
-            
-            # Update last ping time
-            node_info.update_ping_time()
+        node_info = self.registry.get_by_connection(connection)
+        if not node_info or not node_info.authenticated:
+            logger.warning(f"PING from unauthenticated node: {connection.connection_id}")
+            error_msg = Message.create_error(
+                "NOT_AUTHENTICATED",
+                "Must authenticate before sending PING",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
+
+        self.registry.heartbeat(connection)
         
         logger.debug(f"PING received from {connection.connection_id}")
         
@@ -273,18 +260,16 @@ class StorageNodeServer(BaseSocketServer):
             connection: Connection that sent the message
             message: VERIFY_TICKET message with payload: {"ticket": "..."}
         """
-        # Check if node is authenticated
-        with self._nodes_lock:
-            node_info = self._nodes.get(connection)
-            if not node_info or not node_info.authenticated:
-                logger.warning(f"VERIFY_TICKET from unauthenticated node: {connection.connection_id}")
-                error_msg = Message.create_error(
-                    "NOT_AUTHENTICATED",
-                    "Must authenticate before verifying tickets",
-                    request_id=message.request_id
-                )
-                connection.send_message(error_msg)
-                return
+        node_info = self.registry.get_by_connection(connection)
+        if not node_info or not node_info.authenticated:
+            logger.warning(f"VERIFY_TICKET from unauthenticated node: {connection.connection_id}")
+            error_msg = Message.create_error(
+                "NOT_AUTHENTICATED",
+                "Must authenticate before verifying tickets",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
         
         ticket_id = message.payload.get('ticket')
         
@@ -342,18 +327,16 @@ class StorageNodeServer(BaseSocketServer):
                     "finalSize": 12345
                 }
         """
-        # Check if node is authenticated
-        with self._nodes_lock:
-            node_info = self._nodes.get(connection)
-            if not node_info or not node_info.authenticated:
-                logger.warning(f"UPLOAD_COMPLETE from unauthenticated node: {connection.connection_id}")
-                error_msg = Message.create_error(
-                    "NOT_AUTHENTICATED",
-                    "Must authenticate before sending notifications",
-                    request_id=message.request_id
-                )
-                connection.send_message(error_msg)
-                return
+        node_info = self.registry.get_by_connection(connection)
+        if not node_info or not node_info.authenticated:
+            logger.warning(f"UPLOAD_COMPLETE from unauthenticated node: {connection.connection_id}")
+            error_msg = Message.create_error(
+                "NOT_AUTHENTICATED",
+                "Must authenticate before sending notifications",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
         
         # Extract payload
         file_id = message.payload.get('fileId')
@@ -382,7 +365,8 @@ class StorageNodeServer(BaseSocketServer):
             file_id=file_id,
             sha256_whole=sha256_whole,
             stored_name=stored_name,
-            final_size=final_size
+            final_size=final_size,
+            storage_node_id=node_info.node_id
         )
         
         if success:
@@ -420,18 +404,16 @@ class StorageNodeServer(BaseSocketServer):
                     "reason": "..."
                 }
         """
-        # Check if node is authenticated
-        with self._nodes_lock:
-            node_info = self._nodes.get(connection)
-            if not node_info or not node_info.authenticated:
-                logger.warning(f"UPLOAD_FAILED from unauthenticated node: {connection.connection_id}")
-                error_msg = Message.create_error(
-                    "NOT_AUTHENTICATED",
-                    "Must authenticate before sending notifications",
-                    request_id=message.request_id
-                )
-                connection.send_message(error_msg)
-                return
+        node_info = self.registry.get_by_connection(connection)
+        if not node_info or not node_info.authenticated:
+            logger.warning(f"UPLOAD_FAILED from unauthenticated node: {connection.connection_id}")
+            error_msg = Message.create_error(
+                "NOT_AUTHENTICATED",
+                "Must authenticate before sending notifications",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
         
         # Extract payload
         file_id = message.payload.get('fileId')
@@ -455,7 +437,8 @@ class StorageNodeServer(BaseSocketServer):
         # Route to upload service
         success, error_code = self.upload_service.handle_upload_failed(
             file_id=file_id,
-            reason=reason
+            reason=reason,
+            storage_node_id=node_info.node_id
         )
         
         if success:
@@ -494,16 +477,11 @@ class StorageNodeServer(BaseSocketServer):
                 if not self._health_check_running:
                     break
                 
-                # Check health of all nodes
-                with self._nodes_lock:
-                    unhealthy_nodes = []
-                    
-                    for connection, node_info in self._nodes.items():
-                        if not node_info.authenticated:
-                            continue
-                        
-                        if not node_info.is_healthy(self.timeout_seconds):
-                            unhealthy_nodes.append((connection, node_info))
+                unhealthy_nodes = [
+                    (node_info.connection, node_info)
+                    for node_info in self.registry.get_all_nodes()
+                    if node_info.authenticated and not node_info.is_healthy(self.timeout_seconds)
+                ]
                 
                 # Close unhealthy connections
                 for connection, node_info in unhealthy_nodes:
@@ -530,15 +508,4 @@ class StorageNodeServer(BaseSocketServer):
         Returns:
             List of node info dictionaries
         """
-        with self._nodes_lock:
-            return [
-                {
-                    'node_id': node_info.node_id,
-                    'authenticated': node_info.authenticated,
-                    'connected_at': node_info.connected_at.isoformat(),
-                    'last_ping_time': node_info.last_ping_time,
-                    'healthy': node_info.is_healthy(self.timeout_seconds)
-                }
-                for node_info in self._nodes.values()
-                if node_info.authenticated
-            ]
+        return self.registry.get_connected_nodes()

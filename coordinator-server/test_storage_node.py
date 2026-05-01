@@ -24,13 +24,13 @@ class MockDatabase:
     
     def execute_query(self, query: str, params: tuple = None):
         """Mock query execution."""
-        if "SELECT id, room_id, original_name, uploader_id, sha256_whole FROM files WHERE id" in query:
+        if "SELECT status FROM files WHERE id" in query:
+            file_id = params[0]
+            return [{'status': f['status']} for f in self.files if f['id'] == file_id]
+        if "FROM files" in query and "WHERE id" in query:
             file_id = params[0]
             files = [f for f in self.files if f['id'] == file_id]
             return files
-        elif "SELECT status FROM files WHERE id" in query:
-            file_id = params[0]
-            return [{'status': f['status']} for f in self.files if f['id'] == file_id]
         return []
     
     def execute_update(self, query: str, params: tuple = None):
@@ -221,6 +221,8 @@ def test_storage_node_info():
     
     assert node_info.node_id == "test-node-1"
     assert not node_info.authenticated
+    assert not node_info.is_healthy(90)
+    node_info.authenticated = True
     assert node_info.is_healthy(90)
     
     # Test ping update
@@ -255,6 +257,38 @@ def test_storage_auth_success(storage_server):
         assert response.payload['status'] == 'authenticated'
         assert response.request_id == auth_msg.request_id
     
+    finally:
+        sock.close()
+
+
+def test_storage_auth_records_advertised_address(storage_server):
+    """Test Storage Node auth records node id and data-plane address."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect(('127.0.0.1', 18081))
+
+    try:
+        auth_msg = Message.create_request(
+            MessageType.STORAGE_AUTH,
+            {
+                "secret": "test-secret",
+                "nodeId": "storage-node-1",
+                "dataHost": "storage-node-1",
+                "dataPort": 9001,
+                "storageAddress": "storage-node-1:9001"
+            }
+        )
+        send_message_to_server(sock, auth_msg)
+        response = receive_message_from_server(sock)
+
+        assert response.type == MessageType.STORAGE_AUTH_RESPONSE
+        assert response.payload['nodeId'] == 'storage-node-1'
+
+        nodes = storage_server.get_connected_nodes()
+        assert len(nodes) == 1
+        assert nodes[0]['nodeId'] == 'storage-node-1'
+        assert nodes[0]['storageAddress'] == 'storage-node-1:9001'
+        assert nodes[0]['dataPort'] == 9001
+
     finally:
         sock.close()
 

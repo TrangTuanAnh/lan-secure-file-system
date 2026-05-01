@@ -59,7 +59,6 @@ def example_init_upload_flow():
     """
     from protocol.message import Message
     from protocol.message_types import MessageType
-    from datetime import datetime, timezone
     
     # Set up module
     upload_service, upload_handlers = setup_upload_module()
@@ -74,13 +73,6 @@ def example_init_upload_flow():
                 'sizeBytes': 2097152,  # 2MB
                 'mimeType': 'application/pdf',
                 'sha256Whole': 'a' * 64
-            },
-            'scanReport': {
-                'result': 'CLEAN',
-                'fileSha256': 'a' * 64,
-                'scannedAt': datetime.now(timezone.utc).isoformat(),
-                'tool': 'ClamAV',
-                'toolVersion': '1.0.0'
             },
             'storageAddress': 'storage-node-1:9000'
         },
@@ -100,7 +92,7 @@ def example_init_upload_flow():
     # Expected response:
     # - If authorized and valid: UPLOAD_PLAN with ticket or deduplicated flag
     # - If unauthorized: ERROR with PERMISSION_DENIED
-    # - If invalid scan: ERROR with SCAN_FAILED/SCAN_EXPIRED/SCAN_HASH_MISMATCH
+    # Storage node performs antivirus scan during FINALIZE_UPLOAD.
 
 
 def example_upload_complete_flow():
@@ -172,8 +164,6 @@ def example_deduplication_scenario():
     """
     Example: Upload file that already exists (deduplication).
     """
-    from datetime import datetime, timezone
-    
     # Set up module
     upload_service, _ = setup_upload_module()
     
@@ -185,20 +175,11 @@ def example_deduplication_scenario():
         'sha256Whole': 'abc123' * 10 + 'abcd'  # 64 chars
     }
     
-    scan_report = {
-        'result': 'CLEAN',
-        'fileSha256': file_info_1['sha256Whole'],
-        'scannedAt': datetime.now(timezone.utc).isoformat(),
-        'tool': 'ClamAV',
-        'toolVersion': '1.0.0'
-    }
-    
     success_1, plan_1, error_1 = upload_service.handle_init_upload(
         user_id='user-1',
         global_role='USER',
         room_id='room-1',
-        file_info=file_info_1,
-        scan_report=scan_report
+        file_info=file_info_1
     )
     
     print(f"First upload - Deduplicated: {plan_1.get('deduplicated') if plan_1 else None}")
@@ -221,8 +202,7 @@ def example_deduplication_scenario():
         user_id='user-2',
         global_role='USER',
         room_id='room-2',
-        file_info=file_info_2,
-        scan_report=scan_report
+        file_info=file_info_2
     )
     
     print(f"Second upload - Deduplicated: {plan_2.get('deduplicated') if plan_2 else None}")

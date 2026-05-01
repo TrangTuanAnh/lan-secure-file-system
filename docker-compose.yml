@@ -109,6 +109,27 @@ services:
       start_period: 40s
 
   # ============================================
+  # ClamAV Daemon for Storage Node 1
+  # ============================================
+
+  clamd-storage-node-1:
+    image: clamav/clamav:stable
+    container_name: clamd-storage-node-1
+    restart: unless-stopped
+    networks:
+      - ltm-network
+    volumes:
+      - storage_node_1_data:/app/data:ro
+      - clamav_db_1:/var/lib/clamav
+      - ./storage-node/clamd.conf:/etc/clamav/clamd.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --config-file=/etc/clamav/clamd.conf --no-summary /tmp >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ============================================
   # Storage Node 1 (Java)
   # ============================================
   
@@ -121,13 +142,20 @@ services:
       # Override properties via environment variables
       NODE_ID: storage-node-1
       NODE_PORT: 9001
+      NODE_ADVERTISED_HOST: storage-node-1
+      NODE_ADVERTISED_PORT: 9001
+      NODE_STORAGE_ADDRESS: storage-node-1:9001
       COORDINATOR_HOST: coordinator
       COORDINATOR_PORT: 8081
       TICKET_SECRET: test-secret-12345
+      ANTIVIRUS_HOST: clamd-storage-node-1
+      ANTIVIRUS_PORT: 3310
     ports:
       - "9001:9001"  # Data plane port
     depends_on:
       coordinator:
+        condition: service_healthy
+      clamd-storage-node-1:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -143,6 +171,29 @@ services:
       start_period: 40s
 
   # ============================================
+  # ClamAV Daemon for Storage Node 2
+  # ============================================
+
+  clamd-storage-node-2:
+    image: clamav/clamav:stable
+    container_name: clamd-storage-node-2
+    restart: unless-stopped
+    profiles:
+      - multi-node
+    networks:
+      - ltm-network
+    volumes:
+      - storage_node_2_data:/app/data:ro
+      - clamav_db_2:/var/lib/clamav
+      - ./storage-node/clamd.conf:/etc/clamav/clamd.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --config-file=/etc/clamav/clamd.conf --no-summary /tmp >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ============================================
   # Storage Node 2 (Java) - Optional second node
   # ============================================
   
@@ -154,13 +205,20 @@ services:
     environment:
       NODE_ID: storage-node-2
       NODE_PORT: 9002
+      NODE_ADVERTISED_HOST: storage-node-2
+      NODE_ADVERTISED_PORT: 9002
+      NODE_STORAGE_ADDRESS: storage-node-2:9002
       COORDINATOR_HOST: coordinator
       COORDINATOR_PORT: 8081
       TICKET_SECRET: test-secret-12345
+      ANTIVIRUS_HOST: clamd-storage-node-2
+      ANTIVIRUS_PORT: 3310
     ports:
       - "9002:9002"  # Data plane port
     depends_on:
       coordinator:
+        condition: service_healthy
+      clamd-storage-node-2:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -191,6 +249,10 @@ volumes:
   storage_node_1_data:
     driver: local
   storage_node_1_logs:
+    driver: local
+  clamav_db_1:
+    driver: local
+  clamav_db_2:
     driver: local
   storage_node_2_data:
     driver: local

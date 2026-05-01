@@ -207,6 +207,7 @@ class DownloadHandlers:
             'INVALID_SHARE_TOKEN': 'Share token is invalid or does not match the file',
             'SHARE_TOKEN_EXPIRED': 'Share token has expired',
             'SHARE_TOKEN_EXHAUSTED': 'Share token has reached maximum downloads',
+            'STORAGE_NODE_UNAVAILABLE': 'The storage node that owns this file is unavailable',
             'DATABASE_ERROR': 'Database error occurred',
             'INVALID_INPUT': 'Invalid input parameters'
         }

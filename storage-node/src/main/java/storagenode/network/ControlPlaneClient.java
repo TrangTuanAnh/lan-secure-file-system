@@ -32,6 +32,9 @@ public class ControlPlaneClient {
     private final int coordinatorPort;
     private final String sharedSecret;
     private final String nodeId;
+    private final String dataHost;
+    private final int dataPort;
+    private final String storageAddress;
     
     private Socket socket;
     private InputStream in;
@@ -45,11 +48,15 @@ public class ControlPlaneClient {
     private final BlockingQueue<Message> responseQueue = new LinkedBlockingQueue<>();
     
     public ControlPlaneClient(String coordinatorHost, int coordinatorPort,
-                              String sharedSecret, String nodeId) {
+                              String sharedSecret, String nodeId,
+                              String dataHost, int dataPort, String storageAddress) {
         this.coordinatorHost = coordinatorHost;
         this.coordinatorPort = coordinatorPort;
         this.sharedSecret = sharedSecret;
         this.nodeId = nodeId;
+        this.dataHost = dataHost;
+        this.dataPort = dataPort;
+        this.storageAddress = storageAddress;
     }
     
     /**
@@ -97,7 +104,10 @@ public class ControlPlaneClient {
     private void authenticate() throws IOException {
         Message authMsg = new Message(MessageType.STORAGE_AUTH)
             .set("secret", sharedSecret)
-            .set("nodeId", nodeId);
+            .set("nodeId", nodeId)
+            .set("dataHost", dataHost)
+            .set("dataPort", dataPort)
+            .set("storageAddress", storageAddress);
         
         sendMessage(authMsg);
         

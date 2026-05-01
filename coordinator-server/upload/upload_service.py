@@ -7,7 +7,7 @@ from database import Database
 from auth.authorization_service import AuthorizationService
 from audit.audit_service import AuditService
 from redis_client import RedisClient
-from upload.scan_validator import ScanValidator
+from ticket.hmac_ticket import create_hmac_ticket_fields
 from upload.dedup_checker import DeduplicationChecker
 from logging_config import get_logger
 
@@ -25,7 +25,11 @@ class UploadService:
         audit_service: Optional[AuditService] = None,
         notification_service: Optional[Any] = None,
         chunk_size: int = 524288,  # 512KB default
-        ticket_ttl_seconds: int = 1800  # 30 minutes default
+        ticket_ttl_seconds: int = 1800,  # 30 minutes default
+        storage_registry: Optional[Any] = None,
+        storage_address: str = "localhost:9000",
+        ticket_secret: str = "default_secret",
+        default_storage_node_id: str = "node-1"
     ):
         """
         Initialize upload service.
@@ -38,6 +42,10 @@ class UploadService:
             notification_service: Optional notification service for broadcasting events
             chunk_size: Default chunk size in bytes
             ticket_ttl_seconds: Ticket expiration time in seconds
+            storage_registry: Optional registry for connected Storage Nodes
+            storage_address: Legacy fallback Storage Node address
+            ticket_secret: Shared secret used for data-plane HMAC ticket fields
+            default_storage_node_id: Legacy node ID used when no registry is configured
         """
         self.db = database
         self.redis = redis_client
@@ -46,10 +54,79 @@ class UploadService:
         self.notification = notification_service
         self.chunk_size = chunk_size
         self.ticket_ttl_seconds = ticket_ttl_seconds
+        self.storage_registry = storage_registry
+        self.storage_address = storage_address
+        self.ticket_secret = ticket_secret
+        self.default_storage_node_id = default_storage_node_id
         
         # Initialize validators and checkers
-        self.scan_validator = ScanValidator()
         self.dedup_checker = DeduplicationChecker(database)
+
+    def _legacy_node(self, storage_address: Optional[str]) -> Dict[str, Any]:
+        address = storage_address or self.storage_address
+        return {
+            'node_id': self.default_storage_node_id,
+            'storage_address': address
+        }
+
+    def _select_storage_node(self, storage_address: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not self.storage_registry:
+            return self._legacy_node(storage_address)
+
+        node = self.storage_registry.select_for_upload()
+        if not node:
+            return None
+
+        return {
+            'node_id': node.node_id,
+            'storage_address': node.storage_address
+        }
+
+    def _is_reusable_dedup_node(self, node_id: Optional[str]) -> bool:
+        if not node_id:
+            return True
+        if not self.storage_registry:
+            return True
+        return self.storage_registry.is_node_healthy(node_id)
+
+    def _dedup_storage_address(
+        self,
+        node_id: Optional[str],
+        storage_address: Optional[str]
+    ) -> Optional[str]:
+        if node_id and self.storage_registry:
+            return self.storage_registry.get_storage_address(node_id)
+        return storage_address or self.storage_address
+
+    def _pick_reusable_dedup(
+        self,
+        candidates: list[Dict[str, Any]],
+        storage_address: Optional[str]
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        for candidate in candidates:
+            node_id = candidate.get('storage_node_id')
+            if not self._is_reusable_dedup_node(node_id):
+                continue
+            address = self._dedup_storage_address(node_id, storage_address)
+            if address:
+                return candidate, address
+        return None, None
+
+    def _ticket_fields(self, file_id: str, node_id: Optional[str]) -> Dict[str, Any]:
+        return create_hmac_ticket_fields(
+            file_id=file_id,
+            node_id=node_id or self.default_storage_node_id,
+            secret=self.ticket_secret,
+            ttl_seconds=self.ticket_ttl_seconds
+        )
+
+    def _mark_upload_started(self, node_id: Optional[str]) -> None:
+        if self.storage_registry and node_id:
+            self.storage_registry.mark_upload_started(node_id)
+
+    def _mark_upload_finished(self, node_id: Optional[str]) -> None:
+        if self.storage_registry and node_id:
+            self.storage_registry.mark_upload_finished(node_id)
     
     def handle_init_upload(
         self,
@@ -57,7 +134,7 @@ class UploadService:
         global_role: str,
         room_id: str,
         file_info: Dict[str, Any],
-        scan_report: Dict[str, Any],
+        scan_report: Optional[Dict[str, Any]] = None,
         storage_address: str = "localhost:9000"  # Default storage node address
     ) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """
@@ -65,10 +142,9 @@ class UploadService:
         
         Process:
         1. Verify user has ADMIN, OWNER, or MEMBER role in room
-        2. Validate scan report
-        3. Check for deduplication
-        4. If deduplicated: create file record with status READY, return deduplicated=true
-        5. If not deduplicated: create file record with status UPLOADING, generate ticket
+        2. Check for deduplication
+        3. If deduplicated: create file record with status READY, return deduplicated=true
+        4. If not deduplicated: create file record with status UPLOADING, generate ticket
         
         Args:
             user_id: User initiating upload
@@ -79,7 +155,7 @@ class UploadService:
                 - sizeBytes: File size in bytes
                 - mimeType: MIME type
                 - sha256Whole: SHA256 hash of entire file
-            scan_report: Scan report dictionary
+            scan_report: Deprecated client-side scan report. Ignored; storage nodes scan on finalize.
             storage_address: Storage node address (host:port)
         
         Returns:
@@ -108,14 +184,13 @@ class UploadService:
             logger.warning("INIT_UPLOAD failed: missing required file info fields")
             return False, None, "INVALID_INPUT"
         
-        # Step 2: Validate scan report
-        is_valid, error_code = self.scan_validator.validate_scan_report(scan_report, sha256_whole)
-        if not is_valid:
-            logger.info(f"INIT_UPLOAD failed: scan validation error {error_code}")
-            return False, None, error_code
-        
-        # Step 3: Check for deduplication
-        existing_file = self.dedup_checker.check_deduplication(sha256_whole)
+        # Step 2: Check for deduplication. Antivirus enforcement happens on the storage node
+        # during FINALIZE_UPLOAD, before the object is committed to permanent storage.
+        dedup_candidates = self.dedup_checker.find_deduplication_candidates(sha256_whole)
+        existing_file, dedup_storage_address = self._pick_reusable_dedup(
+            dedup_candidates,
+            storage_address
+        )
         
         # Calculate version number
         version = self._calculate_next_version(room_id, original_name)
@@ -128,6 +203,7 @@ class UploadService:
                 # Step 4: Deduplicated upload - create file record with status READY
                 file_id = str(uuid.uuid4())
                 stored_name = existing_file['stored_name']
+                storage_node_id = existing_file.get('storage_node_id')
                 
                 # Insert file record
                 self.db.execute_update(
@@ -135,18 +211,16 @@ class UploadService:
                     INSERT INTO files (
                         id, room_id, original_name, stored_name, version,
                         uploader_id, size_bytes, mime_type, sha256_whole,
-                        total_chunks, chunk_size, status, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        total_chunks, chunk_size, status, storage_node_id, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         file_id, room_id, original_name, stored_name, version,
                         user_id, size_bytes, mime_type, sha256_whole,
-                        total_chunks, self.chunk_size, 'READY', datetime.now(timezone.utc)
+                        total_chunks, self.chunk_size, 'READY', storage_node_id,
+                        datetime.now(timezone.utc)
                     )
                 )
-                
-                # Insert scan report
-                self._insert_scan_report(file_id, scan_report, sha256_whole)
                 
                 logger.info(
                     f"Deduplicated upload: file_id={file_id}, "
@@ -164,7 +238,8 @@ class UploadService:
                         detail={
                             'original_name': original_name,
                             'size_bytes': size_bytes,
-                            'deduplicated': True
+                            'deduplicated': True,
+                            'storage_node_id': storage_node_id
                         },
                         status='SUCCESS'
                     )
@@ -172,7 +247,8 @@ class UploadService:
                 # Return upload plan with deduplicated flag
                 return True, {
                     'fileId': file_id,
-                    'storageAddress': storage_address,
+                    'storageAddress': dedup_storage_address,
+                    'storageNodeId': storage_node_id,
                     'chunkSize': self.chunk_size,
                     'totalChunks': total_chunks,
                     'deduplicated': True
@@ -180,6 +256,13 @@ class UploadService:
             
             else:
                 # Step 5: New upload - create file record with status UPLOADING
+                selected_node = self._select_storage_node(storage_address)
+                if not selected_node:
+                    logger.warning("INIT_UPLOAD failed: no healthy storage node available")
+                    return False, None, "STORAGE_NODE_UNAVAILABLE"
+
+                storage_node_id = selected_node['node_id']
+                selected_storage_address = selected_node['storage_address']
                 file_id = str(uuid.uuid4())
                 stored_name = f"{room_id}/{file_id}"
                 
@@ -189,24 +272,23 @@ class UploadService:
                     INSERT INTO files (
                         id, room_id, original_name, stored_name, version,
                         uploader_id, size_bytes, mime_type, sha256_whole,
-                        total_chunks, chunk_size, status, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        total_chunks, chunk_size, status, storage_node_id, created_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         file_id, room_id, original_name, stored_name, version,
                         user_id, size_bytes, mime_type, sha256_whole,
-                        total_chunks, self.chunk_size, 'UPLOADING', datetime.now(timezone.utc)
+                        total_chunks, self.chunk_size, 'UPLOADING', storage_node_id,
+                        datetime.now(timezone.utc)
                     )
                 )
-                
-                # Insert scan report
-                self._insert_scan_report(file_id, scan_report, sha256_whole)
                 
                 # Generate upload ticket
                 ticket = str(uuid.uuid4())
                 expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ticket_ttl_seconds)
                 
                 # Store ticket metadata in Redis
+                data_plane_ticket = self._ticket_fields(file_id, storage_node_id)
                 ticket_data = {
                     'type': 'upload',
                     'fileId': file_id,
@@ -216,24 +298,31 @@ class UploadService:
                     'chunkSize': self.chunk_size,
                     'sha256Whole': sha256_whole,
                     'storedName': stored_name,
+                    'storageNodeId': storage_node_id,
+                    'storageAddress': selected_storage_address,
+                    **data_plane_ticket,
                     'expiresAt': expires_at.isoformat()
                 }
                 
                 self.redis.set_ticket(ticket, ticket_data, self.ticket_ttl_seconds)
+                self._mark_upload_started(storage_node_id)
                 
                 logger.info(
                     f"New upload initialized: file_id={file_id}, "
-                    f"ticket={ticket}, room={room_id}, chunks={total_chunks}"
+                    f"ticket={ticket}, room={room_id}, chunks={total_chunks}, "
+                    f"storage_node={storage_node_id}"
                 )
                 
                 # Return upload plan with ticket
                 return True, {
                     'fileId': file_id,
                     'ticket': ticket,
-                    'storageAddress': storage_address,
+                    'storageAddress': selected_storage_address,
+                    'storageNodeId': storage_node_id,
                     'chunkSize': self.chunk_size,
                     'totalChunks': total_chunks,
-                    'deduplicated': False
+                    'deduplicated': False,
+                    **data_plane_ticket
                 }, None
         
         except Exception as e:
@@ -269,50 +358,13 @@ class UploadService:
             logger.error(f"Failed to calculate next version: {e}")
             return 1
     
-    def _insert_scan_report(
-        self,
-        file_id: str,
-        scan_report: Dict[str, Any],
-        sha256_whole: str
-    ) -> None:
-        """
-        Insert scan report record into database.
-        
-        Args:
-            file_id: File identifier
-            scan_report: Scan report dictionary
-            sha256_whole: SHA256 hash
-        """
-        try:
-            tool = scan_report.get('tool', 'unknown')
-            tool_version = scan_report.get('toolVersion', 'unknown')
-            scanned_at_str = scan_report.get('scannedAt')
-            result = scan_report.get('result')
-            
-            # Parse scannedAt timestamp
-            scanned_at = datetime.fromisoformat(scanned_at_str.replace('Z', '+00:00'))
-            
-            self.db.execute_update(
-                """
-                INSERT INTO scan_reports (
-                    file_id, tool, tool_version, scanned_at, result, file_sha256
-                ) VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (file_id, tool, tool_version, scanned_at, result, sha256_whole)
-            )
-            
-            logger.debug(f"Scan report inserted for file {file_id}")
-            
-        except Exception as e:
-            logger.error(f"Failed to insert scan report: {e}")
-            # Don't fail the upload if scan report insert fails
-    
     def handle_upload_complete(
         self,
         file_id: str,
         sha256_whole: str,
         stored_name: str,
-        final_size: int
+        final_size: int,
+        storage_node_id: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
         """
         Handle UPLOAD_COMPLETE message from Storage Node.
@@ -327,6 +379,7 @@ class UploadService:
             sha256_whole: SHA256 hash of assembled file
             stored_name: Storage path on Storage Node
             final_size: Final file size in bytes
+            storage_node_id: Storage Node reporting the completion
         
         Returns:
             Tuple of (success, error_code)
@@ -335,7 +388,7 @@ class UploadService:
             # Get file details
             files = self.db.execute_query(
                 """
-                SELECT id, room_id, original_name, uploader_id, sha256_whole
+                SELECT id, room_id, original_name, uploader_id, sha256_whole, storage_node_id
                 FROM files
                 WHERE id = %s
                 """,
@@ -344,6 +397,7 @@ class UploadService:
             
             if not files:
                 logger.warning(f"UPLOAD_COMPLETE failed: file {file_id} not found")
+                self._mark_upload_finished(storage_node_id)
                 return False, "FILE_NOT_FOUND"
             
             file = files[0]
@@ -351,6 +405,16 @@ class UploadService:
             original_name = file['original_name']
             uploader_id = file['uploader_id']
             expected_hash = file['sha256_whole']
+            assigned_node_id = file.get('storage_node_id')
+
+            self._mark_upload_finished(assigned_node_id or storage_node_id)
+
+            if assigned_node_id and storage_node_id and assigned_node_id != storage_node_id:
+                logger.warning(
+                    f"UPLOAD_COMPLETE node mismatch: file={file_id}, "
+                    f"assigned={assigned_node_id}, reporter={storage_node_id}"
+                )
+                return False, "STORAGE_NODE_MISMATCH"
             
             # Verify hash matches (optional security check)
             if sha256_whole != expected_hash:
@@ -396,7 +460,8 @@ class UploadService:
                     detail={
                         'original_name': original_name,
                         'size_bytes': final_size,
-                        'stored_name': stored_name
+                        'stored_name': stored_name,
+                        'storage_node_id': assigned_node_id
                     },
                     status='SUCCESS'
                 )
@@ -410,7 +475,8 @@ class UploadService:
     def handle_upload_failed(
         self,
         file_id: str,
-        reason: str
+        reason: str,
+        storage_node_id: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
         """
         Handle UPLOAD_FAILED message from Storage Node.
@@ -422,6 +488,7 @@ class UploadService:
         Args:
             file_id: File identifier
             reason: Failure reason from Storage Node
+            storage_node_id: Storage Node reporting the failure
         
         Returns:
             Tuple of (success, error_code)
@@ -430,7 +497,7 @@ class UploadService:
             # Get file details
             files = self.db.execute_query(
                 """
-                SELECT id, room_id, original_name, uploader_id
+                SELECT id, room_id, original_name, uploader_id, storage_node_id
                 FROM files
                 WHERE id = %s
                 """,
@@ -439,12 +506,23 @@ class UploadService:
             
             if not files:
                 logger.warning(f"UPLOAD_FAILED: file {file_id} not found")
+                self._mark_upload_finished(storage_node_id)
                 return False, "FILE_NOT_FOUND"
             
             file = files[0]
             room_id = file['room_id']
             original_name = file['original_name']
             uploader_id = file['uploader_id']
+            assigned_node_id = file.get('storage_node_id')
+
+            self._mark_upload_finished(assigned_node_id or storage_node_id)
+
+            if assigned_node_id and storage_node_id and assigned_node_id != storage_node_id:
+                logger.warning(
+                    f"UPLOAD_FAILED node mismatch: file={file_id}, "
+                    f"assigned={assigned_node_id}, reporter={storage_node_id}"
+                )
+                return False, "STORAGE_NODE_MISMATCH"
             
             # Update file status to DELETED
             self.db.execute_update(
@@ -467,7 +545,8 @@ class UploadService:
                     room_id=room_id,
                     detail={
                         'original_name': original_name,
-                        'reason': reason
+                        'reason': reason,
+                        'storage_node_id': assigned_node_id
                     },
                     status='FAILED'
                 )

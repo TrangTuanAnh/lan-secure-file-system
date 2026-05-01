@@ -1,5 +1,6 @@
 package storagenode.network;
 
+import storagenode.antivirus.AntivirusScanner;
 import storagenode.config.NodeConfig;
 import storagenode.crypto.RSAKeyExchange;
 import storagenode.session.SessionManager;
@@ -31,6 +32,7 @@ public class StorageServer {
     private final DedupStore dedupStore;
     private final CoordinatorClient coordinator;
     private final RSAKeyExchange rsaKeyExchange;
+    private final AntivirusScanner antivirusScanner;
 
     private ServerSocket serverSocket;
     private ExecutorService threadPool;
@@ -38,13 +40,15 @@ public class StorageServer {
 
     public StorageServer(NodeConfig config, SessionManager sessionManager,
                          FileStore fileStore, DedupStore dedupStore,
-                         CoordinatorClient coordinator, RSAKeyExchange rsaKeyExchange) {
+                         CoordinatorClient coordinator, RSAKeyExchange rsaKeyExchange,
+                         AntivirusScanner antivirusScanner) {
         this.config = config;
         this.sessionManager = sessionManager;
         this.fileStore = fileStore;
         this.dedupStore = dedupStore;
         this.coordinator = coordinator;
         this.rsaKeyExchange = rsaKeyExchange;
+        this.antivirusScanner = antivirusScanner;
     }
 
     /** Start listening for connections. Blocks the calling thread. */
@@ -68,7 +72,8 @@ public class StorageServer {
 
                 ClientHandler handler = new ClientHandler(
                     clientSocket, sessionManager, fileStore, dedupStore,
-                    coordinator, rsaKeyExchange, config.getChunkSize()
+                    coordinator, rsaKeyExchange, config.getChunkSize(),
+                    antivirusScanner, config.isAntivirusFailClosed()
                 );
                 threadPool.execute(handler);
             } catch (IOException e) {

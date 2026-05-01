@@ -7,6 +7,7 @@ from database import Database
 from auth.authorization_service import AuthorizationService
 from audit.audit_service import AuditService
 from redis_client import RedisClient
+from ticket.hmac_ticket import create_hmac_ticket_fields
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -22,7 +23,10 @@ class DownloadService:
         authorization_service: AuthorizationService,
         audit_service: Optional[AuditService] = None,
         ticket_ttl_seconds: int = 900,  # 15 minutes default
-        storage_address: str = "localhost:9000"  # Default storage node address
+        storage_address: str = "localhost:9000",  # Default storage node address
+        storage_registry: Optional[Any] = None,
+        ticket_secret: str = "default_secret",
+        default_storage_node_id: str = "node-1"
     ):
         """
         Initialize download service.
@@ -34,6 +38,9 @@ class DownloadService:
             audit_service: Optional audit service for logging
             ticket_ttl_seconds: Ticket expiration time in seconds (default 15 minutes)
             storage_address: Storage node address (host:port)
+            storage_registry: Optional registry for resolving owning nodes
+            ticket_secret: Shared secret used for data-plane HMAC ticket fields
+            default_storage_node_id: Legacy node ID used when no owner is recorded
         """
         self.db = database
         self.redis = redis_client
@@ -41,6 +48,29 @@ class DownloadService:
         self.audit = audit_service
         self.ticket_ttl_seconds = ticket_ttl_seconds
         self.storage_address = storage_address
+        self.storage_registry = storage_registry
+        self.ticket_secret = ticket_secret
+        self.default_storage_node_id = default_storage_node_id
+
+    def _resolve_storage_node(
+        self,
+        file: Dict[str, Any]
+    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        node_id = file.get('storage_node_id')
+        if node_id and self.storage_registry:
+            address = self.storage_registry.get_storage_address(node_id)
+            if not address:
+                return None, node_id, "STORAGE_NODE_UNAVAILABLE"
+            return address, node_id, None
+        return self.storage_address, node_id, None
+
+    def _ticket_fields(self, file_id: str, node_id: Optional[str]) -> Dict[str, Any]:
+        return create_hmac_ticket_fields(
+            file_id=file_id,
+            node_id=node_id or self.default_storage_node_id,
+            secret=self.ticket_secret,
+            ttl_seconds=self.ticket_ttl_seconds
+        )
     
     def handle_init_download_direct(
         self,
@@ -84,7 +114,8 @@ class DownloadService:
                 files = self.db.execute_query(
                     """
                     SELECT f.id, f.room_id, f.original_name, f.stored_name, f.version,
-                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size, f.status
+                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size,
+                           f.status, f.storage_node_id
                     FROM files f
                     WHERE f.id = %s AND f.version = %s
                     """,
@@ -95,7 +126,8 @@ class DownloadService:
                 files = self.db.execute_query(
                     """
                     SELECT f.id, f.room_id, f.original_name, f.stored_name, f.version,
-                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size, f.status
+                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size,
+                           f.status, f.storage_node_id
                     FROM files f
                     WHERE f.id = %s
                     """,
@@ -119,10 +151,19 @@ class DownloadService:
             if not self.authz.check_permission(user_id, global_role, room_id, 'DOWNLOAD_FILE'):
                 logger.info(f"INIT_DOWNLOAD denied: user {user_id} lacks permission for file {file_id}")
                 return False, None, "PERMISSION_DENIED"
+
+            storage_address, storage_node_id, resolve_error = self._resolve_storage_node(file)
+            if resolve_error:
+                logger.warning(
+                    f"INIT_DOWNLOAD failed: storage node unavailable for file={file_id}, "
+                    f"storage_node_id={storage_node_id}"
+                )
+                return False, None, resolve_error
             
             # Step 3: Generate download ticket
             ticket = str(uuid.uuid4())
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ticket_ttl_seconds)
+            data_plane_ticket = self._ticket_fields(file['id'], storage_node_id)
             
             # Step 4: Store ticket metadata in Redis
             ticket_data = {
@@ -132,6 +173,9 @@ class DownloadService:
                 'sha256Whole': file['sha256_whole'],
                 'totalChunks': file['total_chunks'],
                 'chunkSize': file['chunk_size'],
+                'storageNodeId': storage_node_id,
+                'storageAddress': storage_address,
+                **data_plane_ticket,
                 'expiresAt': expires_at.isoformat()
             }
             
@@ -145,12 +189,14 @@ class DownloadService:
             # Step 5: Return DOWNLOAD_PLAN
             download_plan = {
                 'ticket': ticket,
-                'storageAddress': self.storage_address,
+                'storageAddress': storage_address,
+                'storageNodeId': storage_node_id,
                 'fileName': file['original_name'],
                 'fileSize': file['size_bytes'],
                 'sha256Whole': file['sha256_whole'],
                 'totalChunks': file['total_chunks'],
-                'chunkSize': file['chunk_size']
+                'chunkSize': file['chunk_size'],
+                **data_plane_ticket
             }
             
             # Step 6: Write audit log entry
@@ -357,7 +403,8 @@ class DownloadService:
             files = self.db.execute_query(
                 """
                 SELECT f.id, f.room_id, f.original_name, f.stored_name, f.version,
-                       f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size, f.status
+                       f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size,
+                       f.status, f.storage_node_id
                 FROM files f
                 WHERE f.id = %s
                 """,
@@ -374,10 +421,19 @@ class DownloadService:
             if file['status'] != 'READY':
                 logger.info(f"INIT_DOWNLOAD with share token failed: file {file_id} status is {file['status']}")
                 return False, None, "FILE_NOT_READY"
+
+            storage_address, storage_node_id, resolve_error = self._resolve_storage_node(file)
+            if resolve_error:
+                logger.warning(
+                    f"INIT_DOWNLOAD with share token failed: storage node unavailable "
+                    f"for file={file_id}, storage_node_id={storage_node_id}"
+                )
+                return False, None, resolve_error
             
             # Step 4: Generate download ticket
             ticket = str(uuid.uuid4())
             expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ticket_ttl_seconds)
+            data_plane_ticket = self._ticket_fields(file['id'], storage_node_id)
             
             ticket_data = {
                 'type': 'download',
@@ -386,6 +442,9 @@ class DownloadService:
                 'sha256Whole': file['sha256_whole'],
                 'totalChunks': file['total_chunks'],
                 'chunkSize': file['chunk_size'],
+                'storageNodeId': storage_node_id,
+                'storageAddress': storage_address,
+                **data_plane_ticket,
                 'expiresAt': expires_at.isoformat()
             }
             
@@ -399,12 +458,14 @@ class DownloadService:
             # Step 5: Return DOWNLOAD_PLAN
             download_plan = {
                 'ticket': ticket,
-                'storageAddress': self.storage_address,
+                'storageAddress': storage_address,
+                'storageNodeId': storage_node_id,
                 'fileName': file['original_name'],
                 'fileSize': file['size_bytes'],
                 'sha256Whole': file['sha256_whole'],
                 'totalChunks': file['total_chunks'],
-                'chunkSize': file['chunk_size']
+                'chunkSize': file['chunk_size'],
+                **data_plane_ticket
             }
             
             # Step 6: Write audit log entry
@@ -453,7 +514,8 @@ class DownloadService:
                 files = self.db.execute_query(
                     """
                     SELECT f.id, f.room_id, f.original_name, f.stored_name, f.version,
-                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size, f.status
+                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size,
+                           f.status, f.storage_node_id
                     FROM files f
                     WHERE f.room_id = %s AND f.original_name = %s AND f.version = %s
                     """,
@@ -464,7 +526,8 @@ class DownloadService:
                 files = self.db.execute_query(
                     """
                     SELECT f.id, f.room_id, f.original_name, f.stored_name, f.version,
-                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size, f.status
+                           f.size_bytes, f.sha256_whole, f.total_chunks, f.chunk_size,
+                           f.status, f.storage_node_id
                     FROM files f
                     WHERE f.room_id = %s AND f.original_name = %s
                     ORDER BY f.version DESC

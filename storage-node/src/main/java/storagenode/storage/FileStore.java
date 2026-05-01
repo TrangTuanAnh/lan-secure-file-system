@@ -1,11 +1,14 @@
 package storagenode.storage;
 
+import com.google.gson.Gson;
+import storagenode.antivirus.ScanResult;
 import storagenode.crypto.HashUtil;
+import storagenode.session.UploadSession;
 
 import java.io.*;
 import java.nio.file.*;
+import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Logger;
 
 /**
@@ -24,17 +27,25 @@ import java.util.logging.Logger;
 public class FileStore {
 
     private static final Logger LOG = Logger.getLogger(FileStore.class.getName());
+    private static final Gson GSON = new Gson();
 
     private final Path dataDir;   // permanent storage
     private final Path tempDir;   // in-progress uploads
+    private final Path quarantineDir; // blocked infected uploads
     private final int chunkSize;
 
     public FileStore(Path dataDir, Path tempDir, int chunkSize) throws IOException {
+        this(dataDir, tempDir, defaultQuarantineDir(dataDir), chunkSize);
+    }
+
+    public FileStore(Path dataDir, Path tempDir, Path quarantineDir, int chunkSize) throws IOException {
         this.dataDir = dataDir;
         this.tempDir = tempDir;
+        this.quarantineDir = quarantineDir;
         this.chunkSize = chunkSize;
         Files.createDirectories(dataDir);
         Files.createDirectories(tempDir);
+        Files.createDirectories(quarantineDir);
     }
 
     // ═══════════════════════ TEMP (upload in-progress) ═══════════════════════
@@ -99,19 +110,11 @@ public class FileStore {
 
     // ═══════════════════════ ASSEMBLE & FINALIZE ═══════════════════════
 
-    /**
-     * Assemble all chunks into a single file, verify SHA-256, and move
-     * to permanent storage.
-     *
-     * @return the final storage path if hash matches, null if mismatch
-     */
-    public Path assembleAndStore(String sessionId, int totalChunks, String expectedSha256)
-            throws IOException {
-
+    /** Assemble all chunks into a single temporary file for final validation. */
+    public Path assembleTempFile(String sessionId, int totalChunks) throws IOException {
         Path sessionDir = tempDir.resolve(sessionId);
         Path assembledFile = sessionDir.resolve("assembled");
 
-        // 1. Concatenate chunks in order
         try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(assembledFile))) {
             for (int i = 0; i < totalChunks; i++) {
                 Path chunkFile = sessionDir.resolve("chunk_" + i);
@@ -121,17 +124,24 @@ public class FileStore {
                 Files.copy(chunkFile, out);
             }
         }
+        return assembledFile;
+    }
 
-        // 2. Verify whole-file hash
+    /** Verify the assembled file SHA-256 and delete it on mismatch. */
+    public boolean verifyAssembledHash(Path assembledFile, String expectedSha256, String sessionId)
+            throws IOException {
         String actualHash = HashUtil.sha256File(assembledFile);
         if (!actualHash.equalsIgnoreCase(expectedSha256)) {
             LOG.warning("Hash mismatch for session " + sessionId +
                         ": expected=" + expectedSha256 + " actual=" + actualHash);
             Files.deleteIfExists(assembledFile);
-            return null;
+            return false;
         }
+        return true;
+    }
 
-        // 3. Move to permanent content-addressed storage
+    /** Move a validated clean assembled file to permanent content-addressed storage. */
+    public Path commitAssembledFile(Path assembledFile, String expectedSha256) throws IOException {
         Path storePath = getStorePath(expectedSha256);
         Files.createDirectories(storePath.getParent());
 
@@ -142,11 +152,63 @@ public class FileStore {
             Files.move(assembledFile, storePath, StandardCopyOption.ATOMIC_MOVE);
         }
 
-        // 4. Clean up temp directory
-        cleanSessionDir(sessionId);
-
         LOG.info("File stored: " + storePath + " (sha256=" + expectedSha256 + ")");
         return storePath;
+    }
+
+    /**
+     * Assemble all chunks into a single file, verify SHA-256, and move
+     * to permanent storage.
+     *
+     * @return the final storage path if hash matches, null if mismatch
+     */
+    public Path assembleAndStore(String sessionId, int totalChunks, String expectedSha256)
+            throws IOException {
+
+        Path assembledFile = assembleTempFile(sessionId, totalChunks);
+        if (!verifyAssembledHash(assembledFile, expectedSha256, sessionId)) {
+            return null;
+        }
+
+        Path storePath = commitAssembledFile(assembledFile, expectedSha256);
+        cleanSessionDir(sessionId);
+        return storePath;
+    }
+
+    /** Move an infected assembled file into quarantine and write audit metadata beside it. */
+    public Path quarantineFile(UploadSession session, Path assembledFile, ScanResult scanResult)
+            throws IOException {
+        Files.createDirectories(quarantineDir);
+
+        String safeSessionId = sanitizeFileName(session.getSessionId());
+        String safeHash = sanitizeFileName(session.getSha256Whole());
+        String baseName = safeSessionId + "_" + safeHash;
+        Path quarantinePath = quarantineDir.resolve(baseName + ".blocked");
+        Path metadataPath = quarantineDir.resolve(baseName + ".metadata.json");
+
+        moveWithAtomicFallback(assembledFile, quarantinePath);
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("quarantinedAt", Instant.now().toString());
+        metadata.put("sessionId", session.getSessionId());
+        metadata.put("fileId", session.getFileId());
+        metadata.put("fileName", session.getFileName());
+        metadata.put("sha256Whole", session.getSha256Whole());
+        metadata.put("fileSize", session.getFileSize());
+        metadata.put("uploaderId", session.getUploaderId());
+        metadata.put("scanStatus", scanResult.getStatus().name());
+        metadata.put("threatName", scanResult.getThreatName());
+        metadata.put("scanner", scanResult.getScanner());
+        metadata.put("scanDurationMs", scanResult.getDurationMs());
+        metadata.put("rawResponse", scanResult.getRawResponse());
+        metadata.put("quarantinePath", quarantinePath.toString());
+
+        try (Writer writer = Files.newBufferedWriter(metadataPath)) {
+            GSON.toJson(metadata, writer);
+        }
+
+        LOG.warning("File quarantined: " + quarantinePath + " threat=" + scanResult.getThreatName());
+        return quarantinePath;
     }
 
     /** Delete a session's temp directory and all its contents. */
@@ -233,4 +295,28 @@ public class FileStore {
 
     public Path getDataDir() { return dataDir; }
     public Path getTempDir() { return tempDir; }
+    public Path getQuarantineDir() { return quarantineDir; }
+
+    private static Path defaultQuarantineDir(Path dataDir) {
+        Path parent = dataDir.getParent();
+        if (parent == null) {
+            return Paths.get("data/quarantine");
+        }
+        return parent.resolve("quarantine");
+    }
+
+    private static String sanitizeFileName(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return "unknown";
+        }
+        return value.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    private static void moveWithAtomicFallback(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
 }
