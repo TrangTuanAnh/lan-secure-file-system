@@ -61,6 +61,12 @@ class DownloadService:
             address = self.storage_registry.get_storage_address(node_id)
             if not address:
                 return None, node_id, "STORAGE_NODE_UNAVAILABLE"
+            # Cross-check against the node's reported manifest: even though the
+            # node is alive, it may have lost the file. node_has_file returns
+            # True conservatively when no full manifest has arrived yet so we
+            # don't break downloads during bootstrap.
+            if not self.storage_registry.node_has_file(node_id, file.get('sha256_whole')):
+                return None, node_id, "FILE_NOT_ON_NODE"
             return address, node_id, None
         return self.storage_address, node_id, None
 

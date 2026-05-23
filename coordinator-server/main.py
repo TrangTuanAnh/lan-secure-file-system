@@ -18,6 +18,7 @@ from ticket.ticket_service import TicketService
 from client_socket_server import ClientSocketServer
 from storage_node.storage_node_server import StorageNodeServer
 from storage_node.registry import StorageNodeRegistry
+from storage_node.reconciliation_service import ReconciliationService
 from logging_config import setup_logging, get_logger
 
 logger = get_logger(__name__)
@@ -120,10 +121,11 @@ def main():
         storage_registry = StorageNodeRegistry(
             timeout_seconds=config.server.storage_node_timeout
         )
+        reconciliation_service = ReconciliationService(db)
         
         # Business logic services
         notification_service = NotificationService()
-        room_service = RoomService(db, authorization_service, audit_service, notification_service)
+        room_service = RoomService(db, audit_service, notification_service)
         file_service = FileService(db, authorization_service)
         upload_service = UploadService(
             database=db,
@@ -202,7 +204,8 @@ def main():
             ticket_service=ticket_service,
             upload_service=upload_service,
             timeout_seconds=config.server.storage_node_timeout,
-            registry=storage_registry
+            registry=storage_registry,
+            reconciliation_service=reconciliation_service
         )
         storage_node_server.start()
         logger.info(f"Storage node server started on port {config.server.storage_port}")

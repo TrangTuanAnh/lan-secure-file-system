@@ -47,6 +47,7 @@ public enum MessageType {
     TICKET_INVALID,         // Ticket is invalid
     UPLOAD_COMPLETE,        // Notify Coordinator upload completed
     UPLOAD_FAILED,          // Notify Coordinator upload failed
+    MANIFEST_DELTA,         // Incremental manifest update (added/removed sha256 lists)
     ACK;                    // Generic acknowledgment
 
     public static MessageType fromString(String s) {

@@ -21,6 +21,12 @@ class FakeRegistry:
             return node.storage_address
         return None
 
+    def node_has_file(self, node_id, sha):
+        # Existing tests predate manifest tracking — treat all healthy nodes
+        # as still holding the file (matches the conservative bootstrap path).
+        node = self.nodes.get(node_id)
+        return bool(node and node.healthy)
+
 
 def file_row(storage_node_id="node-1"):
     return {
@@ -87,6 +93,28 @@ def test_download_fails_when_owning_node_unavailable():
     assert success is False
     assert plan is None
     assert error == "STORAGE_NODE_UNAVAILABLE"
+    redis.set_ticket.assert_not_called()
+
+
+def test_download_fails_when_node_alive_but_missing_file():
+    """Node is healthy but its reported manifest says it no longer holds the file."""
+    class ManifestAwareRegistry(FakeRegistry):
+        def node_has_file(self, node_id, sha):
+            return False  # node is alive but lost this file
+
+    registry = ManifestAwareRegistry([FakeNode("node-1", "node-1:9001", healthy=True)])
+    service, db, redis, _ = make_service(registry)
+    db.execute_query.return_value = [file_row("node-1")]
+
+    success, plan, error = service.handle_init_download_direct(
+        user_id="user-1",
+        global_role="USER",
+        file_id="file-123"
+    )
+
+    assert success is False
+    assert plan is None
+    assert error == "FILE_NOT_ON_NODE"
     redis.set_ticket.assert_not_called()
 
 

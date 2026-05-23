@@ -496,7 +496,7 @@ class ClientSocketServer(BaseSocketServer):
         """
         try:
             # Remove connection from all notification subscriptions
-            self.notification_service.remove_connection(connection)
+            self.notification_service.remove_subscriber_from_all_rooms(connection)
             logger.info(f"Cleaned up subscriptions for connection {connection.connection_id}")
         except Exception as e:
             logger.error(f"Error cleaning up connection {connection.connection_id}: {e}")

@@ -1,11 +1,13 @@
 package storagenode.network;
 
 import storagenode.crypto.HashUtil;
+import storagenode.storage.FileStore;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.logging.Logger;
 
 /**
@@ -41,6 +43,14 @@ public class CoordinatorClient {
     public CoordinatorClient(String ticketSecret, String nodeId,
                              String coordinatorHost, int coordinatorPort,
                              String dataHost, int dataPort, String storageAddress) {
+        this(ticketSecret, nodeId, coordinatorHost, coordinatorPort,
+             dataHost, dataPort, storageAddress, null);
+    }
+
+    public CoordinatorClient(String ticketSecret, String nodeId,
+                             String coordinatorHost, int coordinatorPort,
+                             String dataHost, int dataPort, String storageAddress,
+                             FileStore fileStore) {
         this.ticketSecret = ticketSecret;
         this.nodeId = nodeId;
         this.coordinatorHost = coordinatorHost;
@@ -48,11 +58,12 @@ public class CoordinatorClient {
         this.dataHost = dataHost;
         this.dataPort = dataPort;
         this.storageAddress = storageAddress;
-        
-        // Initialize control plane client for persistent connection
+
+        // Initialize control plane client for persistent connection.
+        // FileStore is passed so STORAGE_AUTH carries the current manifest.
         this.controlPlaneClient = new ControlPlaneClient(
             coordinatorHost, coordinatorPort, ticketSecret, nodeId,
-            dataHost, dataPort, storageAddress
+            dataHost, dataPort, storageAddress, fileStore
         );
     }
 
@@ -127,9 +138,18 @@ public class CoordinatorClient {
     public void notifyUploadComplete(String fileId, String sha256Whole, long fileSize) {
         // Generate stored name based on hash (first 2 chars as subdirectory)
         String storedName = "data/store/" + sha256Whole.substring(0, 2) + "/" + sha256Whole;
-        
+
         // Delegate to control plane client
         controlPlaneClient.notifyUploadComplete(fileId, sha256Whole, storedName, fileSize);
+
+        // Keep the Coordinator's per-node manifest in sync. The Coordinator
+        // also adds this sha implicitly on UPLOAD_COMPLETE; this delta covers
+        // dedup-hit cases where notifyUploadComplete runs without a real new
+        // file having been just stored on disk (sha was already present).
+        controlPlaneClient.sendManifestDelta(
+            Collections.singletonList(sha256Whole),
+            Collections.emptyList()
+        );
     }
 
     /**
