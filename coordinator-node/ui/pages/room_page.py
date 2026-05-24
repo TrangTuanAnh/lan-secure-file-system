@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -823,13 +824,13 @@ class RoomPage(QWidget):
         header = self.files_table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        header.setSectionResizeMode(0, header.Stretch)
-        header.setSectionResizeMode(1, header.ResizeToContents)
-        header.setSectionResizeMode(2, header.ResizeToContents)
-        header.setSectionResizeMode(3, header.ResizeToContents)
-        header.setSectionResizeMode(4, header.ResizeToContents)
-        header.setSectionResizeMode(5, header.ResizeToContents)
-        header.setSectionResizeMode(6, header.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
         files_body.addWidget(self.files_table, 1)
         content_row.addWidget(self.files_section["frame"], 3)
 

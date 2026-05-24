@@ -90,7 +90,13 @@ class AuthHandlers:
         Response payload (success):
         {
             "token": "uuid",
-            "expiresAt": 1234567890
+            "expiresAt": 1234567890,
+            "user": {
+                "id": "uuid",
+                "username": "string",
+                "email": "string",
+                "globalRole": "ADMIN"
+            }
         }
         
         Args:
@@ -112,7 +118,10 @@ class AuthHandlers:
             )
         
         # Attempt login
-        success, token, expires_at, error_code = self.auth_service.login(username, password)
+        success, token, expires_at, user_profile, error_code = self.auth_service.login_with_profile(
+            username,
+            password,
+        )
         
         if not success:
             return Message.create_error(
@@ -122,11 +131,18 @@ class AuthHandlers:
             )
         
         # Return success response
+        logger.info(
+            "LOGIN success response keys=%s user_exists=%s user_keys=%s",
+            ["token", "expiresAt", "user"],
+            bool(user_profile),
+            sorted(user_profile.keys()) if isinstance(user_profile, dict) else [],
+        )
         return Message.create_response(
             message_type=MessageType.LOGIN_RESPONSE,
             payload={
                 "token": token,
-                "expiresAt": expires_at
+                "expiresAt": expires_at,
+                "user": user_profile,
             },
             request_id=message.request_id
         )

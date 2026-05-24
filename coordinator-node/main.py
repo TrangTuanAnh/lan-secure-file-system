@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +19,7 @@ from ui.dashboard import DashboardRuntimeConfig, DashboardWindow
 from ui.pages.login_page import LoginRuntimeConfig, LoginWindow
 from ui.pages.signup_page import SignupWindow
 
+logger = logging.getLogger(__name__)
 
 class AppController:
     """Routes authenticated users from login into the dashboard."""
@@ -65,6 +67,12 @@ class AppController:
 
     def _on_login_successful(self, payload: dict) -> None:
         user_profile = payload.get("user") or {}
+        logger.info(
+            "AppController login payload keys=%s user_exists=%s user_keys=%s",
+            sorted(payload.keys()),
+            bool(user_profile),
+            sorted(user_profile.keys()) if isinstance(user_profile, dict) else [],
+        )
         username = payload.get("username") or user_profile.get("username") or ""
         email = payload.get("email") or user_profile.get("email") or ""
         user_id = payload.get("user_id") or user_profile.get("id") or ""

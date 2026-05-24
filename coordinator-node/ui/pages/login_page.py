@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,6 +40,7 @@ from ui.widgets.modern_lineedit import ModernLineEdit
 
 
 APP_FONT = "Inter"
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LoginRuntimeConfig:
@@ -111,6 +113,12 @@ class LoginWorker(QObject):
             login_result = service._client.login(self._username, self._password)
             if login_result:
                 user_payload = login_result.get("user") or {}
+                logger.info(
+                    "LOGIN response keys=%s user_exists=%s user_keys=%s",
+                    sorted(login_result.keys()),
+                    bool(user_payload),
+                    sorted(user_payload.keys()) if isinstance(user_payload, dict) else [],
+                )
                 backend_username = str(user_payload.get("username") or self._username)
                 backend_email = str(user_payload.get("email") or "")
                 backend_user_id = str(user_payload.get("id") or user_payload.get("userId") or "")
@@ -140,6 +148,13 @@ class LoginWorker(QObject):
                         "token": service._client.get_token() or "",
                         "global_role": resolved_role,
                     }
+                )
+                logger.info(
+                    "Resolved login profile username=%s has_email=%s has_user_id=%s role=%s",
+                    backend_username,
+                    bool(backend_email),
+                    bool(backend_user_id),
+                    resolved_role,
                 )
             else:
                 self.failure.emit("Invalid username or password.")
