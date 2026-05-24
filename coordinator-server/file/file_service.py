@@ -306,8 +306,15 @@ class FileService:
             return True, None
             
         except Exception as e:
-            logger.error(f"Failed to delete file: {e}")
-            return False, "DATABASE_ERROR"
+            logger.exception(
+                "DELETE_FILE database failure: file_id=%s user_id=%s global_role=%s error_type=%s error=%s",
+                file_id,
+                user_id,
+                global_role,
+                e.__class__.__name__,
+                e,
+            )
+            return False, f"DATABASE_ERROR:{e.__class__.__name__}: {e}"
     
     def calculate_next_version(
         self,
