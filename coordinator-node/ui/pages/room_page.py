@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -19,14 +20,11 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFrame,
-    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QScrollArea,
     QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -38,11 +36,13 @@ from ui.fonts import app_font, load_app_fonts, ui_font, ui_font_family
 from ui.widgets.error_label import ErrorLabel
 from ui.widgets.modern_button import PALETTE, ModernButton
 from ui.widgets.modern_lineedit import ModernLineEdit
+from ui.widgets.room_members_drawer import RoomMembersDrawer
 from ui.widgets.status_badge import StatusBadge
 from ui.widgets.top_bar import TopBar
 
 
 ROLE_OPTIONS = ("OWNER", "MEMBER", "VIEWER")
+logger = logging.getLogger(__name__)
 
 
 def _format_timestamp(value: Any) -> str:
@@ -84,6 +84,7 @@ def _normalize_file(file_payload: dict[str, Any]) -> dict[str, Any]:
         "room_id": file_payload.get("roomId") or file_payload.get("room_id") or "",
         "name": file_payload.get("name") or file_payload.get("originalName") or "Unnamed File",
         "original_name": file_payload.get("originalName") or file_payload.get("name") or "Unnamed File",
+        "uploader_id": file_payload.get("uploaderId") or file_payload.get("uploader_id") or "",
         "size": file_payload.get("size") or file_payload.get("sizeBytes") or 0,
         "status": file_payload.get("status") or "UNKNOWN",
         "version": file_payload.get("version") or file_payload.get("currentVersion") or 1,
@@ -95,6 +96,83 @@ def _normalize_file(file_payload: dict[str, Any]) -> dict[str, Any]:
         "scan_time": file_payload.get("scanTime") or "",
         "description": file_payload.get("description") or "No additional metadata from backend.",
     }
+
+
+def _file_status_variant(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"ready", "clean", "completed", "active"}:
+        return "active"
+    if normalized in {"scanning", "pending", "queued"}:
+        return "warning"
+    if normalized in {"infected", "blocked", "failed", "error"}:
+        return "offline"
+    return "active"
+
+
+class FileListCard(QFrame):
+    """Compact selectable file row with clean metadata only."""
+
+    clicked = Signal(dict)
+
+    def __init__(self, file_data: dict[str, Any], parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self._file_data = dict(file_data)
+        self.setObjectName("fileListCard")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumHeight(82)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(10)
+
+        self.name_label = QLabel(self._file_data.get("name", "Unnamed File"))
+        self.name_label.setFont(app_font(11, 600))
+        self.name_label.setWordWrap(True)
+        header_row.addWidget(self.name_label, 1)
+
+        status_text = self._file_data.get("scan_status") or self._file_data.get("status") or ""
+        self.status_badge = StatusBadge(status_text or "READY", _file_status_variant(str(status_text)))
+        self.status_badge.setVisible(bool(status_text))
+        header_row.addWidget(self.status_badge, 0, Qt.AlignTop)
+        layout.addLayout(header_row)
+
+        meta_text = f"{_format_size(self._file_data.get('size'))} · Uploaded by {self._file_data.get('uploaded_by', 'Unknown')}"
+        self.meta_label = QLabel(meta_text)
+        self.meta_label.setObjectName("fileCardMeta")
+        self.meta_label.setFont(ui_font(9))
+        self.meta_label.setWordWrap(True)
+        layout.addWidget(self.meta_label)
+
+        self.version_label = QLabel(f"Version {self._file_data.get('version', 1)}")
+        self.version_label.setObjectName("fileCardSubtle")
+        self.version_label.setFont(ui_font(9, 600))
+        layout.addWidget(self.version_label)
+
+        self.setToolTip(self._file_data.get("name", "Unnamed File"))
+        self.set_selected(False)
+
+    @property
+    def file_data(self) -> dict[str, Any]:
+        return dict(self._file_data)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", selected)
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+        self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.file_data)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class BaseRoomDialog(QDialog):
@@ -535,8 +613,17 @@ class FileDeleteWorker(QObject):
                 return
             if self._token:
                 service._client.set_token(self._token)
-            if not service.files.delete_file(self._file_id):
-                self.failure.emit("Unable to delete file. Backend denied the request.")
+            try:
+                service._client.delete_file(self._file_id)
+            except ValueError as exc:
+                error_text = str(exc)
+                if "PERMISSION_DENIED" in error_text:
+                    self.failure.emit("You do not have permission to delete this file.")
+                    return
+                if "FILE_NOT_FOUND" in error_text:
+                    self.failure.emit("This file no longer exists on the server.")
+                    return
+                self.failure.emit(f"Failed to delete file: {error_text}")
                 return
             self.success.emit("File deleted successfully.")
         except Exception as exc:
@@ -590,6 +677,7 @@ class FileUploadWorker(QObject):
             if not plan:
                 self.failure.emit("Unable to initialize upload.")
                 return
+            logger.info("INIT_UPLOAD returned storage target: %s", plan.get("storageAddress"))
             if plan.get("deduplicated"):
                 self.success.emit(f"File '{source_path.name}' already exists and was deduplicated.")
                 return
@@ -650,6 +738,7 @@ class FileDownloadWorker(QObject):
                 self.failure.emit("Unable to initialize download.")
                 return
             plan["fileId"] = self._file_id
+            logger.info("INIT_DOWNLOAD returned storage target: %s", plan.get("storageAddress"))
 
             transfer_client = StorageNodeDataPlaneClient(str(plan.get("storageAddress") or ""))
             transfer_client.download_file(
@@ -714,8 +803,10 @@ class RoomPage(QWidget):
         self._files: list[dict[str, Any]] = []
         self._filtered_files: list[dict[str, Any]] = []
         self._selected_file: dict[str, Any] = {}
-        self._members_dialog: Optional[MembersDialog] = None
-        self._add_member_dialog: Optional[AddMemberDialog] = None
+        self._file_cards: list[FileListCard] = []
+        self._pending_uploaded_file_name: str = ""
+        self._pending_delete_file: dict[str, Any] = {}
+        self._members_drawer: Optional[RoomMembersDrawer] = None
         self._set_role_dialog: Optional[SetRoleDialog] = None
         self._versions_dialog: Optional[FileVersionsDialog] = None
 
@@ -802,36 +893,28 @@ class RoomPage(QWidget):
         files_body = self.files_section["body"]
 
         self.files_empty_label = QLabel(
-            "No files available in this room.\nNo recent file uploads have been indexed for this workspace."
+            "No files available in this room."
         )
         self.files_empty_label.setObjectName("emptyFilesLabel")
         self.files_empty_label.setWordWrap(True)
         self.files_empty_label.setFont(ui_font(10))
         files_body.addWidget(self.files_empty_label)
 
-        self.files_table = QTableWidget(0, 7)
-        self.files_table.setObjectName("filesTable")
-        self.files_table.setHorizontalHeaderLabels(
-            ["File name", "Size", "Uploader", "Version", "Scan status", "Uploaded at", "Actions"]
-        )
-        self.files_table.verticalHeader().setVisible(False)
-        self.files_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.files_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.files_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.files_table.setAlternatingRowColors(False)
-        self.files_table.setShowGrid(False)
-        self.files_table.itemSelectionChanged.connect(self._on_table_selection_changed)
-        header = self.files_table.horizontalHeader()
-        header.setStretchLastSection(False)
-        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-        files_body.addWidget(self.files_table, 1)
+        self.files_scroll = QScrollArea()
+        self.files_scroll.setObjectName("filesScroll")
+        self.files_scroll.setWidgetResizable(True)
+        self.files_scroll.setFrameShape(QFrame.NoFrame)
+        self.files_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        self.files_list_content = QWidget()
+        self.files_list_content.setObjectName("filesListContent")
+        self.files_list_layout = QVBoxLayout(self.files_list_content)
+        self.files_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.files_list_layout.setSpacing(10)
+        self.files_list_layout.addStretch()
+
+        self.files_scroll.setWidget(self.files_list_content)
+        files_body.addWidget(self.files_scroll, 1)
         content_row.addWidget(self.files_section["frame"], 3)
 
         self.detail_card = QFrame()
@@ -870,7 +953,64 @@ class RoomPage(QWidget):
             self.file_detail_lines[key] = line
             detail_layout.addWidget(line)
         detail_layout.addStretch()
+
+        detail_actions = QHBoxLayout()
+        detail_actions.setContentsMargins(0, 0, 0, 0)
+        detail_actions.setSpacing(10)
+
+        self.download_button = ModernButton("Download")
+        self.download_button.clicked.connect(self._start_download_selected)
+        detail_actions.addWidget(self.download_button)
+
+        self.versions_button = ModernButton("Versions")
+        self.versions_button.set_button_style(background_color=PALETTE.surface, background_alt=PALETTE.surface_alt)
+        self.versions_button.clicked.connect(self._open_selected_versions)
+        detail_actions.addWidget(self.versions_button)
+
+        self.delete_file_button = ModernButton("Delete")
+        self.delete_file_button.set_accent_color(PALETTE.error)
+        self.delete_file_button.clicked.connect(self._delete_selected_file)
+        detail_actions.addWidget(self.delete_file_button)
+
+        detail_layout.addLayout(detail_actions)
         content_row.addWidget(self.detail_card, 2)
+        self._update_file_detail({})
+
+        self.delete_confirm_panel = QFrame(self)
+        self.delete_confirm_panel.setObjectName("deleteConfirmPanel")
+        self.delete_confirm_panel.setFixedWidth(420)
+        self.delete_confirm_panel.hide()
+
+        confirm_layout = QVBoxLayout(self.delete_confirm_panel)
+        confirm_layout.setContentsMargins(22, 20, 22, 20)
+        confirm_layout.setSpacing(12)
+
+        confirm_title = QLabel("Delete file?")
+        confirm_title.setObjectName("sectionTitle")
+        confirm_title.setFont(app_font(13, 700))
+        confirm_layout.addWidget(confirm_title)
+
+        self.delete_confirm_message = QLabel("Delete this file? This action cannot be undone.")
+        self.delete_confirm_message.setObjectName("sectionSubtitle")
+        self.delete_confirm_message.setWordWrap(True)
+        self.delete_confirm_message.setFont(ui_font(9))
+        confirm_layout.addWidget(self.delete_confirm_message)
+
+        confirm_actions = QHBoxLayout()
+        confirm_actions.setContentsMargins(0, 0, 0, 0)
+        confirm_actions.setSpacing(10)
+
+        self.delete_confirm_cancel = ModernButton("Cancel")
+        self.delete_confirm_cancel.set_button_style(background_color=PALETTE.surface, background_alt=PALETTE.surface_alt)
+        self.delete_confirm_cancel.clicked.connect(self._hide_delete_confirm_panel)
+        confirm_actions.addWidget(self.delete_confirm_cancel)
+
+        self.delete_confirm_accept = ModernButton("Delete")
+        self.delete_confirm_accept.set_accent_color(PALETTE.error)
+        self.delete_confirm_accept.clicked.connect(self._execute_delete_confirmed)
+        confirm_actions.addWidget(self.delete_confirm_accept)
+
+        confirm_layout.addLayout(confirm_actions)
 
     def _build_section_frame(self, title: str, subtitle: str) -> dict[str, Any]:
         frame = QFrame()
@@ -914,6 +1054,7 @@ class RoomPage(QWidget):
             QFrame#roomActionToolbar,
             QFrame#roomSection,
             QFrame#fileDetailCard,
+            QFrame#deleteConfirmPanel,
             QFrame#dialogRow {{
                 background-color: rgba(26, 26, 46, 220);
                 border: 1px solid rgba(255, 255, 255, 0.05);
@@ -923,21 +1064,28 @@ class RoomPage(QWidget):
                 background-color: rgba(15, 15, 30, 176);
                 border-radius: 22px;
             }}
-            QTableWidget#filesTable {{
-                background-color: transparent;
-                color: {PALETTE.text};
-                border: none;
-                gridline-color: transparent;
-                font-family: "{ui_font_family()}";
-                selection-background-color: rgba(0, 200, 83, 18);
+            QFrame#deleteConfirmPanel {{
+                background-color: rgba(15, 15, 30, 244);
+                border: 1px solid rgba(255, 82, 82, 0.35);
+                border-radius: 20px;
             }}
-            QHeaderView::section {{
-                background-color: rgba(15, 15, 30, 168);
-                color: #8aa39a;
+            QScrollArea#filesScroll,
+            QWidget#filesListContent {{
+                background-color: transparent;
                 border: none;
-                padding: 10px 12px;
-                font-family: "{ui_font_family()}";
-                font-weight: 600;
+            }}
+            QFrame#fileListCard {{
+                background-color: rgba(15, 15, 30, 150);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 18px;
+            }}
+            QFrame#fileListCard:hover {{
+                background-color: rgba(18, 30, 33, 186);
+                border: 1px solid rgba(0, 230, 118, 0.30);
+            }}
+            QFrame#fileListCard[selected="true"] {{
+                background-color: rgba(16, 38, 31, 208);
+                border: 1px solid rgba(0, 230, 118, 0.58);
             }}
             QLabel {{
                 background: transparent;
@@ -950,6 +1098,8 @@ class RoomPage(QWidget):
             QLabel#sectionSubtitle,
             QLabel#fileDetailMeta,
             QLabel#emptyFilesLabel,
+            QLabel#fileCardMeta,
+            QLabel#fileCardSubtle,
             QLabel#memberMeta,
             QLabel#memberHint {{
                 color: #8aa39a;
@@ -960,6 +1110,13 @@ class RoomPage(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self.error_toast.move_to_top_center(self)
+        if hasattr(self, "delete_confirm_panel"):
+            panel_width = self.delete_confirm_panel.width()
+            panel_x = max(24, (self.width() - panel_width) // 2)
+            panel_y = max(140, (self.height() - self.delete_confirm_panel.sizeHint().height()) // 2)
+            self.delete_confirm_panel.move(panel_x, panel_y)
+        if self._members_drawer is not None:
+            self._members_drawer.update_anchor_geometry()
 
     def _display_global_role(self) -> str:
         return "Administrator" if self._global_role == "ADMIN" else "Secure Operator"
@@ -1045,6 +1202,24 @@ class RoomPage(QWidget):
         self._data_thread.finished.connect(self._cleanup_data_thread)
         self._data_thread.start()
 
+    def _is_file_uploader(self, file_data: dict[str, Any]) -> bool:
+        uploader_id = str(file_data.get("uploader_id") or "").strip()
+        if uploader_id and self._current_user_id:
+            return uploader_id == self._current_user_id
+        uploader_name = str(file_data.get("uploaded_by") or "").strip().lower()
+        return bool(uploader_name and self._current_username) and uploader_name == self._current_username.lower()
+
+    def _can_delete_file_item(self, file_data: dict[str, Any]) -> bool:
+        if not file_data:
+            return False
+        if self._global_role == "ADMIN":
+            return True
+        if self._room_role == "OWNER":
+            return True
+        if self._room_role == "VIEWER":
+            return False
+        return self._is_file_uploader(file_data)
+
     def _on_room_data_loaded(self, payload: dict[str, Any]) -> None:
         self._set_loading_state(False)
         members = payload.get("members", [])
@@ -1064,7 +1239,7 @@ class RoomPage(QWidget):
         self._members = []
         self._files = []
         self._render_members_dialog()
-        self._render_file_table([])
+        self._render_file_cards([])
 
     def _filter_files(self, query: str) -> None:
         normalized = query.strip().lower()
@@ -1076,81 +1251,73 @@ class RoomPage(QWidget):
             or normalized in str(file_item.get("uploaded_by", "")).lower()
             or normalized in str(file_item.get("status", "")).lower()
         ]
-        self._render_file_table(self._filtered_files)
+        self._render_file_cards(self._filtered_files)
 
-    def _render_file_table(self, files: list[dict[str, Any]]) -> None:
-        self.files_table.setRowCount(0)
+    def _clear_file_cards(self) -> None:
+        self._file_cards.clear()
+        while self.files_list_layout.count():
+            item = self.files_list_layout.takeAt(0)
+            widget = item.widget()
+            child_layout = item.layout()
+            if widget is not None:
+                widget.deleteLater()
+            elif child_layout is not None:
+                while child_layout.count():
+                    nested = child_layout.takeAt(0)
+                    nested_widget = nested.widget()
+                    if nested_widget is not None:
+                        nested_widget.deleteLater()
+
+    def _render_file_cards(self, files: list[dict[str, Any]]) -> None:
+        self._clear_file_cards()
         self.files_empty_label.setVisible(not files)
-        self.files_table.setVisible(bool(files))
+        self.files_scroll.setVisible(bool(files))
 
         if not files:
             self._update_file_detail({})
+            self._selected_file = {}
             return
 
-        self.files_table.setRowCount(len(files))
-        for row_index, file_item in enumerate(files):
-            for column, value in enumerate(
-                (
-                    file_item.get("name", "Unnamed File"),
-                    _format_size(file_item.get("size")),
-                    file_item.get("uploaded_by", "Unknown"),
-                    str(file_item.get("version", 1)),
-                    file_item.get("scan_status") or file_item.get("status", "Unknown"),
-                    _format_timestamp(file_item.get("uploaded_at")),
-                )
-            ):
-                item = QTableWidgetItem(str(value))
-                item.setData(Qt.UserRole, file_item)
-                self.files_table.setItem(row_index, column, item)
+        selected_file_id = str(self._selected_file.get("file_id") or "")
+        selected_original_name = str(self._selected_file.get("original_name") or self._selected_file.get("name") or "")
+        initial_selection: Optional[dict[str, Any]] = None
 
-            actions_widget = QWidget()
-            actions_layout = QHBoxLayout(actions_widget)
-            actions_layout.setContentsMargins(0, 0, 0, 0)
-            actions_layout.setSpacing(8)
+        for file_item in files:
+            card = FileListCard(file_item, self.files_list_content)
+            card.clicked.connect(self._on_file_selected)
+            self.files_list_layout.addWidget(card)
+            self._file_cards.append(card)
 
-            detail_button = ModernButton("Detail")
-            detail_button.setMinimumWidth(84)
-            detail_button.clicked.connect(lambda _=False, payload=file_item: self._on_file_selected(payload))
-            actions_layout.addWidget(detail_button)
+            if initial_selection is None:
+                initial_selection = file_item
 
-            download_button = ModernButton("Download")
-            download_button.setMinimumWidth(102)
-            download_button.clicked.connect(lambda _=False, payload=file_item: self._start_download(payload))
-            actions_layout.addWidget(download_button)
+            file_id = str(file_item.get("file_id") or "")
+            original_name = str(file_item.get("original_name") or file_item.get("name") or "")
+            if self._pending_uploaded_file_name and self._pending_uploaded_file_name == original_name:
+                initial_selection = file_item
+            elif selected_file_id and selected_file_id == file_id:
+                initial_selection = file_item
+            elif not selected_file_id and selected_original_name and selected_original_name == original_name:
+                initial_selection = file_item
 
-            versions_button = ModernButton("Versions")
-            versions_button.setMinimumWidth(98)
-            versions_button.set_button_style(background_color=PALETTE.surface, background_alt=PALETTE.surface_alt)
-            versions_button.clicked.connect(lambda _=False, payload=file_item: self._open_versions_dialog(payload))
-            actions_layout.addWidget(versions_button)
+        self.files_list_layout.addStretch()
+        self._pending_uploaded_file_name = ""
+        if initial_selection is not None:
+            self._on_file_selected(initial_selection)
 
-            if self._can_delete_files():
-                delete_button = ModernButton("Delete")
-                delete_button.setMinimumWidth(90)
-                delete_button.set_accent_color(PALETTE.error)
-                delete_button.clicked.connect(lambda _=False, payload=file_item: self._confirm_delete_file(payload))
-                actions_layout.addWidget(delete_button)
-
-            self.files_table.setCellWidget(row_index, 6, actions_widget)
-            self.files_table.setRowHeight(row_index, 62)
-
-        self.files_table.selectRow(0)
-        self._update_file_detail(files[0])
-
-    def _on_table_selection_changed(self) -> None:
-        selected_indexes = self.files_table.selectionModel().selectedRows()
-        if not selected_indexes:
-            return
-        row = selected_indexes[0].row()
-        item = self.files_table.item(row, 0)
-        if item is None:
-            return
-        payload = item.data(Qt.UserRole)
-        if isinstance(payload, dict):
-            self._on_file_selected(payload)
+    def _update_file_card_selection(self, selected_file: dict[str, Any]) -> None:
+        selected_id = str(selected_file.get("file_id") or "")
+        selected_name = str(selected_file.get("original_name") or selected_file.get("name") or "")
+        for card in self._file_cards:
+            payload = card.file_data
+            card_id = str(payload.get("file_id") or "")
+            card_name = str(payload.get("original_name") or payload.get("name") or "")
+            is_selected = bool(selected_id and card_id == selected_id) or (not selected_id and selected_name == card_name)
+            card.set_selected(is_selected)
 
     def _on_file_selected(self, file_data: dict[str, Any]) -> None:
         self._selected_file = dict(file_data)
+        self._update_file_card_selection(file_data)
         self._update_file_detail(file_data)
         file_id = str(file_data.get("file_id") or "")
         if not file_id or (self._detail_thread and self._detail_thread.isRunning()):
@@ -1181,6 +1348,11 @@ class RoomPage(QWidget):
             self.file_detail_title.setText("Select a file")
             for key, label in self.file_detail_lines.items():
                 label.setText(f"{key.replace('_', ' ').title()}: --")
+            self.download_button.setEnabled(False)
+            self.download_button.setToolTip("Select a file to download.")
+            self.versions_button.setEnabled(False)
+            self.delete_file_button.setVisible(False)
+            self.delete_file_button.setEnabled(False)
             return
 
         self.file_detail_title.setText(detail.get("name", "Unnamed File"))
@@ -1197,98 +1369,100 @@ class RoomPage(QWidget):
         self.file_detail_lines["description"].setText(
             f"Metadata: {detail.get('description') or 'No additional metadata from backend.'}"
         )
+        has_file_id = bool(str(detail.get("file_id") or "").strip())
+        self.download_button.setEnabled(has_file_id)
+        self.download_button.setToolTip("" if has_file_id else "Download is not supported by current backend yet.")
+        can_show_versions = bool(str(detail.get("original_name") or detail.get("name") or "").strip())
+        self.versions_button.setEnabled(can_show_versions)
+        can_delete_selected = has_file_id and self._can_delete_file_item(detail)
+        self.delete_file_button.setVisible(can_delete_selected)
+        self.delete_file_button.setEnabled(can_delete_selected)
+
+    def _start_download_selected(self) -> None:
+        if not self._selected_file:
+            self.error_toast.show_error("Select a file before downloading.")
+            return
+        self._start_download(self._selected_file)
+
+    def _open_selected_versions(self) -> None:
+        if not self._selected_file:
+            self.error_toast.show_error("Select a file to view version history.")
+            return
+        self._open_versions_dialog(self._selected_file)
+
+    def _delete_selected_file(self) -> None:
+        if not self._selected_file:
+            self.error_toast.show_error("Select a file before deleting.")
+            return
+        self._confirm_delete_file(self._selected_file)
+
+    def _show_delete_confirm_panel(self, file_data: dict[str, Any]) -> None:
+        self._pending_delete_file = dict(file_data)
+        self.delete_confirm_message.setText(
+            f"Delete {file_data.get('name', 'this file')}? This action cannot be undone."
+        )
+        self.delete_confirm_accept.set_loading(False)
+        self.delete_confirm_panel.adjustSize()
+        panel_width = self.delete_confirm_panel.width()
+        panel_x = max(24, (self.width() - panel_width) // 2)
+        panel_y = max(140, (self.height() - self.delete_confirm_panel.height()) // 2)
+        self.delete_confirm_panel.move(panel_x, panel_y)
+        self.delete_confirm_panel.show()
+        self.delete_confirm_panel.raise_()
+
+    def _hide_delete_confirm_panel(self) -> None:
+        self.delete_confirm_accept.set_loading(False)
+        self.delete_confirm_panel.hide()
+        self._pending_delete_file = {}
+
+    def _execute_delete_confirmed(self) -> None:
+        file_data = dict(self._pending_delete_file)
+        if not file_data:
+            self._hide_delete_confirm_panel()
+            return
+        self.delete_confirm_accept.set_loading(True, "Deleting")
+        self._start_delete_worker(file_data)
+
+    def _ensure_members_drawer(self) -> RoomMembersDrawer:
+        if self._members_drawer is None:
+            parent_widget = self.window() if isinstance(self.window(), QWidget) else self
+            self._members_drawer = RoomMembersDrawer(parent_widget)
+            self._members_drawer.add_member_requested.connect(self._start_add_member)
+            self._members_drawer.set_role_requested.connect(self._open_set_role_dialog)
+            self._members_drawer.remove_member_requested.connect(self._confirm_remove_member)
+        self._members_drawer.set_manage_permissions(self._can_manage_members())
+        self._members_drawer.update_anchor_geometry()
+        return self._members_drawer
 
     def _open_members_dialog(self) -> None:
-        if self._members_dialog is None:
-            self._members_dialog = MembersDialog(self)
-            self._members_dialog.add_member_button.clicked.connect(self._open_add_member_dialog)
+        drawer = self._ensure_members_drawer()
         self._render_members_dialog()
-        self._members_dialog.show()
-        self._members_dialog.raise_()
-        self._members_dialog.activateWindow()
+        drawer.show_members_view()
+        drawer.open()
 
     def _render_members_dialog(self) -> None:
-        if self._members_dialog is None:
+        if self._members_drawer is None:
             return
-
-        dialog = self._members_dialog
-        dialog.summary_label.setText(f"{len(self._members)} member(s) in this room.")
-        dialog.add_member_button.setVisible(self._can_manage_members())
-
-        while dialog.rows.count():
-            item = dialog.rows.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-
-        if not self._members:
-            empty_label = QLabel("No members available for this room.")
-            empty_label.setObjectName("dialogSubtitle")
-            dialog.rows.addWidget(empty_label)
-            return
-
+        drawer_members: list[dict[str, Any]] = []
         for member in self._members:
-            row = QFrame()
-            row.setObjectName("dialogRow")
-            layout = QHBoxLayout(row)
-            layout.setContentsMargins(14, 12, 14, 12)
-            layout.setSpacing(12)
-
-            info_col = QVBoxLayout()
-            info_col.setContentsMargins(0, 0, 0, 0)
-            info_col.setSpacing(4)
-
-            name_label = QLabel(member.get("username", "Unknown User"))
-            name_label.setFont(app_font(11, 600))
-            info_col.addWidget(name_label)
-
-            meta_label = QLabel(
-                f"{member.get('email', 'No email')}   |   User ID: {member.get('user_id') or 'Unavailable'}   |   Added: {_format_timestamp(member.get('joined_at'))}"
+            drawer_members.append(
+                {
+                    **member,
+                    "can_set_role": self._can_change_member_role(member),
+                    "can_remove": self._can_remove_member(member),
+                    "hint": self._member_action_hint(member),
+                    "tooltip_user_id": str(member.get("user_id") or "").strip(),
+                }
             )
-            meta_label.setObjectName("memberMeta")
-            meta_label.setWordWrap(True)
-            meta_label.setFont(ui_font(9))
-            info_col.addWidget(meta_label)
-            layout.addLayout(info_col, 1)
-
-            badge = StatusBadge(f"ROOM: {member.get('role', '--')}", member.get("role", "").lower() or "member")
-            layout.addWidget(badge, 0, Qt.AlignVCenter)
-
-            if self._can_change_member_role(member):
-                set_role_button = ModernButton("Set Role")
-                set_role_button.setMinimumWidth(106)
-                set_role_button.clicked.connect(lambda _=False, payload=member: self._open_set_role_dialog(payload))
-                layout.addWidget(set_role_button, 0, Qt.AlignVCenter)
-
-            if self._can_remove_member(member):
-                remove_button = ModernButton("Remove")
-                remove_button.setMinimumWidth(96)
-                remove_button.set_accent_color(PALETTE.error)
-                remove_button.clicked.connect(lambda _=False, payload=member: self._confirm_remove_member(payload))
-                layout.addWidget(remove_button, 0, Qt.AlignVCenter)
-
-            hint = self._member_action_hint(member)
-            if hint:
-                hint_label = QLabel(hint)
-                hint_label.setObjectName("memberHint")
-                hint_label.setFont(app_font(9, 600))
-                layout.addWidget(hint_label, 0, Qt.AlignVCenter)
-
-            dialog.rows.addWidget(row)
-        dialog.rows.addStretch()
+        self._members_drawer.set_manage_permissions(self._can_manage_members())
+        self._members_drawer.set_members(drawer_members)
 
     def _open_add_member_dialog(self) -> None:
         if not self._can_manage_members():
             return
-        if self._add_member_dialog is None:
-            self._add_member_dialog = AddMemberDialog(self)
-            self._add_member_dialog.submitted.connect(self._start_add_member)
-        self._add_member_dialog.user_id_input.clear()
-        self._add_member_dialog.role_input.setText("MEMBER")
-        self._add_member_dialog.error_label.hide_error()
-        self._add_member_dialog.show()
-        self._add_member_dialog.raise_()
-        self._add_member_dialog.activateWindow()
+        drawer = self._ensure_members_drawer()
+        drawer.prepare_add_member()
+        drawer.open()
 
     def _open_set_role_dialog(self, member: dict[str, Any]) -> None:
         if not self._can_change_member_role(member):
@@ -1348,8 +1522,8 @@ class RoomPage(QWidget):
     def _start_add_member(self, user_id: str, role: str) -> None:
         if not user_id.strip():
             return
-        if self._add_member_dialog is not None:
-            self._add_member_dialog.set_loading(True)
+        if self._members_drawer is not None:
+            self._members_drawer.set_add_member_loading(True)
         self._run_member_action("add", user_id=user_id.strip(), role=role)
 
     def _start_set_role(self, member: dict[str, Any], role: str) -> None:
@@ -1365,9 +1539,9 @@ class RoomPage(QWidget):
         self._run_member_action("remove", user_id=str(member.get("user_id") or ""))
 
     def _on_member_action_success(self, message: str) -> None:
-        if self._add_member_dialog is not None:
-            self._add_member_dialog.set_loading(False)
-            self._add_member_dialog.accept()
+        if self._members_drawer is not None:
+            self._members_drawer.set_add_member_loading(False)
+            self._members_drawer.show_members_view()
         if self._set_role_dialog is not None:
             self._set_role_dialog.set_loading(False)
             self._set_role_dialog.accept()
@@ -1376,9 +1550,9 @@ class RoomPage(QWidget):
         self.reload_room_data()
 
     def _on_member_action_failed(self, message: str) -> None:
-        if self._add_member_dialog is not None:
-            self._add_member_dialog.set_loading(False)
-            self._add_member_dialog.error_label.show_error(message)
+        if self._members_drawer is not None:
+            self._members_drawer.set_add_member_loading(False)
+            self._members_drawer.show_error(message)
         if self._set_role_dialog is not None:
             self._set_role_dialog.set_loading(False)
             self._set_role_dialog.error_label.show_error(message)
@@ -1421,17 +1595,12 @@ class RoomPage(QWidget):
             self._versions_dialog.error_label.show_error(message)
 
     def _confirm_delete_file(self, file_data: dict[str, Any]) -> None:
-        if not self._can_delete_files():
+        if not self._can_delete_file_item(file_data):
+            self.error_toast.show_error("You do not have permission to delete this file.")
             return
-        confirm = QMessageBox.question(
-            self,
-            "Delete File",
-            f"Delete {file_data.get('name', 'this file')}? This action cannot be undone.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if confirm != QMessageBox.Yes:
-            return
+        self._show_delete_confirm_panel(file_data)
+
+    def _start_delete_worker(self, file_data: dict[str, Any]) -> None:
         if self._delete_thread and self._delete_thread.isRunning():
             return
 
@@ -1449,10 +1618,14 @@ class RoomPage(QWidget):
         self._delete_thread.start()
 
     def _on_delete_success(self, message: str) -> None:
+        self._hide_delete_confirm_panel()
+        self._selected_file = {}
+        self._update_file_detail({})
         self.top_bar.set_subtitle(message)
         self.reload_room_data()
 
     def _on_delete_failed(self, message: str) -> None:
+        self._hide_delete_confirm_panel()
         self.error_toast.show_error(message)
 
     def _open_upload_dialog(self) -> None:
@@ -1472,6 +1645,7 @@ class RoomPage(QWidget):
             file_path,
             self._current_user_id or self._current_username or self._username,
         )
+        self._pending_uploaded_file_name = Path(file_path).name
         self._upload_worker.moveToThread(self._upload_thread)
         self._upload_thread.started.connect(self._upload_worker.run)
         self._upload_worker.success.connect(self._on_upload_success)
@@ -1489,6 +1663,7 @@ class RoomPage(QWidget):
         self.reload_room_data()
 
     def _on_upload_failed(self, message: str) -> None:
+        self._pending_uploaded_file_name = ""
         self.error_toast.show_error(message)
 
     def _start_download(self, file_data: dict[str, Any]) -> None:

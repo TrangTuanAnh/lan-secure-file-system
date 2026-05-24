@@ -44,6 +44,27 @@ def _get_str(key: str, default: str) -> str:
     return os.getenv(key, default).strip()
 
 
+def _get_str_alias(primary_key: str, alias_keys: tuple[str, ...], default: str) -> str:
+    for key in (primary_key, *alias_keys):
+        raw_value = os.getenv(key)
+        if raw_value is not None and raw_value.strip():
+            return raw_value.strip()
+    return default
+
+
+def _get_int_alias(primary_key: str, alias_keys: tuple[str, ...], default: int) -> int:
+    for key in (primary_key, *alias_keys):
+        raw_value = os.getenv(key)
+        if raw_value is None or raw_value.strip() == "":
+            continue
+        try:
+            return int(raw_value)
+        except ValueError:
+            print(f"[Config] Invalid int for {key}={raw_value!r}. Using default {default}.")
+            return default
+    return default
+
+
 def _get_int(key: str, default: int) -> int:
     raw_value = os.getenv(key)
 
@@ -128,8 +149,8 @@ class AppConfig:
             app_env=_get_str("APP_ENV", "development"),
             app_debug=_get_bool("APP_DEBUG", True),
 
-            backend_host=_get_str("BACKEND_HOST", "localhost"),
-            backend_port=_get_int("BACKEND_PORT", 8080),
+            backend_host=_get_str_alias("BACKEND_HOST", ("COORDINATOR_HOST",), "localhost"),
+            backend_port=_get_int_alias("BACKEND_PORT", ("COORDINATOR_PORT",), 8080),
             backend_timeout=_get_int("BACKEND_TIMEOUT", 15),
             backend_socket_timeout=_get_int("BACKEND_SOCKET_TIMEOUT", 5),
             backend_max_retries=_get_int("BACKEND_MAX_RETRIES", 2),
