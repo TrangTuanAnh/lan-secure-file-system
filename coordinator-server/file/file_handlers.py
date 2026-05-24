@@ -203,8 +203,22 @@ class FileHandlers:
         success, error_code = self.file_service.delete_file(
             user_id, global_role, file_id
         )
-        
+
         if not success:
+            if error_code and error_code.startswith("DATABASE_ERROR:"):
+                _, _, detail = error_code.partition(":")
+                error_message = f"Database error occurred: {detail.strip()}"
+                logger.error(
+                    "DELETE_FILE returning detailed database error for file %s user %s: %s",
+                    file_id,
+                    user_id,
+                    detail.strip(),
+                )
+                return Message.create_error(
+                    "DATABASE_ERROR",
+                    error_message,
+                    request_id=message.request_id
+                )
             error_messages = {
                 "FILE_NOT_FOUND": "File not found",
                 "PERMISSION_DENIED": "You do not have permission to delete this file",
