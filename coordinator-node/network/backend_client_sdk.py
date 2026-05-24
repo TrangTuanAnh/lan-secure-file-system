@@ -509,6 +509,13 @@ class BackendClient:
             "username": username,
             "password": password
         })
+        user_payload = response.get("user") or {}
+        logger.info(
+            "BackendClient LOGIN response keys=%s user_exists=%s user_keys=%s",
+            sorted(response.keys()),
+            bool(user_payload),
+            sorted(user_payload.keys()) if isinstance(user_payload, dict) else [],
+        )
         # Store token
         self.set_token(response.get("token"))
         return response
