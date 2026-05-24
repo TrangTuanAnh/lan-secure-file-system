@@ -94,7 +94,7 @@ def _normalize_file(file_payload: dict[str, Any]) -> dict[str, Any]:
         "mime_type": file_payload.get("mimeType") or "",
         "scan_status": file_payload.get("scanStatus") or "",
         "scan_time": file_payload.get("scanTime") or "",
-        "description": file_payload.get("description") or "No additional metadata from backend.",
+        "description": file_payload.get("description") or "",
     }
 
 
@@ -892,13 +892,20 @@ class RoomPage(QWidget):
         self.files_section = self._build_section_frame("Files", "Protected files available in this room.")
         files_body = self.files_section["body"]
 
-        self.files_empty_label = QLabel(
-            "No files available in this room."
-        )
+        self.files_empty_container = QWidget()
+        empty_layout = QVBoxLayout(self.files_empty_container)
+        empty_layout.setContentsMargins(0, 0, 0, 0)
+        empty_layout.setSpacing(0)
+        empty_layout.addStretch()
+
+        self.files_empty_label = QLabel("No files available in this room.")
         self.files_empty_label.setObjectName("emptyFilesLabel")
         self.files_empty_label.setWordWrap(True)
+        self.files_empty_label.setAlignment(Qt.AlignCenter)
         self.files_empty_label.setFont(ui_font(10))
-        files_body.addWidget(self.files_empty_label)
+        empty_layout.addWidget(self.files_empty_label, 0, Qt.AlignCenter)
+        empty_layout.addStretch()
+        files_body.addWidget(self.files_empty_container, 1)
 
         self.files_scroll = QScrollArea()
         self.files_scroll.setObjectName("filesScroll")
@@ -961,11 +968,6 @@ class RoomPage(QWidget):
         self.download_button = ModernButton("Download")
         self.download_button.clicked.connect(self._start_download_selected)
         detail_actions.addWidget(self.download_button)
-
-        self.versions_button = ModernButton("Versions")
-        self.versions_button.set_button_style(background_color=PALETTE.surface, background_alt=PALETTE.surface_alt)
-        self.versions_button.clicked.connect(self._open_selected_versions)
-        detail_actions.addWidget(self.versions_button)
 
         self.delete_file_button = ModernButton("Delete")
         self.delete_file_button.set_accent_color(PALETTE.error)
@@ -1270,7 +1272,7 @@ class RoomPage(QWidget):
 
     def _render_file_cards(self, files: list[dict[str, Any]]) -> None:
         self._clear_file_cards()
-        self.files_empty_label.setVisible(not files)
+        self.files_empty_container.setVisible(not files)
         self.files_scroll.setVisible(bool(files))
 
         if not files:
@@ -1350,9 +1352,9 @@ class RoomPage(QWidget):
                 label.setText(f"{key.replace('_', ' ').title()}: --")
             self.download_button.setEnabled(False)
             self.download_button.setToolTip("Select a file to download.")
-            self.versions_button.setEnabled(False)
             self.delete_file_button.setVisible(False)
             self.delete_file_button.setEnabled(False)
+            self.file_detail_lines["description"].hide()
             return
 
         self.file_detail_title.setText(detail.get("name", "Unnamed File"))
@@ -1366,14 +1368,16 @@ class RoomPage(QWidget):
         self.file_detail_lines["scan_status"].setText(
             f"Scan status: {detail.get('scan_status') or detail.get('status') or 'Unknown'}"
         )
-        self.file_detail_lines["description"].setText(
-            f"Metadata: {detail.get('description') or 'No additional metadata from backend.'}"
-        )
+        metadata_text = detail.get("description")
+        if metadata_text and str(metadata_text).strip() not in {"{}", "[]"}:
+            self.file_detail_lines["description"].setText(f"Metadata: {metadata_text}")
+            self.file_detail_lines["description"].show()
+        else:
+            self.file_detail_lines["description"].clear()
+            self.file_detail_lines["description"].hide()
         has_file_id = bool(str(detail.get("file_id") or "").strip())
         self.download_button.setEnabled(has_file_id)
         self.download_button.setToolTip("" if has_file_id else "Download is not supported by current backend yet.")
-        can_show_versions = bool(str(detail.get("original_name") or detail.get("name") or "").strip())
-        self.versions_button.setEnabled(can_show_versions)
         can_delete_selected = has_file_id and self._can_delete_file_item(detail)
         self.delete_file_button.setVisible(can_delete_selected)
         self.delete_file_button.setEnabled(can_delete_selected)
@@ -1383,12 +1387,6 @@ class RoomPage(QWidget):
             self.error_toast.show_error("Select a file before downloading.")
             return
         self._start_download(self._selected_file)
-
-    def _open_selected_versions(self) -> None:
-        if not self._selected_file:
-            self.error_toast.show_error("Select a file to view version history.")
-            return
-        self._open_versions_dialog(self._selected_file)
 
     def _delete_selected_file(self) -> None:
         if not self._selected_file:
