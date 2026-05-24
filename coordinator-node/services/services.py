@@ -236,19 +236,22 @@ class FileService(BaseService):
             logger.error(f"Failed to get file detail: {e}")
             return None
     
-    def get_file_versions(self, file_id: str) -> List[Dict[str, Any]]:
+    def get_file_versions(self, room_id: str, original_name: str) -> List[Dict[str, Any]]:
         """
-        Get all versions of a file.
+        Get all versions of a file by room and original name.
+        
+        Backend protocol expects roomId + originalName, not fileId.
         
         Args:
-            file_id: File ID
+            room_id: Room containing the file
+            original_name: Original filename (not fileId)
         
         Returns:
             List of version objects
         """
         try:
-            result = self.client.file_versions(file_id)
-            logger.info(f"Retrieved {len(result)} versions for file {file_id}")
+            result = self.client.file_versions(room_id, original_name)
+            logger.info(f"Retrieved {len(result)} versions for file {original_name}")
             return result
         except Exception as e:
             logger.error(f"Failed to get file versions: {e}")
@@ -282,30 +285,40 @@ class UploadService(BaseService):
         file_name: str,
         file_size: int,
         sha256_whole: str,
-        chunk_count: int,
+        chunk_count: int = 0,
         chunk_size: int = 524288
     ) -> Optional[Dict[str, Any]]:
         """
         Initialize file upload.
+        
+        Backend protocol expects file_info with:
+          - originalName (str)  -- was: name
+          - sizeBytes (int)     -- was: size
+          - mimeType (str)      -- was: missing
+          - sha256Whole (str)   -- unchanged
+        
+        This method normalises the service-layer names to backend field names.
+        chunkCount/chunkSize are data-plane properties and not sent to control plane.
         
         Args:
             room_id: Target room
             file_name: File name
             file_size: Total file size in bytes
             sha256_whole: SHA-256 hash of entire file
-            chunk_count: Number of chunks
-            chunk_size: Bytes per chunk
+            chunk_count: Number of chunks (ignored in control plane, kept for API compat)
+            chunk_size: Bytes per chunk (ignored in control plane, kept for API compat)
         
         Returns:
             Upload plan with ticket and storage node info, or None if failed
         """
         try:
+            # Build file_info dict with backend-compatible field names.
+            # Uses convenience params but maps to protocol field names.
             file_info = {
-                "name": file_name,
-                "size": file_size,
+                "originalName": file_name,
+                "sizeBytes": file_size,
                 "sha256Whole": sha256_whole,
-                "chunkCount": chunk_count,
-                "chunkSize": chunk_size
+                "mimeType": "application/octet-stream"
             }
             
             result = self.client.init_upload(room_id, file_info)
@@ -381,6 +394,10 @@ class DownloadService(BaseService):
         """
         Create public download link.
         
+        Backend returns {token, fileId, maxDownloads, expiresAt}.
+        This method normalises the response key from "token" to "shareToken"
+        for backward compatibility with existing callers.
+        
         Args:
             file_id: File to share
             expiry_seconds: Link expiration time
@@ -390,7 +407,8 @@ class DownloadService(BaseService):
         """
         try:
             result = self.client.create_share_token(file_id, expiry_seconds)
-            share_token = result.get("shareToken")
+            # Backend returns "token" key; normalise to "shareToken" for BC
+            share_token = result.get("shareToken") or result.get("token")
             logger.info(f"Created share token for file {file_id}")
             return share_token
         except Exception as e:
