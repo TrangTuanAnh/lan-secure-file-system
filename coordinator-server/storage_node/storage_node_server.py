@@ -9,6 +9,7 @@ from protocol.message_types import MessageType
 from ticket.ticket_service import TicketService
 from upload.upload_service import UploadService
 from storage_node.registry import StorageNodeInfo, StorageNodeRegistry
+from storage_node.reconciliation_service import ReconciliationService
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -35,7 +36,8 @@ class StorageNodeServer(BaseSocketServer):
         ticket_service: TicketService,
         upload_service: UploadService,
         timeout_seconds: int = 90,
-        registry: Optional[StorageNodeRegistry] = None
+        registry: Optional[StorageNodeRegistry] = None,
+        reconciliation_service: Optional[ReconciliationService] = None
     ):
         """
         Initialize Storage Node server.
@@ -56,6 +58,7 @@ class StorageNodeServer(BaseSocketServer):
         self.upload_service = upload_service
         self.timeout_seconds = timeout_seconds
         self.registry = registry or StorageNodeRegistry(timeout_seconds=timeout_seconds)
+        self.reconciliation_service = reconciliation_service
         
         # Health check thread
         self._health_check_thread: Optional[threading.Thread] = None
@@ -76,6 +79,7 @@ class StorageNodeServer(BaseSocketServer):
         self.register_handler(MessageType.VERIFY_TICKET, self._handle_verify_ticket)
         self.register_handler(MessageType.UPLOAD_COMPLETE, self._handle_upload_complete)
         self.register_handler(MessageType.UPLOAD_FAILED, self._handle_upload_failed)
+        self.register_handler(MessageType.MANIFEST_DELTA, self._handle_manifest_delta)
     
     def start(self) -> None:
         """Start the server and health check thread."""
@@ -200,7 +204,23 @@ class StorageNodeServer(BaseSocketServer):
             f"Storage Node authenticated: node_id={node_info.node_id}, "
             f"storageAddress={node_info.storage_address}"
         )
-        
+
+        manifest = message.payload.get('manifest')
+        if isinstance(manifest, list):
+            normalized = self.registry.set_manifest(node_info.node_id, manifest)
+            logger.info(
+                f"Storage Node manifest received: node_id={node_info.node_id}, "
+                f"count={len(normalized) if normalized is not None else 0}"
+            )
+            if self.reconciliation_service and normalized is not None:
+                try:
+                    self.reconciliation_service.reconcile_node(node_info.node_id, normalized)
+                except Exception as e:
+                    logger.error(
+                        f"Reconciliation failed for node {node_info.node_id}: {e}",
+                        exc_info=True
+                    )
+
         # Send success response
         response = Message.create_response(
             MessageType.STORAGE_AUTH_RESPONSE,
@@ -368,8 +388,12 @@ class StorageNodeServer(BaseSocketServer):
             final_size=final_size,
             storage_node_id=node_info.node_id
         )
-        
+
         if success:
+            # Treat completion as implicit manifest add: the node's MANIFEST_DELTA
+            # for this sha may race after the ACK, and we don't want a download
+            # in between to see the node as 'not holding' the file it just stored.
+            self.registry.mark_file_added(node_info.node_id, sha256_whole)
             # Send ACK
             ack = Message.create_response(
                 MessageType.ACK,
@@ -457,7 +481,55 @@ class StorageNodeServer(BaseSocketServer):
                 request_id=message.request_id
             )
             connection.send_message(error_msg)
-    
+
+    def _handle_manifest_delta(
+        self,
+        connection: SocketConnection,
+        message: Message
+    ) -> None:
+        """
+        Handle MANIFEST_DELTA from a node: incremental adds/removes against
+        its file inventory. No reconciliation is run on deltas (only on full
+        manifests received at auth) to avoid false MISSING from a transient
+        partial state.
+        """
+        node_info = self.registry.get_by_connection(connection)
+        if not node_info or not node_info.authenticated:
+            logger.warning(
+                f"MANIFEST_DELTA from unauthenticated node: {connection.connection_id}"
+            )
+            error_msg = Message.create_error(
+                "NOT_AUTHENTICATED",
+                "Must authenticate before sending manifest deltas",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
+
+        added = message.payload.get('added') or []
+        removed = message.payload.get('removed') or []
+        if not isinstance(added, list) or not isinstance(removed, list):
+            error_msg = Message.create_error(
+                "INVALID_PAYLOAD",
+                "added and removed must be lists",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
+
+        self.registry.apply_manifest_delta(node_info.node_id, added, removed)
+        logger.info(
+            f"MANIFEST_DELTA applied: node_id={node_info.node_id}, "
+            f"+{len(added)} -{len(removed)}"
+        )
+
+        ack = Message.create_response(
+            MessageType.ACK,
+            {"status": "success"},
+            request_id=message.request_id
+        )
+        connection.send_message(ack)
+
     def _health_check_loop(self) -> None:
         """
         Periodic health check loop.

@@ -64,3 +64,72 @@ def test_returns_no_node_when_none_are_healthy():
     stale.last_ping_time = time.time() - 10
 
     assert registry.select_for_upload() is None
+
+
+# ── Manifest tracking ──────────────────────────────────────────────────────
+
+def test_node_has_file_trusts_db_before_manifest():
+    """During bootstrap (no full manifest yet) we trust the DB assignment."""
+    registry = StorageNodeRegistry(timeout_seconds=90)
+    authenticate(registry, "node-1", 9001)
+
+    # Manifest never sent → assume node has the file (don't break downloads).
+    assert registry.node_has_file("node-1", "abc123") is True
+
+
+def test_node_has_file_after_full_manifest():
+    registry = StorageNodeRegistry(timeout_seconds=90)
+    authenticate(registry, "node-1", 9001)
+
+    registry.set_manifest("node-1", ["AbC", "deadbeef"])
+
+    assert registry.node_has_file("node-1", "abc") is True
+    assert registry.node_has_file("node-1", "DEADBEEF") is True
+    assert registry.node_has_file("node-1", "missing") is False
+
+
+def test_manifest_delta_adds_and_removes():
+    registry = StorageNodeRegistry(timeout_seconds=90)
+    authenticate(registry, "node-1", 9001)
+    registry.set_manifest("node-1", ["a", "b"])
+
+    registry.apply_manifest_delta("node-1", added=["C"], removed=["a"])
+
+    assert registry.node_has_file("node-1", "c") is True
+    assert registry.node_has_file("node-1", "a") is False
+    assert registry.node_has_file("node-1", "b") is True
+
+
+def test_mark_file_added_works_even_without_manifest():
+    """Implicit-add via UPLOAD_COMPLETE should be visible immediately."""
+    registry = StorageNodeRegistry(timeout_seconds=90)
+    authenticate(registry, "node-1", 9001)
+    registry.set_manifest("node-1", [])  # empty full manifest
+
+    registry.mark_file_added("node-1", "abc")
+
+    assert registry.node_has_file("node-1", "abc") is True
+
+
+def test_node_has_file_false_when_unhealthy():
+    registry = StorageNodeRegistry(timeout_seconds=1)
+    stale = authenticate(registry, "node-1", 9001)
+    registry.set_manifest("node-1", ["abc"])
+    stale.last_ping_time = time.time() - 10
+
+    assert registry.node_has_file("node-1", "abc") is False
+
+
+def test_reauthenticate_resets_manifest():
+    """A fresh STORAGE_AUTH means the node's view may have changed."""
+    registry = StorageNodeRegistry(timeout_seconds=90)
+    node = authenticate(registry, "node-1", 9001)
+    registry.set_manifest("node-1", ["abc"])
+    assert node.manifest_received is True
+
+    # Same node reconnects (new connection object).
+    authenticate(registry, "node-1", 9001)
+    refreshed = registry.get_node("node-1")
+
+    assert refreshed.manifest_received is False
+    assert refreshed.files == set()

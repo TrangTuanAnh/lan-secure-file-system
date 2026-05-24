@@ -86,12 +86,14 @@ public class StorageNodeMain {
             LOG.info("Generating RSA key pair (" + config.getRsaKeySize() + " bits)...");
             RSAKeyExchange rsaKeyExchange = new RSAKeyExchange(config.getRsaKeySize());
 
-            // 7. Initialize coordinator client
+            // 7. Initialize coordinator client (fileStore lets STORAGE_AUTH
+            // carry the current manifest so the Coordinator can reconcile).
             CoordinatorClient coordinator = new CoordinatorClient(
                 config.getTicketSecret(), config.getNodeId(),
                 config.getCoordinatorHost(), config.getCoordinatorPort(),
                 config.getAdvertisedHost(), config.getAdvertisedPort(),
-                config.getStorageAddress()
+                config.getStorageAddress(),
+                fileStore
             );
             
             // Connect to Coordinator control plane

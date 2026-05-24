@@ -66,6 +66,7 @@ class MessageType(str, Enum):
     TICKET_INVALID = "TICKET_INVALID"
     UPLOAD_COMPLETE = "UPLOAD_COMPLETE"
     UPLOAD_FAILED = "UPLOAD_FAILED"
+    MANIFEST_DELTA = "MANIFEST_DELTA"
     ACK = "ACK"
     
     # Health Check

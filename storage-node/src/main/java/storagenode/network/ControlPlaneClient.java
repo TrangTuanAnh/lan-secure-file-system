@@ -1,12 +1,17 @@
 package storagenode.network;
 
+import storagenode.protocol.ControlPlaneFrameCodec;
 import storagenode.protocol.Message;
 import storagenode.protocol.MessageType;
-import storagenode.protocol.FrameCodec;
+import storagenode.storage.FileStore;
 
 import java.io.*;
 import java.net.Socket;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.*;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
@@ -35,6 +40,7 @@ public class ControlPlaneClient {
     private final String dataHost;
     private final int dataPort;
     private final String storageAddress;
+    private final FileStore fileStore;
     
     private Socket socket;
     private InputStream in;
@@ -50,6 +56,14 @@ public class ControlPlaneClient {
     public ControlPlaneClient(String coordinatorHost, int coordinatorPort,
                               String sharedSecret, String nodeId,
                               String dataHost, int dataPort, String storageAddress) {
+        this(coordinatorHost, coordinatorPort, sharedSecret, nodeId,
+             dataHost, dataPort, storageAddress, null);
+    }
+
+    public ControlPlaneClient(String coordinatorHost, int coordinatorPort,
+                              String sharedSecret, String nodeId,
+                              String dataHost, int dataPort, String storageAddress,
+                              FileStore fileStore) {
         this.coordinatorHost = coordinatorHost;
         this.coordinatorPort = coordinatorPort;
         this.sharedSecret = sharedSecret;
@@ -57,6 +71,7 @@ public class ControlPlaneClient {
         this.dataHost = dataHost;
         this.dataPort = dataPort;
         this.storageAddress = storageAddress;
+        this.fileStore = fileStore;
     }
     
     /**
@@ -102,13 +117,18 @@ public class ControlPlaneClient {
      * @throws IOException if authentication fails
      */
     private void authenticate() throws IOException {
+        List<String> manifest = collectManifest();
+
         Message authMsg = new Message(MessageType.STORAGE_AUTH)
             .set("secret", sharedSecret)
             .set("nodeId", nodeId)
             .set("dataHost", dataHost)
             .set("dataPort", dataPort)
-            .set("storageAddress", storageAddress);
-        
+            .set("storageAddress", storageAddress)
+            .set("manifest", manifest);
+
+        LOG.info("Sending STORAGE_AUTH with manifest: " + manifest.size() + " file(s)");
+
         sendMessage(authMsg);
         
         // Wait for STORAGE_AUTH_RESPONSE
@@ -200,6 +220,44 @@ public class ControlPlaneClient {
     }
     
     /**
+     * Read the current set of stored sha256 hashes for the STORAGE_AUTH manifest.
+     */
+    private List<String> collectManifest() {
+        if (fileStore == null) {
+            return Collections.emptyList();
+        }
+        try {
+            return fileStore.listStoredFiles();
+        } catch (IOException e) {
+            LOG.log(Level.WARNING, "Failed to read manifest from FileStore: " + e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * Send an incremental manifest update so the Coordinator's view of
+     * which files this node holds stays in sync. Best-effort: failures
+     * are logged but do not throw.
+     */
+    public void sendManifestDelta(Collection<String> added, Collection<String> removed) {
+        if (!authenticated || !running) {
+            LOG.warning("Cannot send MANIFEST_DELTA - not connected/authenticated");
+            return;
+        }
+        try {
+            Message msg = new Message(MessageType.MANIFEST_DELTA)
+                .set("added", added == null ? Collections.emptyList() : added)
+                .set("removed", removed == null ? Collections.emptyList() : removed);
+            sendMessage(msg);
+            LOG.info("MANIFEST_DELTA sent: +"
+                + (added == null ? 0 : added.size())
+                + " -" + (removed == null ? 0 : removed.size()));
+        } catch (IOException e) {
+            LOG.severe("Failed to send MANIFEST_DELTA: " + e.getMessage());
+        }
+    }
+
+    /**
      * Notify Coordinator that upload failed.
      * 
      * @param fileId File identifier
@@ -276,7 +334,7 @@ public class ControlPlaneClient {
         
         while (running) {
             try {
-                Message msg = FrameCodec.readFrame(in);
+                Message msg = ControlPlaneFrameCodec.readFrame(in);
                 
                 if (msg == null) {
                     LOG.info("Connection closed by Coordinator");
@@ -342,7 +400,7 @@ public class ControlPlaneClient {
         if (!running) {
             throw new IOException("Connection is closed");
         }
-        FrameCodec.writeFrame(out, msg);
+        ControlPlaneFrameCodec.writeFrame(out, msg);
     }
     
     /**

@@ -1,8 +1,14 @@
 """In-memory registry and load balancer for connected Storage Nodes."""
 import time
 import threading
-from dataclasses import dataclass
-from typing import Dict, Optional, Any, List
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Any, List, Iterable, Set
+
+
+def _normalize(sha: Optional[str]) -> Optional[str]:
+    if not sha:
+        return None
+    return sha.strip().lower()
 
 
 @dataclass
@@ -16,6 +22,8 @@ class StorageNodeInfo:
     storage_address: Optional[str] = None
     authenticated: bool = False
     active_uploads: int = 0
+    files: Set[str] = field(default_factory=set)
+    manifest_received: bool = False
 
     def __post_init__(self) -> None:
         self.last_ping_time = time.time()
@@ -39,6 +47,8 @@ class StorageNodeInfo:
             "dataPort": self.data_port,
             "storageAddress": self.storage_address,
             "activeUploads": self.active_uploads,
+            "manifestReceived": self.manifest_received,
+            "fileCount": len(self.files),
         }
 
 
@@ -81,6 +91,9 @@ class StorageNodeRegistry:
             node_info.storage_address = storage_address or self._format_address(data_host, data_port)
             node_info.authenticated = True
             node_info.update_ping_time()
+            # Fresh auth = stale manifest. Wait for a new full one before trusting.
+            node_info.files = set()
+            node_info.manifest_received = False
             self._nodes_by_id[node_id] = node_info
             return node_info
 
@@ -151,6 +164,75 @@ class StorageNodeRegistry:
             node_info = self._nodes_by_id.get(node_id)
             if node_info and node_info.active_uploads > 0:
                 node_info.active_uploads -= 1
+
+    def set_manifest(self, node_id: Optional[str], file_ids: Iterable[str]) -> Optional[Set[str]]:
+        """
+        Replace a node's manifest with the full list and mark manifest_received=True.
+
+        Returns the new (normalized) manifest set so the caller can run
+        reconciliation, or None if the node is unknown.
+        """
+        if not node_id:
+            return None
+        normalized = {n for n in (_normalize(f) for f in file_ids) if n}
+        with self._lock:
+            node_info = self._nodes_by_id.get(node_id)
+            if not node_info:
+                return None
+            node_info.files = normalized
+            node_info.manifest_received = True
+        return normalized
+
+    def apply_manifest_delta(
+        self,
+        node_id: Optional[str],
+        added: Iterable[str],
+        removed: Iterable[str],
+    ) -> bool:
+        if not node_id:
+            return False
+        with self._lock:
+            node_info = self._nodes_by_id.get(node_id)
+            if not node_info:
+                return False
+            for sha in added:
+                norm = _normalize(sha)
+                if norm:
+                    node_info.files.add(norm)
+            for sha in removed:
+                norm = _normalize(sha)
+                if norm:
+                    node_info.files.discard(norm)
+            return True
+
+    def mark_file_added(self, node_id: Optional[str], sha: Optional[str]) -> None:
+        """Implicit-add for events like UPLOAD_COMPLETE that race with deltas."""
+        norm = _normalize(sha)
+        if not node_id or not norm:
+            return
+        with self._lock:
+            node_info = self._nodes_by_id.get(node_id)
+            if node_info:
+                node_info.files.add(norm)
+
+    def node_has_file(self, node_id: Optional[str], sha: Optional[str]) -> bool:
+        """
+        Return True if the node is healthy and the file is known to be present.
+
+        Before the first full manifest arrives we don't know what the node holds,
+        so trust the DB assignment (return True) to avoid breaking downloads
+        during the brief bootstrap window.
+        """
+        norm = _normalize(sha)
+        if not node_id or not norm:
+            return False
+        with self._lock:
+            node_info = self._nodes_by_id.get(node_id)
+            if not node_info or not node_info.is_healthy(self.timeout_seconds):
+                return False
+            if not node_info.manifest_received:
+                return True
+            return norm in node_info.files
 
     def get_all_nodes(self) -> List[StorageNodeInfo]:
         with self._lock:
