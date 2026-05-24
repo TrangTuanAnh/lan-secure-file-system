@@ -130,6 +130,94 @@ class AuthService:
             logger.error(f"Failed to insert user: {e}")
             return False, None, "DATABASE_ERROR"
     
+    def _authenticate_and_create_session(
+        self,
+        username: str,
+        password: str
+    ) -> Tuple[bool, Optional[str], Optional[int], Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Authenticate user, create session, and return profile information.
+
+        Returns:
+            Tuple of (success, token, expires_at, user_profile, error_code)
+        """
+        # Query user by username
+        users = self.db.execute_query(
+            """
+            SELECT id, username, email, password_hash, global_role
+            FROM users
+            WHERE username = %s
+            """,
+            (username,)
+        )
+        
+        if not users:
+            logger.info(f"Login failed: username '{username}' not found")
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=None,
+                    action='LOGIN',
+                    target_type='user',
+                    target_id=username,
+                    detail={'username': username, 'reason': 'user_not_found'},
+                    status='FAILED'
+                )
+            return False, None, None, None, "INVALID_CREDENTIALS"
+        
+        user = users[0]
+        user_id = user['id']
+        password_hash = user['password_hash']
+        global_role = user['global_role']
+        
+        if not self.password_hasher.verify(password, password_hash):
+            logger.info(f"Login failed: invalid password for username '{username}'")
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=user_id,
+                    action='LOGIN',
+                    target_type='user',
+                    target_id=user_id,
+                    detail={'username': username, 'reason': 'invalid_password'},
+                    status='FAILED'
+                )
+            return False, None, None, None, "INVALID_CREDENTIALS"
+        
+        token = str(uuid.uuid4())
+        created_at = datetime.now(timezone.utc).isoformat()
+        expires_at = int(datetime.now(timezone.utc).timestamp()) + self.session_ttl
+        
+        session_data = {
+            "userId": user_id,
+            "globalRole": global_role,
+            "createdAt": created_at
+        }
+        
+        user_profile = {
+            "id": user_id,
+            "username": user["username"],
+            "email": user["email"],
+            "globalRole": global_role,
+        }
+        
+        try:
+            self.redis.set_session(token, session_data, self.session_ttl)
+            logger.info(f"User logged in: {user_id} (username={username})")
+            
+            if self.audit:
+                self.audit.write_audit_log(
+                    actor_id=user_id,
+                    action='LOGIN',
+                    target_type='user',
+                    target_id=user_id,
+                    detail={'username': username},
+                    status='SUCCESS'
+                )
+            
+            return True, token, expires_at, user_profile, None
+        except Exception as e:
+            logger.error(f"Failed to store session in Redis: {e}")
+            return False, None, None, None, "REDIS_ERROR"
+
     def login(self, username: str, password: str) -> Tuple[bool, Optional[str], Optional[int], Optional[str]]:
         """
         Authenticate user and create session.
@@ -145,77 +233,24 @@ class AuthService:
             - expires_at: Token expiration timestamp (Unix seconds) if successful
             - error_code: Error code if failed (INVALID_CREDENTIALS)
         """
-        # Query user by username
-        users = self.db.execute_query(
-            "SELECT id, password_hash, global_role FROM users WHERE username = %s",
-            (username,)
+        success, token, expires_at, _user_profile, error_code = self._authenticate_and_create_session(
+            username,
+            password,
         )
-        
-        if not users:
-            logger.info(f"Login failed: username '{username}' not found")
-            # Write audit log for failed login
-            if self.audit:
-                self.audit.write_audit_log(
-                    actor_id=None,
-                    action='LOGIN',
-                    target_type='user',
-                    target_id=username,
-                    detail={'username': username, 'reason': 'user_not_found'},
-                    status='FAILED'
-                )
-            return False, None, None, "INVALID_CREDENTIALS"
-        
-        user = users[0]
-        user_id = user['id']
-        password_hash = user['password_hash']
-        global_role = user['global_role']
-        
-        # Verify password
-        if not self.password_hasher.verify(password, password_hash):
-            logger.info(f"Login failed: invalid password for username '{username}'")
-            # Write audit log for failed login
-            if self.audit:
-                self.audit.write_audit_log(
-                    actor_id=user_id,
-                    action='LOGIN',
-                    target_type='user',
-                    target_id=user_id,
-                    detail={'username': username, 'reason': 'invalid_password'},
-                    status='FAILED'
-                )
-            return False, None, None, "INVALID_CREDENTIALS"
-        
-        # Generate session token
-        token = str(uuid.uuid4())
-        created_at = datetime.now(timezone.utc).isoformat()
-        expires_at = int(datetime.now(timezone.utc).timestamp()) + self.session_ttl
-        
-        # Store session in Redis
-        session_data = {
-            "userId": user_id,
-            "globalRole": global_role,
-            "createdAt": created_at
-        }
-        
-        try:
-            self.redis.set_session(token, session_data, self.session_ttl)
-            logger.info(f"User logged in: {user_id} (username={username}, token={token})")
-            
-            # Write audit log for successful login
-            if self.audit:
-                self.audit.write_audit_log(
-                    actor_id=user_id,
-                    action='LOGIN',
-                    target_type='user',
-                    target_id=user_id,
-                    detail={'username': username, 'token': token},
-                    status='SUCCESS'
-                )
-            
-            return True, token, expires_at, None
-        except Exception as e:
-            logger.error(f"Failed to store session in Redis: {e}")
-            return False, None, None, "REDIS_ERROR"
+        return success, token, expires_at, error_code
+
+    def login_with_profile(
+        self,
+        username: str,
+        password: str
+    ) -> Tuple[bool, Optional[str], Optional[int], Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Authenticate user and create session, returning the authenticated profile.
+
+        Returns:
+            Tuple of (success, token, expires_at, user_profile, error_code)
+        """
+        return self._authenticate_and_create_session(username, password)
     
     def validate_token(self, token: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """

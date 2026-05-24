@@ -21,7 +21,6 @@ class AccountDialog(QDialog):
         email: str,
         user_id: str,
         global_role_label: str,
-        change_password_supported: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -65,16 +64,6 @@ class AccountDialog(QDialog):
         self.copy_user_id_button.clicked.connect(self._copy_user_id)
         self.copy_user_id_button.setEnabled(bool(self._user_id))
         actions.addWidget(self.copy_user_id_button)
-
-        self.change_password_button = ModernButton("Change Password")
-        self.change_password_button.set_button_style(
-            background_color=PALETTE.surface,
-            background_alt=PALETTE.surface_alt,
-        )
-        self.change_password_button.setEnabled(change_password_supported)
-        if not change_password_supported:
-            self.change_password_button.setToolTip("Change password is not supported by backend yet.")
-        actions.addWidget(self.change_password_button)
 
         actions.addStretch()
 

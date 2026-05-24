@@ -187,7 +187,6 @@ class DashboardWindow(QMainWindow):
                 email=self._email,
                 user_id=self._user_id,
                 global_role_label=self._display_global_role(),
-                change_password_supported=False,
                 parent=self,
             )
         self._account_dialog.show()
