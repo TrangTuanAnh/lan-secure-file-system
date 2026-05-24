@@ -115,6 +115,7 @@ class MyRoomsPage(QWidget):
     """Authenticated room listing page with create room flow."""
 
     room_open_requested = Signal(dict)
+    activity_occurred = Signal(dict)
 
     def __init__(
         self,
@@ -369,6 +370,13 @@ class MyRoomsPage(QWidget):
             self._create_dialog.set_loading(False)
             self._create_dialog.accept()
         room_name = payload.get("name") or payload.get("roomName") or "Room"
+        self.activity_occurred.emit(
+            {
+                "type": "Room",
+                "message": f"Created secure room '{room_name}'.",
+                "timestamp": "Just now",
+            }
+        )
         self.error_toast.hide_error()
         self.top_bar.set_server_status("Online", "online")
         self.top_bar.set_subtitle(f"Room '{room_name}' created successfully.")

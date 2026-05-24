@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from network.storage_node_data_plane import DataPlaneError, StorageNodeDataPlaneClient
 from services.services import BackendService
+from ui.app_settings import DEFAULT_APP_SETTINGS
 from ui.dashboard_runtime import DashboardRuntimeConfig
 from ui.fonts import app_font, load_app_fonts, ui_font, ui_font_family
 from ui.widgets.error_label import ErrorLabel
@@ -760,6 +761,7 @@ class RoomPage(QWidget):
     """Primary room content focused on secure file management."""
 
     back_requested = Signal()
+    activity_occurred = Signal(dict)
 
     def __init__(
         self,
@@ -770,6 +772,7 @@ class RoomPage(QWidget):
         token: str,
         global_role: str,
         runtime: DashboardRuntimeConfig,
+        app_settings: Optional[dict[str, Any]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -780,6 +783,7 @@ class RoomPage(QWidget):
         self._token = token
         self._global_role = global_role.upper()
         self._room_data = dict(room_data)
+        self._app_settings = app_settings or DEFAULT_APP_SETTINGS
         self._room_role = str(room_data.get("role") or room_data.get("memberRole") or "").upper()
         self._current_user_id = str(room_data.get("current_user_id") or user_id or room_data.get("user_id") or "").strip()
         self._current_username = str(room_data.get("current_username") or username or "").strip()
@@ -1132,6 +1136,13 @@ class RoomPage(QWidget):
     def _can_delete_files(self) -> bool:
         return self._global_role == "ADMIN" or self._room_role == "OWNER"
 
+    def update_app_settings(self, settings: dict[str, Any]) -> None:
+        self._app_settings = settings or DEFAULT_APP_SETTINGS
+
+    def _security_setting(self, key: str, default: bool = False) -> bool:
+        security = self._app_settings.get("security", {}) if isinstance(self._app_settings, dict) else {}
+        return bool(security.get(key, default))
+
     def _owner_count(self) -> int:
         return sum(1 for member in self._members if str(member.get("role", "")).upper() == "OWNER")
 
@@ -1386,6 +1397,11 @@ class RoomPage(QWidget):
         if not self._selected_file:
             self.error_toast.show_error("Select a file before downloading.")
             return
+        if self._security_setting("warn_before_downloading_unscanned_files", True):
+            scan_status = str(self._selected_file.get("scan_status") or self._selected_file.get("status") or "").upper()
+            if scan_status and scan_status not in {"READY", "CLEAN", "COMPLETED"}:
+                self.error_toast.show_error("This file has not been marked clean yet. Please review before downloading.")
+                return
         self._start_download(self._selected_file)
 
     def _delete_selected_file(self) -> None:
@@ -1544,6 +1560,13 @@ class RoomPage(QWidget):
             self._set_role_dialog.set_loading(False)
             self._set_role_dialog.accept()
             self._set_role_dialog = None
+        self.activity_occurred.emit(
+            {
+                "type": "Member",
+                "message": f"{message} in '{self.room_name}'.",
+                "timestamp": "Just now",
+            }
+        )
         self.top_bar.set_subtitle(message)
         self.reload_room_data()
 
@@ -1596,6 +1619,9 @@ class RoomPage(QWidget):
         if not self._can_delete_file_item(file_data):
             self.error_toast.show_error("You do not have permission to delete this file.")
             return
+        if not self._security_setting("confirm_before_deleting_files", True):
+            self._start_delete_worker(file_data)
+            return
         self._show_delete_confirm_panel(file_data)
 
     def _start_delete_worker(self, file_data: dict[str, Any]) -> None:
@@ -1616,9 +1642,17 @@ class RoomPage(QWidget):
         self._delete_thread.start()
 
     def _on_delete_success(self, message: str) -> None:
+        deleted_name = str(self._pending_delete_file.get("name") or self._selected_file.get("name") or "file")
         self._hide_delete_confirm_panel()
         self._selected_file = {}
         self._update_file_detail({})
+        self.activity_occurred.emit(
+            {
+                "type": "Delete",
+                "message": f"Deleted '{deleted_name}' from '{self.room_name}'.",
+                "timestamp": "Just now",
+            }
+        )
         self.top_bar.set_subtitle(message)
         self.reload_room_data()
 
@@ -1657,8 +1691,17 @@ class RoomPage(QWidget):
         self.top_bar.set_subtitle("Uploading file to secure storage...")
 
     def _on_upload_success(self, message: str) -> None:
+        uploaded_name = self._pending_uploaded_file_name or "file"
+        self.activity_occurred.emit(
+            {
+                "type": "Upload",
+                "message": f"Uploaded '{uploaded_name}' to '{self.room_name}'.",
+                "timestamp": "Just now",
+            }
+        )
         self.top_bar.set_subtitle(message)
         self.reload_room_data()
+        self._pending_uploaded_file_name = ""
 
     def _on_upload_failed(self, message: str) -> None:
         self._pending_uploaded_file_name = ""

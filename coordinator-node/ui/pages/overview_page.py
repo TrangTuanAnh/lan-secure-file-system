@@ -145,6 +145,8 @@ class OverviewPage(QWidget):
         self._room_cards: list[RoomCard] = []
         self._activity_widgets: list[QWidget] = []
         self._stat_cards: list[DashboardStatCard] = []
+        self._remote_activities: list[dict[str, Any]] = []
+        self._local_activities: list[dict[str, Any]] = []
 
         self._build_ui()
         self._apply_styles()
@@ -159,7 +161,7 @@ class OverviewPage(QWidget):
         self.error_toast.move_to_top_center(self)
 
         self.top_bar = TopBar(
-            page_title="Security Overview",
+            page_title="Overview",
             subtitle="Loading workspace telemetry and room intelligence...",
             user_display=self._username or "Authenticated User",
             show_refresh_button=True,
@@ -199,7 +201,7 @@ class OverviewPage(QWidget):
         self.activity_section = self._build_section_frame("Recent Activity", "Realtime activity stream from monitored rooms.")
         self.activity_content = QVBoxLayout()
         self.activity_content.setContentsMargins(0, 0, 0, 0)
-        self.activity_content.setSpacing(12)
+        self.activity_content.setSpacing(10)
         self.activity_section["body"].addLayout(self.activity_content)
         self.scroll_layout.addWidget(self.activity_section["frame"])
 
@@ -352,7 +354,8 @@ class OverviewPage(QWidget):
         self.status_stat.set_subtitle("Coordinator backend health and transport status.")
 
         self._render_rooms(payload.get("rooms", []))
-        self._render_activities(payload.get("activities", []))
+        self._remote_activities = list(payload.get("activities", []))
+        self._render_activities(self._current_activity_feed())
 
     def _on_data_failed(self, message: str) -> None:
         self._set_loading_state(False)
@@ -361,7 +364,15 @@ class OverviewPage(QWidget):
         self.error_toast.move_to_top_center(self)
         self.error_toast.show_error(message)
         self._render_rooms([])
-        self._render_activities([])
+        self._remote_activities = []
+        self._render_activities(self._current_activity_feed())
+
+    def set_local_activities(self, activities: list[dict[str, Any]]) -> None:
+        self._local_activities = list(activities)
+        self._render_activities(self._current_activity_feed())
+
+    def _current_activity_feed(self) -> list[dict[str, Any]]:
+        return list(self._remote_activities) if self._remote_activities else list(self._local_activities)
 
     def _render_rooms(self, rooms: list[dict[str, Any]]) -> None:
         while self.rooms_content.count():
@@ -409,8 +420,9 @@ class OverviewPage(QWidget):
         if not activities:
             self.activity_content.addWidget(
                 EmptyState(
-                    title="No recent activity",
+                    title="No recent activity yet.",
                     message="No recent activity yet.",
+                    minimal=True,
                 )
             )
             return

@@ -21,7 +21,6 @@ class TopBar(QFrame):
     search_changed = Signal(str)
     refresh_requested = Signal()
     account_requested = Signal()
-    settings_requested = Signal()
     logout_requested = Signal()
 
     def __init__(
@@ -218,12 +217,10 @@ class TopBar(QFrame):
         )
 
         account_action = menu.addAction("Account")
-        settings_action = menu.addAction("Settings")
         menu.addSeparator()
         logout_action = menu.addAction("Log Out")
 
         account_action.triggered.connect(self.account_requested.emit)
-        settings_action.triggered.connect(self.settings_requested.emit)
         logout_action.triggered.connect(self.logout_requested.emit)
         logout_action.setIconVisibleInMenu(False)
         return menu

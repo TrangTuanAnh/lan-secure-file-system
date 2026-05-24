@@ -30,8 +30,8 @@ class ActivityItem(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
-        layout.setSpacing(14)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(12)
 
         self.type_badge = StatusBadge(activity_type.upper(), variant="active")
         self.type_badge.set_accent_color(self._accent)
@@ -43,11 +43,11 @@ class ActivityItem(QFrame):
 
         self.message_label = QLabel(message)
         self.message_label.setWordWrap(True)
-        self.message_label.setFont(ui_font(10, 500))
+        self.message_label.setFont(ui_font(9, 500))
         text_col.addWidget(self.message_label)
 
         self.timestamp_label = QLabel(timestamp)
-        self.timestamp_label.setFont(ui_font(9))
+        self.timestamp_label.setFont(ui_font(8))
         text_col.addWidget(self.timestamp_label)
         layout.addLayout(text_col, 1)
 
@@ -59,7 +59,7 @@ class ActivityItem(QFrame):
             QFrame#activityItem {{
                 background-color: rgba(26, 26, 46, 205);
                 border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 18px;
+                border-radius: 16px;
             }}
             QLabel {{
                 background: transparent;

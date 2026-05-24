@@ -166,7 +166,14 @@ class AccountDrawer(QFrame):
             """
         )
 
-    def set_profile(self, username: str, email: str, user_id: str, global_role_label: str) -> None:
+    def set_profile(
+        self,
+        username: str,
+        email: str,
+        user_id: str,
+        global_role_label: str,
+        hide_user_id: bool = False,
+    ) -> None:
         self._username = username or "Authenticated User"
         self._email = email or ""
         self._user_id = user_id or ""
@@ -177,9 +184,12 @@ class AccountDrawer(QFrame):
         self.name_label.setText(self._username)
         self.role_label.setText(self._global_role)
         self.email_value.setText(self._email or "Not available")
-        self.user_id_value.setText(self._user_id or "Not available")
+        if hide_user_id:
+            self.user_id_value.setText("Hidden by preference")
+        else:
+            self.user_id_value.setText(self._user_id or "Not available")
         self.global_role_value.setText(self._global_role or "Not available")
-        self.copy_user_id_button.setEnabled(bool(self._user_id))
+        self.copy_user_id_button.setEnabled(bool(self._user_id) and not hide_user_id)
 
     def update_anchor_geometry(self) -> None:
         parent = self.parentWidget()
