@@ -293,15 +293,30 @@ class FileService:
             
             # Write audit log entry
             if self.audit:
-                self.audit.write_audit_log(
-                    actor_id=user_id,
-                    action='DELETE_FILE',
-                    target_type='file',
-                    target_id=file_id,
-                    room_id=room_id,
-                    detail={'original_name': original_name},
-                    status='SUCCESS'
-                )
+                try:
+                    audit_written = self.audit.write_audit_log(
+                        actor_id=user_id,
+                        action='DELETE_FILE',
+                        target_type='file',
+                        target_id=file_id,
+                        room_id=room_id,
+                        detail={'original_name': original_name},
+                        status='SUCCESS'
+                    )
+                    if not audit_written:
+                        logger.warning(
+                            "DELETE_FILE audit log was not written for file %s in room %s",
+                            file_id,
+                            room_id,
+                        )
+                except Exception as audit_exc:
+                    logger.warning(
+                        "DELETE_FILE audit logging failed but delete will continue: file_id=%s room_id=%s error_type=%s error=%s",
+                        file_id,
+                        room_id,
+                        audit_exc.__class__.__name__,
+                        audit_exc,
+                    )
             
             return True, None
             
