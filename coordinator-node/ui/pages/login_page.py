@@ -1,1330 +1,549 @@
-"""
-Modern PySide6 Login Page UI for LAN Secure File System
-Featuring dark theme, green gradient accents, and smooth animations
-Refactored with real backend integration, threading, and production UX
-"""
+"""Login page wired to reusable widgets and backend services."""
+
+from __future__ import annotations
 
 import sys
-import re
-from typing import Optional, Dict, Any
-from enum import Enum
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional
 
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QSize, Qt, QThread, QTimer, Signal, QObject
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLineEdit, QCheckBox, QLabel, QFrame, QDialog,
-    QGraphicsOpacityEffect
+    QApplication,
+    QCheckBox,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import (
-    Qt, QTimer, QPropertyAnimation, QEasingCurve, QSize,
-    Property, QRect, QPoint, QThread, Signal, QObject
-)
-from PySide6.QtGui import (
-    QColor, QFont, QPalette, QPainter, QLinearGradient, QBrush, QPen
-)
-from PySide6.QtCore import QEvent
 
-# Import real backend integration
-from network.backend_client_sdk import BackendClient, BackendConfig
+from network.backend_client_sdk import BackendConfig
+from config import APP_CONFIG
 from services.services import BackendService
+from ui.fonts import app_font, brand_font, load_app_fonts, ui_font_family
+from ui.widgets.decorative_panel import DecorativePanel
+from ui.widgets.error_label import ErrorLabel
+from ui.widgets.modern_button import PALETTE, ModernButton
+from ui.widgets.modern_lineedit import ModernLineEdit
 
 
-# ────────────────────────────────────────────────────────────
-# Constants
-# ────────────────────────────────────────────────────────────
+APP_FONT = "Inter"
 
-APP_FONT = "Segoe UI"
-COLOR_DARK_BG = "#0f0f1e"
-COLOR_DARK_CARD = "#1a1a2e"
-COLOR_DARK_HOVER = "#222239"
-COLOR_BORDER = "#333333"
-COLOR_TEXT_PRIMARY = "#ffffff"
-COLOR_TEXT_SECONDARY = "#a0a0a0"
-COLOR_TEXT_MUTED = "#666666"
-COLOR_GREEN_PRIMARY = "#00b248"
-COLOR_GREEN_SECONDARY = "#00c853"
-COLOR_GREEN_LIGHT = "#00e676"
-COLOR_GREEN_ACCENT = "#00ff95"
-COLOR_RED = "#ff1744"
-COLOR_ERROR_BG = "#2a1520"
-COLOR_ERROR_BORDER = "#ff1744"
-COLOR_ERROR_TEXT = "#ff8a80"
+@dataclass(frozen=True)
+class LoginRuntimeConfig:
+    """Runtime settings for backend access."""
 
+    host: str = APP_CONFIG.backend_host
+    port: int = APP_CONFIG.backend_port
+    timeout: int = APP_CONFIG.backend_timeout
+    socket_timeout: int = APP_CONFIG.backend_socket_timeout
+    max_retries: int = APP_CONFIG.backend_max_retries
+    retry_delay: int = APP_CONFIG.backend_retry_delay
 
-class ButtonState(Enum):
-    """Enum for button states"""
-    NORMAL = 0
-    HOVERED = 1
-    PRESSED = 2
-    LOADING = 3
+    def to_backend_config(self) -> BackendConfig:
+        return BackendConfig(
+            host=self.host,
+            port=self.port,
+            timeout=self.timeout,
+            socket_timeout=self.socket_timeout,
+            max_retries=self.max_retries,
+            retry_delay=self.retry_delay,
+        )
 
 
-# ────────────────────────────────────────────────────────────
-# Background Workers (QThread-safe)
-# ────────────────────────────────────────────────────────────
+class BackendStartupWorker(QObject):
+    """Connects to the backend once so the UI can reflect availability."""
 
-class ServerStatusWorker(QObject):
-    """
-    Worker that periodically checks server connectivity in a background thread.
-    Emits status_changed with True (online) or False (offline).
-    """
-    status_changed = Signal(bool)
-    error_occurred = Signal(str)
+    finished = Signal(bool, str)
 
-    def __init__(self, host: str = "localhost", port: int = 8080):
+    def __init__(self, config: BackendConfig) -> None:
         super().__init__()
-        self._host = host
-        self._port = port
-        self._running = True
+        self._config = config
 
-    def stop(self):
-        """Stop the worker loop."""
-        self._running = False
-
-    def run(self):
-        """Continuously check server status every 5 seconds."""
-        while self._running:
-            try:
-                config = BackendConfig(host=self._host, port=self._port, timeout=5)
-                client = BackendClient(config)
-                client.connect()
-                # If we get here, connection succeeded
-                client.ping()
-                client.disconnect()
-                self.status_changed.emit(True)
-            except Exception as e:
-                self.status_changed.emit(False)
-            # Wait 5 seconds before next check
-            for _ in range(50):  # 50 * 0.1s = 5s, allows responsive stop
-                if not self._running:
-                    return
-                QThread.msleep(100)
+    def run(self) -> None:
+        service: Optional[BackendService] = None
+        try:
+            service = BackendService(self._config)
+            connected = service.connect()
+            if connected and service.health_check():
+                self.finished.emit(True, "Coordinator Server Online")
+            elif connected:
+                self.finished.emit(False, "Connected but health check failed")
+            else:
+                self.finished.emit(False, "Coordinator Server Offline")
+        except Exception as exc:  # pragma: no cover - defensive UI path
+            self.finished.emit(False, f"Startup connection failed: {exc}")
+        finally:
+            if service and service.is_connected():
+                service.disconnect()
 
 
 class LoginWorker(QObject):
-    """
-    Worker that performs login in a background thread.
-    """
-    login_success = Signal(dict)
-    login_failed = Signal(str)
+    """Performs authentication without blocking the UI thread."""
 
-    def __init__(self, host: str, port: int, username: str, password: str):
+    success = Signal(dict)
+    failure = Signal(str)
+
+    def __init__(self, config: BackendConfig, username: str, password: str) -> None:
         super().__init__()
-        self._host = host
-        self._port = port
+        self._config = config
         self._username = username
         self._password = password
-        self._service: Optional[BackendService] = None
 
-    def run(self):
-        """Execute login in background thread."""
+    def run(self) -> None:
+        service: Optional[BackendService] = None
         try:
-            config = BackendConfig(host=self._host, port=self._port, timeout=15)
-            self._service = BackendService(config)
-            if not self._service.connect():
-                self.login_failed.emit("Cannot reach server. Please check if the server is running.")
+            service = BackendService(self._config)
+            if not service.connect():
+                self.failure.emit("Cannot reach server. Please check if it is running.")
                 return
-
-            result = self._service.auth.login(self._username, self._password)
-            if result:
-                self.login_success.emit({"username": self._username})
-            else:
-                self.login_failed.emit("Invalid username or password.")
-        except TimeoutError:
-            self.login_failed.emit("Connection timed out. Server may be overloaded.")
-        except ConnectionRefusedError:
-            self.login_failed.emit("Connection refused. Is the server running on localhost:8080?")
-        except ValueError as e:
-            self.login_failed.emit(str(e) if str(e) else "Invalid credentials. Please try again.")
-        except Exception as e:
-            self.login_failed.emit(f"Login failed: {str(e)}")
-
-
-class SignupWorker(QObject):
-    """
-    Worker that performs signup in a background thread.
-    """
-    signup_success = Signal(dict)
-    signup_failed = Signal(str)
-
-    def __init__(self, host: str, port: int, username: str, email: str, password: str):
-        super().__init__()
-        self._host = host
-        self._port = port
-        self._username = username
-        self._email = email
-        self._password = password
-        self._service: Optional[BackendService] = None
-
-    def run(self):
-        """Execute signup in background thread."""
-        try:
-            config = BackendConfig(host=self._host, port=self._port, timeout=15)
-            self._service = BackendService(config)
-            if not self._service.connect():
-                self.signup_failed.emit("Cannot reach server. Please check if the server is running.")
-                return
-
-            result = self._service.auth.signup(self._username, self._email, self._password)
-            if result:
-                self.signup_success.emit({"username": self._username, "email": self._email})
-            else:
-                self.signup_failed.emit("Registration failed. Username or email may already exist.")
-        except TimeoutError:
-            self.signup_failed.emit("Connection timed out. Server may be overloaded.")
-        except ConnectionRefusedError:
-            self.signup_failed.emit("Connection refused. Is the server running on localhost:8080?")
-        except ValueError as e:
-            self.signup_failed.emit(str(e) if str(e) else "Registration failed. Please try again.")
-        except Exception as e:
-            self.signup_failed.emit(f"Signup failed: {str(e)}")
-
-
-# ────────────────────────────────────────────────────────────
-# DecorativePanel — animated gradient left panel
-# ────────────────────────────────────────────────────────────
-
-class DecorativePanel(QFrame):
-    """Left side decorative panel with animated gradient background"""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setMinimumWidth(400)
-        self.animation_progress = 0.0
-
-        # Setup animation
-        self.animation_timer = QTimer()
-        self.animation_timer.timeout.connect(self._update_animation)
-        self.animation_timer.start(50)
-
-    def _update_animation(self):
-        """Update gradient animation"""
-        self.animation_progress = (self.animation_progress + 0.01) % 1.0
-        self.update()
-
-    def paintEvent(self, event):
-        """Paint the decorative background with animated gradient"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        # Main background gradient
-        rect = self.rect()
-        gradient = QLinearGradient(0, 0, rect.width(), rect.height())
-
-        # Dark theme with subtle green accents
-        gradient.setColorAt(0.0, QColor("#0a0e27"))      # Deep dark blue
-        gradient.setColorAt(0.5, QColor("#0d1b2a"))      # Dark navy
-        gradient.setColorAt(1.0, QColor("#0a0e27"))      # Back to deep dark
-
-        painter.fillRect(rect, gradient)
-
-        # Add subtle animated overlay with green accents
-        overlay_gradient = QLinearGradient(
-            0, 0 + (self.animation_progress * 100),
-            0, rect.height() + (self.animation_progress * 100)
-        )
-        overlay_gradient.setColorAt(0.0, QColor(0, 200, 83, 0))      # Transparent green
-        overlay_gradient.setColorAt(0.5, QColor(0, 200, 83, 10))     # Subtle green
-        overlay_gradient.setColorAt(1.0, QColor(0, 200, 83, 0))      # Transparent
-
-        painter.setOpacity(0.3)
-        painter.fillRect(rect, overlay_gradient)
-
-        painter.setOpacity(1.0)
-
-        # Draw decorative circles with glow effect
-        self._draw_decorative_elements(painter, rect)
-
-    def _draw_decorative_elements(self, painter: QPainter, rect: QRect):
-        """Draw decorative elements with glow"""
-        positions = [
-            (100, 100, 80),
-            (150, 300, 120),
-            (50, 500, 60),
-            (200, 600, 100),
-        ]
-
-        for x, y, size in positions:
-            # Glow effect (larger, more transparent circle)
-            glow_gradient = QLinearGradient(x - size, y - size, x + size, y + size)
-            glow_gradient.setColorAt(0.0, QColor(0, 200, 83, 20))
-            glow_gradient.setColorAt(0.5, QColor(0, 200, 83, 5))
-            glow_gradient.setColorAt(1.0, QColor(0, 200, 83, 0))
-
-            painter.setBrush(glow_gradient)
-            painter.setPen(Qt.NoPen)
-            painter.drawEllipse(QPoint(x, y), size + 20, size + 20)
-
-            # Main circle
-            circle_gradient = QLinearGradient(x - size, y - size, x + size, y + size)
-            circle_gradient.setColorAt(0.0, QColor(0, 200, 83, 60))
-            circle_gradient.setColorAt(1.0, QColor(0, 230, 118, 30))
-
-            painter.setBrush(circle_gradient)
-            painter.drawEllipse(QPoint(x, y), size, size)
-
-
-# ────────────────────────────────────────────────────────────
-# ModernLineEdit — focus-animated input
-# ────────────────────────────────────────────────────────────
-
-class ModernLineEdit(QLineEdit):
-    """Custom line edit with focus animation and modern styling"""
-
-    def __init__(self, placeholder: str = "", parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setPlaceholderText(placeholder)
-        self.is_focused = False
-        self._focus_state = 0.0
-        self.focus_animation = QPropertyAnimation(self, b"focus_state")
-        self.focus_animation.setDuration(300)
-        self.focus_animation.setEasingCurve(QEasingCurve.InOutQuad)
-
-        self.setMinimumHeight(50)
-        self.setCursorMoveStyle(Qt.LogicalMoveStyle)
-
-    def _set_focus_state(self, value: float):
-        self._focus_state = value
-        self.update()
-
-    def _get_focus_state(self) -> float:
-        return self._focus_state
-
-    focus_state = Property(float, _get_focus_state, _set_focus_state)
-
-    def focusInEvent(self, event: QEvent):
-        super().focusInEvent(event)
-        self.is_focused = True
-        self.focus_animation.setStartValue(0.0)
-        self.focus_animation.setEndValue(1.0)
-        self.focus_animation.start()
-
-    def focusOutEvent(self, event: QEvent):
-        super().focusOutEvent(event)
-        self.is_focused = False
-        self.focus_animation.setStartValue(self._focus_state)
-        self.focus_animation.setEndValue(0.0)
-        self.focus_animation.start()
-
-
-# ────────────────────────────────────────────────────────────
-# ErrorLabel — inline validation message
-# ────────────────────────────────────────────────────────────
-
-class ErrorLabel(QLabel):
-    """Inline error message label with fade animation."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setStyleSheet(f"""
-            color: {COLOR_ERROR_TEXT};
-            font-size: 10px;
-            font-family: '{APP_FONT}';
-            padding: 4px 0px;
-        """)
-        self.setWordWrap(True)
-        self.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        self.hide()
-
-        # Fade animation
-        self._opacity_effect = QGraphicsOpacityEffect(self)
-        self._opacity_effect.setOpacity(0.0)
-        self.setGraphicsEffect(self._opacity_effect)
-        self._fade_anim = QPropertyAnimation(self._opacity_effect, b"opacity")
-        self._fade_anim.setDuration(200)
-        self._fade_anim.setEasingCurve(QEasingCurve.OutCubic)
-
-    def show_error(self, message: str):
-        """Show error with fade-in."""
-        self.setText(message)
-        self._fade_anim.setStartValue(0.0)
-        self._fade_anim.setEndValue(1.0)
-        self.show()
-        self._fade_anim.start()
-
-    def hide_error(self):
-        """Hide error with fade-out."""
-        self._fade_anim.setStartValue(1.0)
-        self._fade_anim.setEndValue(0.0)
-        self._fade_anim.finished.connect(self._on_fade_out_finished, Qt.UniqueConnection)
-        self._fade_anim.start()
-
-    def _on_fade_out_finished(self):
-        self.hide()
-
-
-# ────────────────────────────────────────────────────────────
-# ModernButton — premium gradient with glow & animations
-# ────────────────────────────────────────────────────────────
-
-class ModernButton(QPushButton):
-    """Custom button with premium green gradient and smooth animations"""
-
-    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
-        super().__init__(text, parent)
-        self.state = ButtonState.NORMAL
-        self.is_loading = False
-        self.loading_angle = 0
-
-        self._hover_state = 0.0
-        self._scale_factor = 1.0
-
-        # Hover animation
-        self.hover_animation = QPropertyAnimation(self, b"hover_state")
-        self.hover_animation.setDuration(300)
-        self.hover_animation.setEasingCurve(QEasingCurve.OutCubic)
-
-        # Scale animation
-        self.scale_animation = QPropertyAnimation(self, b"scale_factor")
-        self.scale_animation.setDuration(200)
-        self.scale_animation.setEasingCurve(QEasingCurve.OutBack)
-
-
-
-        # Loading animation
-        self.loading_timer = QTimer()
-        self.loading_timer.timeout.connect(self._update_loading)
-
-        # Styling
-        self.setMinimumHeight(52)
-        self.setMinimumWidth(160)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFocusPolicy(Qt.StrongFocus)
-
-    def _set_hover_state(self, value: float):
-        self._hover_state = value
-        self.update()
-
-    def _get_hover_state(self) -> float:
-        return self._hover_state
-
-    hover_state = Property(float, _get_hover_state, _set_hover_state)
-
-    def _set_scale_factor(self, value: float):
-        self._scale_factor = value
-        self.update()
-
-    def _get_scale_factor(self) -> float:
-        return self._scale_factor
-
-    scale_factor = Property(float, _get_scale_factor, _set_scale_factor)
-
-    def _update_loading(self):
-        """Update loading spinner angle"""
-        self.loading_angle = (self.loading_angle + 30) % 360
-        self.update()
-
-    def set_loading(self, loading: bool):
-        """Set button to loading state"""
-        self.is_loading = loading
-        self.setEnabled(not loading)
-
-        if loading:
-            self.loading_timer.start(50)
-            self.state = ButtonState.LOADING
-        else:
-            self.loading_timer.stop()
-            self.state = ButtonState.NORMAL
-
-        self.update()
-
-    def enterEvent(self, event):
-        super().enterEvent(event)
-        if not self.is_loading:
-            self.state = ButtonState.HOVERED
-            self.hover_animation.setStartValue(self._hover_state)
-            self.hover_animation.setEndValue(1.0)
-            self.hover_animation.start()
-            # Gentle scale up
-            self.scale_animation.setStartValue(self._scale_factor)
-            self.scale_animation.setEndValue(1.03)
-            self.scale_animation.start()
-
-    def leaveEvent(self, event):
-        super().leaveEvent(event)
-        if not self.is_loading:
-            self.state = ButtonState.NORMAL
-            self.hover_animation.setStartValue(self._hover_state)
-            self.hover_animation.setEndValue(0.0)
-            self.hover_animation.start()
-            # Scale back
-            self.scale_animation.setStartValue(self._scale_factor)
-            self.scale_animation.setEndValue(1.0)
-            self.scale_animation.start()
-
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        if not self.is_loading:
-            self.state = ButtonState.PRESSED
-            self.scale_animation.setStartValue(self._scale_factor)
-            self.scale_animation.setEndValue(0.97)
-            self.scale_animation.setDuration(100)
-            self.scale_animation.start()
-
-    def mouseReleaseEvent(self, event):
-        super().mouseReleaseEvent(event)
-        if not self.is_loading:
-            if self.underMouse():
-                self.state = ButtonState.HOVERED
-            else:
-                self.state = ButtonState.NORMAL
-            self.scale_animation.setStartValue(self._scale_factor)
-            self.scale_animation.setEndValue(1.0)
-            self.scale_animation.setDuration(200)
-            self.scale_animation.start()
-
-    def paintEvent(self, event):
-        """Custom paint event for premium green gradient button with glow and shadow"""
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-
-        rect = self.rect()
-        corner_radius = 12
-
-        # Apply scale transform
-        if self._scale_factor != 1.0:
-            center = rect.center()
-            new_w = int(rect.width() * self._scale_factor)
-            new_h = int(rect.height() * self._scale_factor)
-            scaled_rect = QRect(
-                center.x() - new_w // 2,
-                center.y() - new_h // 2,
-                new_w,
-                new_h
-            )
-        else:
-            scaled_rect = rect
-
-        # Determine colors based on state
-        if self.is_loading:
-            start_color = QColor(COLOR_GREEN_PRIMARY)
-            end_color = QColor(COLOR_GREEN_SECONDARY)
-        else:
-            progress = self._hover_state
-
-            # Color palette: richer diagonal gradient
-            # Normal: deeper green
-            c1_n = QColor("#008837")
-            c2_n = QColor(COLOR_GREEN_PRIMARY)
-            c3_n = QColor(COLOR_GREEN_SECONDARY)
-
-            # Hovered: brighter with accent
-            c1_h = QColor(COLOR_GREEN_PRIMARY)
-            c2_h = QColor(COLOR_GREEN_LIGHT)
-            c3_h = QColor(COLOR_GREEN_ACCENT)
-
-            def lerp_color(a: QColor, b: QColor, t: float) -> QColor:
-                return QColor(
-                    int(a.red() + (b.red() - a.red()) * t),
-                    int(a.green() + (b.green() - a.green()) * t),
-                    int(a.blue() + (b.blue() - a.blue()) * t)
+            if service.auth.login(self._username, self._password):
+                self.success.emit(
+                    {
+                        "username": self._username,
+                        "token": service._client.get_token() or "",
+                    }
                 )
-
-            start_color = lerp_color(c1_n, c1_h, progress)
-            mid_color = lerp_color(c2_n, c2_h, progress)
-            end_color = lerp_color(c3_n, c3_h, progress)
-
-        # ── Drop shadow ──
-        if self._hover_state > 0.05:
-            shadow_rect = scaled_rect.adjusted(1, 3, -1, 1)
-            shadow_gradient = QLinearGradient(
-                shadow_rect.topLeft(), shadow_rect.bottomRight()
+            else:
+                self.failure.emit("Invalid username or password.")
+        except TimeoutError:
+            self.failure.emit("Connection timed out. Please try again.")
+        except ConnectionRefusedError:
+            self.failure.emit(
+                f"Connection refused. Is the server running on {APP_CONFIG.backend_host}:{APP_CONFIG.backend_port}?"
             )
-            shadow_alpha = int(80 * self._hover_state)
-            shadow_gradient.setColorAt(0.0, QColor(0, 200, 83, shadow_alpha))
-            shadow_gradient.setColorAt(0.5, QColor(0, 200, 83, int(shadow_alpha * 0.5)))
-            shadow_gradient.setColorAt(1.0, QColor(0, 200, 83, 0))
+        except Exception as exc:
+            self.failure.emit(f"Login failed: {exc}")
+        finally:
+            if service and service.is_connected():
+                service.disconnect()
 
-            painter.setOpacity(0.6)
-            painter.setBrush(shadow_gradient)
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(shadow_rect, corner_radius + 2, corner_radius + 2)
-            painter.setOpacity(1.0)
-
-        # ── Outer glow on hover ──
-        if self._hover_state > 0.1:
-            glow_rect = scaled_rect.adjusted(-3, -3, 3, 3)
-            glow_gradient = QLinearGradient(glow_rect.topLeft(), glow_rect.bottomRight())
-            glow_alpha = int(60 * self._hover_state)
-            glow_gradient.setColorAt(0.0, QColor(0, 200, 83, glow_alpha))
-            glow_gradient.setColorAt(0.5, QColor(0, 230, 118, int(glow_alpha * 0.4)))
-            glow_gradient.setColorAt(1.0, QColor(0, 255, 149, 0))
-
-            painter.setOpacity(0.4)
-            painter.setBrush(glow_gradient)
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(glow_rect, corner_radius + 2, corner_radius + 2)
-            painter.setOpacity(1.0)
-
-        # ── Main button gradient (premium diagonal) ──
-        gradient = QLinearGradient(
-            scaled_rect.topLeft(), scaled_rect.bottomRight()
-        )
-        gradient.setColorAt(0.0, start_color)
-        if not self.is_loading and self._hover_state > 0:
-            gradient.setColorAt(0.5, mid_color)
-        gradient.setColorAt(1.0, end_color)
-
-        painter.setBrush(gradient)
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(scaled_rect, corner_radius, corner_radius)
-
-        # ── Subtle inner highlight ──
-        highlight_rect = scaled_rect.adjusted(2, 2, -2, -int(scaled_rect.height() * 0.6))
-        if highlight_rect.height() > 10:
-            hl_gradient = QLinearGradient(
-                highlight_rect.topLeft(), highlight_rect.bottomLeft()
-            )
-            hl_gradient.setColorAt(0.0, QColor(255, 255, 255, 30))
-            hl_gradient.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setBrush(hl_gradient)
-            painter.setPen(Qt.NoPen)
-            painter.drawRoundedRect(highlight_rect, corner_radius - 2, corner_radius - 2)
-
-        # ── Loading spinner ──
-        if self.is_loading:
-            self._draw_loading_spinner(painter, scaled_rect)
-
-        # ── Text ──
-        painter.setPen(QColor(COLOR_TEXT_PRIMARY))
-        font = QFont(APP_FONT, 12, QFont.DemiBold)
-        painter.setFont(font)
-        painter.drawText(scaled_rect, Qt.AlignCenter, self.text())
-
-    def _draw_loading_spinner(self, painter: QPainter, rect: QRect):
-        """Draw rotating loading spinner"""
-        center_x = rect.center().x()
-        center_y = rect.center().y()
-        radius = 10
-
-        painter.save()
-        painter.translate(center_x, center_y)
-        painter.rotate(self.loading_angle)
-
-        for i in range(12):
-            painter.rotate(30)
-            alpha = int(200 * (1 - i / 12))
-            pen = QPen(QColor(255, 255, 255, alpha))
-            pen.setWidth(2)
-            painter.setPen(pen)
-            painter.drawLine(0, radius, 0, radius + 6)
-
-        painter.restore()
-
-
-# ────────────────────────────────────────────────────────────
-# SignupDialog — modal signup with backend integration
-# ────────────────────────────────────────────────────────────
-
-class SignupDialog(QDialog):
-    """Modern modal signup dialog with real backend integration."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setWindowTitle("Create Account")
-        self.setFixedSize(420, 520)
-        self.setModal(True)
-        self.setWindowFlags(
-            Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-        )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-
-        # Fade-in effect
-        self._opacity_effect = QGraphicsOpacityEffect(self)
-        self._opacity_effect.setOpacity(0.0)
-        self.setGraphicsEffect(self._opacity_effect)
-        self._fade_in = QPropertyAnimation(self._opacity_effect, b"opacity")
-        self._fade_in.setDuration(250)
-        self._fade_in.setStartValue(0.0)
-        self._fade_in.setEndValue(1.0)
-        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
-
-        self._build_ui()
-        self._connect_signals()
-
-    def showEvent(self, event):
-        """Start fade-in animation when shown."""
-        super().showEvent(event)
-        self._fade_in.start()
-
-    # ── UI Build ──
-
-    def _build_ui(self):
-        """Build the signup dialog UI."""
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-
-        # Card container
-        card = QFrame()
-        card.setStyleSheet(f"""
-            QFrame {{
-                background-color: {COLOR_DARK_CARD};
-                border: 1px solid {COLOR_BORDER};
-                border-radius: 16px;
-            }}
-        """)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(30, 30, 30, 30)
-        card_layout.setSpacing(12)
-
-        # Title
-        title = QLabel("Create Account")
-        title_font = QFont(APP_FONT, 22, QFont.Bold)
-        title.setFont(title_font)
-        title.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; border: none;")
-        title.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(title)
-
-        # Subtitle
-        subtitle = QLabel("Join the secure file system")
-        subtitle.setFont(QFont(APP_FONT, 10))
-        subtitle.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; border: none;")
-        subtitle.setAlignment(Qt.AlignCenter)
-        card_layout.addWidget(subtitle)
-
-        card_layout.addSpacing(16)
-
-        # Username
-        self._add_field_label(card_layout, "Username")
-        self.signup_username = ModernLineEdit("Choose a username")
-        self.signup_username.setStyleSheet(self._get_lineedit_style())
-        card_layout.addWidget(self.signup_username)
-
-        # Email
-        self._add_field_label(card_layout, "Email")
-        self.signup_email = ModernLineEdit("Enter your email")
-        self.signup_email.setStyleSheet(self._get_lineedit_style())
-        card_layout.addWidget(self.signup_email)
-
-        # Password
-        self._add_field_label(card_layout, "Password")
-        self.signup_password = ModernLineEdit("Create a password")
-        self.signup_password.setEchoMode(QLineEdit.Password)
-        self.signup_password.setStyleSheet(self._get_lineedit_style())
-        card_layout.addWidget(self.signup_password)
-
-        # Confirm Password
-        self._add_field_label(card_layout, "Confirm Password")
-        self.signup_confirm = ModernLineEdit("Re-enter password")
-        self.signup_confirm.setEchoMode(QLineEdit.Password)
-        self.signup_confirm.setStyleSheet(self._get_lineedit_style())
-        card_layout.addWidget(self.signup_confirm)
-
-        # Error label
-        self.signup_error = ErrorLabel()
-        card_layout.addWidget(self.signup_error)
-
-        card_layout.addSpacing(8)
-
-        # Signup button
-        self.signup_button = ModernButton("Create Account")
-        card_layout.addWidget(self.signup_button)
-
-        # Cancel link
-        cancel_layout = QHBoxLayout()
-        cancel_layout.setContentsMargins(0, 0, 0, 0)
-        cancel_layout.setSpacing(4)
-
-        have_account = QLabel("Already have an account?")
-        have_account.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 10px; border: none;")
-        cancel_layout.addWidget(have_account)
-
-        self.cancel_link = QPushButton("Sign in")
-        self.cancel_link.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {COLOR_GREEN_SECONDARY};
-                border: none;
-                text-decoration: underline;
-                font-weight: bold;
-                font-size: 10px;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLOR_GREEN_LIGHT};
-            }}
-        """)
-        self.cancel_link.setCursor(Qt.PointingHandCursor)
-        cancel_layout.addWidget(self.cancel_link)
-
-        cancel_container = QWidget()
-        cancel_container.setStyleSheet("border: none;")
-        cancel_container.setLayout(cancel_layout)
-        card_layout.addWidget(cancel_container, alignment=Qt.AlignCenter)
-
-        # Close button (X)
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(30, 30)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {COLOR_TEXT_SECONDARY};
-                border: none;
-                font-size: 16px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                color: {COLOR_TEXT_PRIMARY};
-            }}
-        """)
-        close_btn.setCursor(Qt.PointingHandCursor)
-
-        # Position close button via overlay
-        btn_container = QWidget()
-        btn_container.setStyleSheet("border: none;")
-        btn_layout = QHBoxLayout(btn_container)
-        btn_layout.setContentsMargins(0, 0, 0, 0)
-        btn_layout.addStretch()
-        btn_layout.addWidget(close_btn)
-
-        main_layout.addWidget(btn_container)
-        main_layout.addWidget(card)
-        main_layout.addStretch()
-
-        self.close_btn = close_btn
-
-    def _add_field_label(self, layout: QVBoxLayout, text: str):
-        """Add a field label to the layout."""
-        label = QLabel(text)
-        label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-weight: bold; border: none;")
-        label.setFont(QFont(APP_FONT, 10))
-        layout.addWidget(label)
-
-    def _get_lineedit_style(self) -> str:
-        """Get stylesheet for line edit inputs."""
-        return f"""
-            QLineEdit {{
-                background-color: #1a1a2e;
-                border: 2px solid {COLOR_BORDER};
-                border-radius: 8px;
-                padding: 12px 15px;
-                color: {COLOR_TEXT_PRIMARY};
-                font-size: 11px;
-                font-family: '{APP_FONT}';
-                selection-background-color: {COLOR_GREEN_SECONDARY};
-            }}
-            QLineEdit:focus {{
-                border: 2px solid {COLOR_GREEN_SECONDARY};
-                background-color: {COLOR_DARK_HOVER};
-            }}
-            QLineEdit::placeholder {{
-                color: {COLOR_TEXT_MUTED};
-            }}
-        """
-
-    def _connect_signals(self):
-        """Connect dialog signals."""
-        self.close_btn.clicked.connect(self.reject)
-        self.cancel_link.clicked.connect(self.reject)
-        self.signup_button.clicked.connect(self._on_signup_clicked)
-
-        # Enter key support
-        self.signup_confirm.returnPressed.connect(self._on_signup_clicked)
-
-    def _validate_inputs(self) -> Optional[str]:
-        """Validate all inputs. Returns error message or None."""
-        username = self.signup_username.text().strip()
-        email = self.signup_email.text().strip()
-        password = self.signup_password.text()
-        confirm = self.signup_confirm.text()
-
-        if not username:
-            return "Please enter a username."
-        if len(username) < 3:
-            return "Username must be at least 3 characters."
-        if not email:
-            return "Please enter an email address."
-        # Basic email validation
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(email_pattern, email):
-            return "Please enter a valid email address."
-        if not password:
-            return "Please enter a password."
-        if len(password) < 6:
-            return "Password must be at least 6 characters."
-        if password != confirm:
-            return "Passwords do not match."
-        return None
-
-    def _set_inputs_enabled(self, enabled: bool):
-        """Enable or disable input fields."""
-        self.signup_username.setEnabled(enabled)
-        self.signup_email.setEnabled(enabled)
-        self.signup_password.setEnabled(enabled)
-        self.signup_confirm.setEnabled(enabled)
-        self.cancel_link.setEnabled(enabled)
-        self.close_btn.setEnabled(enabled)
-
-    def _on_signup_clicked(self):
-        """Handle signup button click."""
-        # Validate
-        error = self._validate_inputs()
-        if error:
-            self.signup_error.show_error(error)
-            return
-
-        self.signup_error.hide_error()
-
-        # Loading state
-        self.signup_button.set_loading(True)
-        self._set_inputs_enabled(False)
-
-        # Run signup in background
-        username = self.signup_username.text().strip()
-        email = self.signup_email.text().strip()
-        password = self.signup_password.text()
-
-        self._thread = QThread()
-        self._worker = SignupWorker("localhost", 8080, username, email, password)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.signup_success.connect(self._on_signup_success)
-        self._worker.signup_failed.connect(self._on_signup_failed)
-        self._worker.signup_success.connect(self._thread.quit)
-        self._worker.signup_failed.connect(self._thread.quit)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._worker.deleteLater)
-        self._thread.start()
-
-    def _on_signup_success(self, data: Dict[str, Any]):
-        """Handle successful signup."""
-        self.signup_button.set_loading(False)
-        self._set_inputs_enabled(True)
-        print(f"Signup successful for user: {data.get('username')}")
-        self.accept()
-
-    def _on_signup_failed(self, message: str):
-        """Handle signup failure."""
-        self.signup_button.set_loading(False)
-        self._set_inputs_enabled(True)
-        self.signup_error.show_error(message)
-
-
-# ────────────────────────────────────────────────────────────
-# LoginCard — login form with real backend integration
-# ────────────────────────────────────────────────────────────
 
 class LoginCard(QFrame):
-    """Login form card with modern styling and real backend integration"""
+    """Composable login form built from reusable widgets."""
 
-    # Signals for communicating with parent
-    login_started = Signal()
-    login_success = Signal(dict)
-    login_failed = Signal(str)
+    login_requested = Signal(str, str)
+    signup_requested = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFrameShape(QFrame.NoFrame)
-        self._login_thread: Optional[QThread] = None
-        self._login_worker: Optional[LoginWorker] = None
+        self.setObjectName("loginCard")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setMinimumWidth(420)
+        self.setMaximumWidth(480)
+        self.login_error = ErrorLabel(parent=self)
+        self._error_host: Optional[QWidget] = self
 
-        # Setup layout
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 40, 40, 40)
-        layout.setSpacing(18)
+        layout.setContentsMargins(46, 44, 46, 44)
+        layout.setSpacing(14)
 
-        # Title
         title = QLabel("LAN Secure File System")
-        title_font = QFont(APP_FONT, 26, QFont.Bold)
-        title.setFont(title_font)
-        title.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY};")
+        title.setObjectName("cardTitle")
         title.setAlignment(Qt.AlignCenter)
+        title.setFont(brand_font(24))
         layout.addWidget(title)
 
-        # Subtitle
-        subtitle = QLabel("Enterprise-Grade File Security")
-        subtitle_font = QFont(APP_FONT, 11)
-        subtitle.setFont(subtitle_font)
-        subtitle.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY};")
+        subtitle = QLabel("Enterprise-grade access for your secure workspace")
+        subtitle.setObjectName("cardSubtitle")
+        subtitle.setWordWrap(True)
         subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setFont(app_font(10))
         layout.addWidget(subtitle)
 
-        layout.addSpacing(24)
-
-        # Username input
-        username_label = QLabel("Username")
-        username_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-weight: bold;")
-        username_font = QFont(APP_FONT, 10)
-        username_label.setFont(username_font)
-        layout.addWidget(username_label)
+        layout.addSpacing(18)
+        layout.addWidget(self._build_field_label("Username"))
 
         self.username_input = ModernLineEdit("Enter your username")
-        self.username_input.setStyleSheet(self._get_lineedit_style())
         layout.addWidget(self.username_input)
 
-        # Password input
-        password_label = QLabel("Password")
-        password_label.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-weight: bold;")
-        password_label.setFont(username_font)
-        layout.addWidget(password_label)
-
+        layout.addWidget(self._build_field_label("Password"))
         self.password_input = ModernLineEdit("Enter your password")
-        self.password_input.setEchoMode(QLineEdit.Password)
-        self.password_input.setStyleSheet(self._get_lineedit_style())
+        self.password_input.setEchoMode(ModernLineEdit.Password)
         layout.addWidget(self.password_input)
 
-        # Remember me checkbox
         self.remember_checkbox = QCheckBox("Remember me")
-        self.remember_checkbox.setStyleSheet(f"""
-            QCheckBox {{
-                color: {COLOR_TEXT_SECONDARY};
-                font-size: 10px;
-            }}
-            QCheckBox::indicator {{
-                width: 18px;
-                height: 18px;
-            }}
-            QCheckBox::indicator:unchecked {{
-                background-color: {COLOR_DARK_CARD};
-                border: 2px solid {COLOR_BORDER};
-                border-radius: 4px;
-            }}
-            QCheckBox::indicator:checked {{
-                background-color: {COLOR_GREEN_SECONDARY};
-                border: 2px solid {COLOR_GREEN_SECONDARY};
-                border-radius: 4px;
-            }}
-            QCheckBox::indicator:hover {{
-                border-color: {COLOR_GREEN_LIGHT};
-            }}
-        """)
+        self.remember_checkbox.setObjectName("rememberCheckbox")
         layout.addWidget(self.remember_checkbox)
 
-        # Error label for login
-        self.login_error = ErrorLabel()
-        layout.addWidget(self.login_error)
-
-        layout.addSpacing(6)
-
-        # Login button
         self.login_button = ModernButton("Sign In")
         layout.addWidget(self.login_button)
 
-        # Signup text
-        signup_layout = QHBoxLayout()
-        signup_layout.setContentsMargins(0, 0, 0, 0)
-
-        signup_text = QLabel("Don't have an account? ")
-        signup_text.setStyleSheet(f"color: {COLOR_TEXT_SECONDARY}; font-size: 10px;")
-        signup_layout.addWidget(signup_text)
+        signup_row = QHBoxLayout()
+        signup_row.setContentsMargins(0, 0, 0, 0)
+        signup_row.setSpacing(4)
+        signup_prompt = QLabel("Don't have an account?")
+        signup_prompt.setObjectName("mutedLabel")
+        signup_row.addWidget(signup_prompt)
 
         self.signup_link = QPushButton("Sign up")
-        self.signup_link.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {COLOR_GREEN_SECONDARY};
-                border: none;
-                text-decoration: underline;
-                font-weight: bold;
-                font-size: 10px;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                color: {COLOR_GREEN_LIGHT};
-            }}
-        """)
+        self.signup_link.setObjectName("textLink")
         self.signup_link.setCursor(Qt.PointingHandCursor)
-        signup_layout.addWidget(self.signup_link)
+        self.signup_link.setFlat(True)
+        signup_row.addWidget(self.signup_link)
+        signup_row.addStretch()
 
         signup_container = QWidget()
-        signup_container.setLayout(signup_layout)
+        signup_container.setLayout(signup_row)
         layout.addWidget(signup_container, alignment=Qt.AlignCenter)
 
-        # Server status indicator
-        layout.addSpacing(12)
-        status_layout = QHBoxLayout()
-        status_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addSpacing(10)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(8)
 
         self.status_indicator = QLabel("●")
-        self.status_indicator.setStyleSheet("color: #555555; font-size: 14px;")
-        status_layout.addWidget(self.status_indicator)
+        self.status_indicator.setObjectName("statusIndicator")
+        status_row.addWidget(self.status_indicator)
 
         self.status_text = QLabel("Checking server...")
-        self.status_text.setStyleSheet(f"color: {COLOR_TEXT_MUTED}; font-size: 9px;")
-        status_layout.addWidget(self.status_text)
+        self.status_text.setObjectName("statusText")
+        status_row.addWidget(self.status_text)
+        status_row.addStretch()
 
-        status_layout.addStretch()
         status_container = QWidget()
-        status_container.setLayout(status_layout)
+        status_container.setLayout(status_row)
         layout.addWidget(status_container)
-
         layout.addStretch()
 
+        self.login_button.clicked.connect(self._emit_login_request)
+        self.password_input.returnPressed.connect(self._emit_login_request)
+        self.username_input.returnPressed.connect(self.password_input.setFocus)
+        self.signup_link.clicked.connect(self.signup_requested.emit)
+
     @staticmethod
-    def _get_lineedit_style() -> str:
-        """Get stylesheet for line edit inputs with focus glow."""
-        return f"""
-            QLineEdit {{
-                background-color: {COLOR_DARK_CARD};
-                border: 2px solid {COLOR_BORDER};
-                border-radius: 8px;
-                padding: 12px 15px;
-                color: {COLOR_TEXT_PRIMARY};
-                font-size: 11px;
-                font-family: '{APP_FONT}';
-                selection-background-color: {COLOR_GREEN_SECONDARY};
-            }}
-            QLineEdit:focus {{
-                border: 2px solid {COLOR_GREEN_SECONDARY};
-                background-color: {COLOR_DARK_HOVER};
-            }}
-            QLineEdit::placeholder {{
-                color: {COLOR_TEXT_MUTED};
-            }}
-        """
+    def _build_field_label(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("fieldLabel")
+        label.setFont(app_font(10, 600))
+        return label
 
-    def set_server_status(self, online: bool):
-        """Update the server status indicator."""
-        if online:
-            self.status_indicator.setStyleSheet(f"color: {COLOR_GREEN_SECONDARY}; font-size: 14px;")
-            self.status_text.setText("Coordinator Server Online")
-            self.status_text.setStyleSheet(f"color: {COLOR_GREEN_LIGHT}; font-size: 9px; font-weight: bold;")
-        else:
-            self.status_indicator.setStyleSheet(f"color: {COLOR_RED}; font-size: 14px;")
-            self.status_text.setText("Coordinator Server Offline")
-            self.status_text.setStyleSheet(f"color: {COLOR_ERROR_TEXT}; font-size: 9px;")
+    def _emit_login_request(self) -> None:
+        self.login_requested.emit(
+            self.username_input.text().strip(),
+            self.password_input.text(),
+        )
 
-    def set_login_loading(self, loading: bool):
-        """Set login loading state."""
-        self.login_button.set_loading(loading)
+    def set_error_host(self, host: QWidget) -> None:
+        self._error_host = host
+        self.login_error.move_to_top_center(host)
+
+    def set_server_status(self, online: bool, message: str) -> None:
+        self.status_indicator.setStyleSheet(
+            f"color: {PALETTE.accent_alt if online else PALETTE.error}; font-size: 14px;"
+        )
+        self.status_text.setText(message)
+        self.status_text.setStyleSheet(
+            f"color: {PALETTE.accent_soft if online else '#ff98a9'}; font-size: 11px; font-weight: 600;"
+        )
+
+    def set_login_loading(self, loading: bool) -> None:
         self.username_input.setEnabled(not loading)
         self.password_input.setEnabled(not loading)
         self.remember_checkbox.setEnabled(not loading)
         self.signup_link.setEnabled(not loading)
+        self.login_button.set_loading(loading, "Authenticating")
 
-    def show_login_error(self, message: str):
-        """Show login error inline."""
+    def show_login_error(self, message: str) -> None:
+        self.login_error.move_to_top_center(self._error_host)
         self.login_error.show_error(message)
 
-    def hide_login_error(self):
-        """Hide login error."""
+    def hide_login_error(self) -> None:
         self.login_error.hide_error()
 
-    def get_credentials(self) -> tuple:
-        """Get username and password from inputs."""
-        return self.username_input.text().strip(), self.password_input.text()
-
-
-# ────────────────────────────────────────────────────────────
-# LoginWindow — main window
-# ────────────────────────────────────────────────────────────
 
 class LoginWindow(QMainWindow):
-    """Main login window combining decorative panel and login form"""
+    """Main login window using the shared widget system.
 
-    def __init__(self):
+    This window only emits navigation signals. The actual page switching is
+    handled by main.AppController so every LoginWindow stays connected to the
+    same router.
+    """
+
+    login_successful = Signal(dict)
+    signup_requested = Signal()
+
+    def __init__(self) -> None:
         super().__init__()
+        self._runtime = LoginRuntimeConfig()
+        self._backend_service = BackendService(self._runtime.to_backend_config())
+        self._startup_thread: Optional[QThread] = None
+        self._startup_worker: Optional[BackendStartupWorker] = None
+        self._login_thread: Optional[QThread] = None
+        self._login_worker: Optional[LoginWorker] = None
+
         self.setWindowTitle("LAN Secure File System - Login")
         self.setGeometry(100, 100, 1200, 700)
         self.setMinimumSize(QSize(1000, 600))
 
-        # Backend integration
-        self._backend_service: Optional[BackendService] = None
+        self._build_ui()
+        self._apply_window_theme()
+        self._connect_signals()
+        self._setup_fade_in()
 
-        # Threading
-        self._status_thread: Optional[QThread] = None
-        self._status_worker: Optional[ServerStatusWorker] = None
+        QTimer.singleShot(50, self._fade_in.start)
+        QTimer.singleShot(120, self._connect_backend_on_startup)
 
-        # Fade-in opacity
-        self._opacity_effect = QGraphicsOpacityEffect(self)
-        self._opacity_effect.setOpacity(0.0)
-        self.setGraphicsEffect(self._opacity_effect)
-        self._fade_in = QPropertyAnimation(self._opacity_effect, b"opacity")
-        self._fade_in.setDuration(400)
-        self._fade_in.setStartValue(0.0)
-        self._fade_in.setEndValue(1.0)
-        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
-
-        # Setup central widget and layout
+    def _build_ui(self) -> None:
         central_widget = QWidget()
+        central_widget.setObjectName("centralWidget")
         self.setCentralWidget(central_widget)
 
         main_layout = QHBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Left decorative panel
         self.decorative_panel = DecorativePanel()
-        main_layout.addWidget(self.decorative_panel)
+        main_layout.addWidget(self.decorative_panel, 9)
 
-        # Right login card
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_panel = QWidget()
+        right_panel.setObjectName("rightPanel")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(48, 36, 48, 36)
         right_layout.setAlignment(Qt.AlignCenter)
 
         self.login_card = LoginCard()
         right_layout.addWidget(self.login_card, alignment=Qt.AlignCenter)
+        main_layout.addWidget(right_panel, 11)
+        self._toast_host = self
 
-        main_layout.addWidget(right_widget, 1)
-
-        # Set application-wide dark theme
-        self._apply_dark_theme(central_widget)
-
-        # Connect signals
-        self._connect_signals()
-
-        # Start fade-in after window is shown
-        QTimer.singleShot(50, self._fade_in.start)
-
-        # Start server status checking
-        QTimer.singleShot(100, self._start_status_checking)
-
-    def showEvent(self, event):
-        """Ensure window is properly shown before fade-in."""
-        super().showEvent(event)
-
-    def _apply_dark_theme(self, widget: QWidget):
-        """Apply dark theme to application"""
+    def _apply_window_theme(self) -> None:
         palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(COLOR_DARK_BG))
-        palette.setColor(QPalette.WindowText, QColor(COLOR_TEXT_PRIMARY))
-        palette.setColor(QPalette.Base, QColor(COLOR_DARK_CARD))
-        palette.setColor(QPalette.Text, QColor(COLOR_TEXT_PRIMARY))
-        palette.setColor(QPalette.Button, QColor("#0a0e27"))
-        palette.setColor(QPalette.ButtonText, QColor(COLOR_TEXT_PRIMARY))
+        palette.setColor(QPalette.Window, QColor(PALETTE.background))
+        palette.setColor(QPalette.WindowText, QColor(PALETTE.text))
+        palette.setColor(QPalette.Base, QColor(PALETTE.surface))
+        palette.setColor(QPalette.AlternateBase, QColor(PALETTE.surface_alt))
+        palette.setColor(QPalette.Text, QColor(PALETTE.text))
+        palette.setColor(QPalette.Button, QColor(PALETTE.surface))
+        palette.setColor(QPalette.ButtonText, QColor(PALETTE.text))
+        self.setPalette(palette)
+        self.setFont(app_font(10))
 
-        widget.setPalette(palette)
-
-    # ── Server Status Checking ──
-
-    def _start_status_checking(self):
-        """Start the server status background worker thread."""
-        self._status_thread = QThread()
-        self._status_worker = ServerStatusWorker(host="localhost", port=8080)
-        self._status_worker.moveToThread(self._status_thread)
-        self._status_thread.started.connect(self._status_worker.run)
-        self._status_worker.status_changed.connect(self._on_server_status_changed)
-        self._status_thread.finished.connect(self._status_worker.deleteLater)
-        self._status_thread.start()
-
-    def _stop_status_checking(self):
-        """Stop the server status worker thread."""
-        if self._status_worker:
-            self._status_worker.stop()
-        if self._status_thread and self._status_thread.isRunning():
-            self._status_thread.quit()
-            self._status_thread.wait(3000)
-
-    def _on_server_status_changed(self, online: bool):
-        """Handle server status change from background worker."""
-        self.login_card.set_server_status(online)
-
-    # ── Signal Connections ──
-
-    def _connect_signals(self):
-        """Connect button signals to slots."""
-        # Login button
-        self.login_card.login_button.clicked.connect(self._on_login_clicked)
-
-        # Enter key in password field triggers login
-        self.login_card.password_input.returnPressed.connect(self._on_login_clicked)
-
-        # Enter key in username field moves to password
-        self.login_card.username_input.returnPressed.connect(
-            lambda: self.login_card.password_input.setFocus()
+        self.centralWidget().setStyleSheet(
+            f"""
+            QWidget {{
+                color: {PALETTE.text};
+            }}
+            QWidget#centralWidget {{
+                background-color: {PALETTE.background};
+            }}
+            QWidget#rightPanel {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:0, y2:1,
+                    stop:0 rgba(26, 26, 46, 246),
+                    stop:1 rgba(15, 15, 30, 255)
+                );
+            }}
+            QFrame#loginCard {{
+                background-color: rgba(26, 26, 46, 232);
+                border: 1px solid rgba(0, 200, 83, 48);
+                border-radius: 28px;
+            }}
+            QLabel {{
+                background: transparent;
+            }}
+            QLabel#cardTitle {{
+                color: {PALETTE.text};
+                background: transparent;
+                font-size: 29px;
+                font-weight: 650;
+                letter-spacing: 0.5px;
+            }}
+            QLabel#cardSubtitle {{
+                color: #98afa7;
+                background: transparent;
+                font-size: 12px;
+                line-height: 1.45em;
+                padding: 2px 12px 0 12px;
+            }}
+            QLabel#fieldLabel {{
+                color: #d7ede2;
+                background: transparent;
+                font-size: 10px;
+                font-weight: 600;
+                letter-spacing: 0.8px;
+                text-transform: uppercase;
+                padding: 4px 0 1px 2px;
+            }}
+            QLabel#mutedLabel {{
+                color: {PALETTE.text_muted};
+                background: transparent;
+                font-size: 11px;
+            }}
+            QLabel#statusText {{
+                color: #90a69e;
+                background: transparent;
+                font-size: 11px;
+            }}
+            QLabel#statusIndicator {{
+                color: #5f6d6a;
+                background: transparent;
+                font-size: 14px;
+            }}
+            QPushButton#textLink {{
+                background: transparent;
+                color: {PALETTE.accent_alt};
+                border: none;
+                font-family: "{ui_font_family()}";
+                font-size: 11px;
+                font-weight: 600;
+                text-decoration: underline;
+                padding: 0;
+            }}
+            QPushButton#textLink:hover {{
+                color: {PALETTE.accent_bright};
+            }}
+            QPushButton#textLink:disabled {{
+                color: {PALETTE.disabled_text};
+            }}
+            QCheckBox#rememberCheckbox {{
+                color: {PALETTE.text_muted};
+                font-family: "{ui_font_family()}";
+                font-size: 11px;
+                spacing: 10px;
+            }}
+            QCheckBox#rememberCheckbox::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 4px;
+                border: 1px solid rgba(95, 109, 106, 140);
+                background: rgba(15, 15, 30, 180);
+            }}
+            QCheckBox#rememberCheckbox::indicator:hover {{
+                border: 1px solid rgba(0, 230, 118, 165);
+            }}
+            QCheckBox#rememberCheckbox::indicator:checked {{
+                border: 1px solid rgba(0, 200, 83, 210);
+                background: rgba(0, 178, 72, 210);
+            }}
+            """
         )
 
-        # Signup link
-        self.login_card.signup_link.clicked.connect(self._on_signup_clicked)
+    def _setup_fade_in(self) -> None:
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(0.0)
+        self.setGraphicsEffect(self._opacity_effect)
 
-        # Login card signals
-        self.login_card.login_success.connect(self._on_login_success)
-        self.login_card.login_failed.connect(self._on_login_failed)
+        self._fade_in = QPropertyAnimation(self._opacity_effect, b"opacity", self)
+        self._fade_in.setDuration(420)
+        self._fade_in.setStartValue(0.0)
+        self._fade_in.setEndValue(1.0)
+        self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
+        self.login_card.set_error_host(self)
 
-    # ── Login Flow ──
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.login_card.login_error.move_to_top_center(self._toast_host)
 
-    def _on_login_clicked(self):
-        """Handle login button click with real backend integration."""
-        username, password = self.login_card.get_credentials()
+    def _connect_signals(self) -> None:
+        self.login_card.login_requested.connect(self._on_login_requested)
+        self.login_card.signup_requested.connect(self._on_signup_requested)
 
-        # Validate inputs
-        if not username:
-            self.login_card.show_login_error("Please enter your username.")
-            self.login_card.username_input.setFocus()
+    def _connect_backend_on_startup(self) -> None:
+        if self._startup_thread and self._startup_thread.isRunning():
             return
-        if not password:
-            self.login_card.show_login_error("Please enter your password.")
-            self.login_card.password_input.setFocus()
+
+        self._startup_thread = QThread(self)
+        self._startup_worker = BackendStartupWorker(self._runtime.to_backend_config())
+        self._startup_worker.moveToThread(self._startup_thread)
+        self._startup_thread.started.connect(self._startup_worker.run)
+        self._startup_worker.finished.connect(self._on_backend_startup_finished)
+        self._startup_worker.finished.connect(self._startup_thread.quit)
+        self._startup_thread.finished.connect(self._startup_thread.deleteLater)
+        self._startup_thread.finished.connect(self._startup_worker.deleteLater)
+        self._startup_thread.start()
+
+    def _on_backend_startup_finished(self, online: bool, message: str) -> None:
+        self.login_card.set_server_status(online, message)
+
+    def _on_login_requested(self, username: str, password: str) -> None:
+        validation_error = self._validate_login_inputs(username, password)
+        if validation_error:
+            self.login_card.show_login_error(validation_error)
             return
 
-        # Clear previous errors
         self.login_card.hide_login_error()
-
-        # Show loading state
         self.login_card.set_login_loading(True)
+        self._start_login_worker(username, password)
 
-        # Run login in background thread
-        self._login_thread = QThread()
+    def _validate_login_inputs(self, username: str, password: str) -> Optional[str]:
+        if not username:
+            self.login_card.username_input.setFocus()
+            return "Please enter your username."
+        if not password:
+            self.login_card.password_input.setFocus()
+            return "Please enter your password."
+        if len(password) < 6:
+            self.login_card.password_input.setFocus()
+            return "Password must be at least 6 characters."
+        return None
+
+    def _start_login_worker(self, username: str, password: str) -> None:
+        if self._login_thread and self._login_thread.isRunning():
+            return
+
+        self._login_thread = QThread(self)
         self._login_worker = LoginWorker(
-            "localhost", 8080,
-            username, password
+            self._runtime.to_backend_config(),
+            username,
+            password,
         )
         self._login_worker.moveToThread(self._login_thread)
         self._login_thread.started.connect(self._login_worker.run)
-        self._login_worker.login_success.connect(self._on_login_success)
-        self._login_worker.login_failed.connect(self._on_login_failed)
-        self._login_worker.login_success.connect(self._login_thread.quit)
-        self._login_worker.login_failed.connect(self._login_thread.quit)
+        self._login_worker.success.connect(self._on_login_success)
+        self._login_worker.failure.connect(self._on_login_failed)
+        self._login_worker.success.connect(self._login_thread.quit)
+        self._login_worker.failure.connect(self._login_thread.quit)
         self._login_thread.finished.connect(self._login_thread.deleteLater)
         self._login_thread.finished.connect(self._login_worker.deleteLater)
         self._login_thread.start()
 
-    def _on_login_success(self, data: Dict[str, Any]):
-        """Handle successful login."""
+    def _on_login_success(self, payload: Dict[str, Any]) -> None:
         self.login_card.set_login_loading(False)
-        username = data.get("username", "Unknown")
+        username = payload.get("username", "unknown")
         print(f"Login successful for user: {username}")
         print(f"Remember me: {self.login_card.remember_checkbox.isChecked()}")
+        self.login_successful.emit(payload)
 
-        # Placeholder for future MainWindow transition
-        self._prepare_transition()
-
-    def _on_login_failed(self, message: str):
-        """Handle login failure."""
+    def _on_login_failed(self, message: str) -> None:
         self.login_card.set_login_loading(False)
         self.login_card.show_login_error(message)
 
-    def _prepare_transition(self):
-        """
-        Prepare transition placeholder for future MainWindow.
-        Currently prints success and keeps window open for testing.
-        """
-        # In the future, this will hide login and show MainWindow
-        pass
+    def _on_signup_requested(self) -> None:
+        # Navigation is handled by main.AppController.
+        # Do not create SignupWindow here, otherwise the new windows will not be
+        # connected to the app router.
+        self.signup_requested.emit()
 
-    # ── Signup Flow ──
-
-    def _on_signup_clicked(self):
-        """Open the signup dialog."""
-        dialog = SignupDialog(self)
-        result = dialog.exec()
-
-        if result == QDialog.Accepted:
-            print("Signup dialog accepted — user registered successfully.")
-        else:
-            print("Signup dialog cancelled.")
-
-    # ── Cleanup ──
-
-    def closeEvent(self, event):
-        """Clean up threads when window closes."""
-        self._stop_status_checking()
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self._startup_thread and self._startup_thread.isRunning():
+            self._startup_thread.quit()
+            self._startup_thread.wait(2000)
+        if self._login_thread and self._login_thread.isRunning():
+            self._login_thread.quit()
+            self._login_thread.wait(2000)
+        if self._backend_service.is_connected():
+            self._backend_service.disconnect()
         super().closeEvent(event)
 
 
-# ────────────────────────────────────────────────────────────
-# Entry Point
-# ────────────────────────────────────────────────────────────
-
-def main():
-    """Entry point for the application"""
+def main() -> None:
+    """Run the login page as a standalone desktop entry point."""
     app = QApplication(sys.argv)
+    load_app_fonts()
+    app.setFont(app_font(10))
 
-    # Set application-wide font
-    font = QFont(APP_FONT, 10)
-    app.setFont(font)
-
-    # Create and show login window
     login_window = LoginWindow()
     login_window.show()
 
