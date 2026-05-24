@@ -45,6 +45,12 @@ success, user_id, error_code = auth_service.signup("john", "john@example.com", "
 # Login
 success, token, expires_at, error_code = auth_service.login("john", "password123")
 
+# Login with profile
+success, token, expires_at, user_profile, error_code = auth_service.login_with_profile(
+    "john",
+    "password123",
+)
+
 # Validate token
 valid, session_data, error_code = auth_service.validate_token(token)
 
@@ -209,7 +215,13 @@ CREATE TABLE users (
   "requestId": "uuid",
   "payload": {
     "token": "session-token-uuid",
-    "expiresAt": 1705324800
+    "expiresAt": 1705324800,
+    "user": {
+      "id": "user-uuid",
+      "username": "john",
+      "email": "john@example.com",
+      "globalRole": "USER"
+    }
   }
 }
 ```
