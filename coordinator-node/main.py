@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from PySide6.QtWidgets import QApplication
 
 from ui.fonts import app_font, load_app_fonts
-from ui.pages.dashboard_page import DashboardRuntimeConfig, DashboardWindow
+from ui.dashboard import DashboardRuntimeConfig, DashboardWindow
 from ui.pages.login_page import LoginRuntimeConfig, LoginWindow
 from ui.pages.signup_page import SignupWindow
 
