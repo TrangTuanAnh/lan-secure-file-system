@@ -15,11 +15,13 @@ from PySide6.QtCore import QSize, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
 
+from ui.app_settings import AppSettingsStore, DEFAULT_APP_SETTINGS
 from ui.dashboard_runtime import DashboardRuntimeConfig
 from ui.fonts import app_font, load_app_fonts
 from ui.pages.my_rooms_page import MyRoomsPage
 from ui.pages.overview_page import OverviewPage
 from ui.pages.room_page import RoomPage
+from ui.pages.settings_page import SettingsPage
 from ui.widgets.account_drawer import AccountDrawer
 from ui.widgets.app_shell import AppShell
 from ui.widgets.modern_button import PALETTE
@@ -48,8 +50,10 @@ class DashboardWindow(QMainWindow):
         self._token = token
         self._global_role = global_role
         self._runtime = runtime or DashboardRuntimeConfig()
+        self._app_settings = AppSettingsStore.load()
         self._pages: dict[str, QWidget] = {}
         self._room_page: Optional[RoomPage] = None
+        self._local_activities: list[dict[str, Any]] = []
 
         self.setWindowTitle("LAN Secure File System - Dashboard")
         self.setMinimumSize(QSize(1260, 760))
@@ -73,6 +77,7 @@ class DashboardWindow(QMainWindow):
         sidebar = self.app_shell.sidebar_nav
         sidebar.add_nav_item("overview", "Overview", checked=True)
         sidebar.add_nav_item("rooms", "My Rooms")
+        sidebar.add_nav_item("settings", "Settings")
         sidebar.set_user_info(
             self._username or "Authenticated User",
             self._email or "No email available",
@@ -84,12 +89,7 @@ class DashboardWindow(QMainWindow):
         self.app_shell.add_content_widget(self.page_stack, 1)
 
         self.account_drawer = AccountDrawer(self)
-        self.account_drawer.set_profile(
-            self._username or "Authenticated User",
-            self._email or "Not available",
-            self._user_id or "",
-            self._display_global_role(),
-        )
+        self._refresh_account_drawer()
         self.account_drawer.update_anchor_geometry()
 
         self.overview_page = OverviewPage(
@@ -108,14 +108,23 @@ class DashboardWindow(QMainWindow):
             global_role=self._global_role,
             runtime=self._runtime,
         )
+        self.settings_page = SettingsPage(
+            username=self._username,
+            global_role=self._global_role,
+            settings=self._app_settings,
+        )
 
         self._pages = {
             "overview": self.overview_page,
             "rooms": self.my_rooms_page,
+            "settings": self.settings_page,
         }
         self.page_stack.addWidget(self.overview_page)
         self.page_stack.addWidget(self.my_rooms_page)
+        self.page_stack.addWidget(self.settings_page)
         self.page_stack.setCurrentWidget(self.overview_page)
+        self.overview_page.set_local_activities(self._local_activities)
+        self._apply_app_settings()
 
     def _apply_window_theme(self) -> None:
         palette = QPalette()
@@ -134,11 +143,12 @@ class DashboardWindow(QMainWindow):
         sidebar.navigation_requested.connect(self._on_navigation_requested)
         self.overview_page.room_open_requested.connect(self._open_room_page)
         self.my_rooms_page.room_open_requested.connect(self._open_room_page)
-        for page in (self.overview_page, self.my_rooms_page):
+        self.my_rooms_page.activity_occurred.connect(self._record_activity)
+        self.settings_page.settings_changed.connect(self._on_settings_changed)
+        for page in (self.overview_page, self.my_rooms_page, self.settings_page):
             page.top_bar.set_user_display(self._username or "Authenticated User")
             page.top_bar.set_user_role(self._display_global_role())
             page.top_bar.account_requested.connect(self._show_account_dialog)
-            page.top_bar.settings_requested.connect(lambda: print("Settings requested"))
             page.top_bar.logout_requested.connect(self.logout_requested.emit)
 
     def _display_global_role(self) -> str:
@@ -176,12 +186,13 @@ class DashboardWindow(QMainWindow):
             token=self._token,
             global_role=self._global_role,
             runtime=self._runtime,
+            app_settings=self._app_settings,
         )
         self._room_page.back_requested.connect(self._on_room_page_back_requested)
+        self._room_page.activity_occurred.connect(self._record_activity)
         self._room_page.top_bar.set_user_display(self._username or "Authenticated User")
         self._room_page.top_bar.set_user_role(self._display_global_role())
         self._room_page.top_bar.account_requested.connect(self._show_account_dialog)
-        self._room_page.top_bar.settings_requested.connect(lambda: print("Settings requested"))
         self._room_page.top_bar.logout_requested.connect(self.logout_requested.emit)
         self.page_stack.addWidget(self._room_page)
         self._pages["room_page"] = self._room_page
@@ -189,13 +200,53 @@ class DashboardWindow(QMainWindow):
         self._show_page("room_page")
 
     def _show_account_dialog(self) -> None:
+        self._refresh_account_drawer()
+        self.account_drawer.open()
+
+    def _refresh_account_drawer(self) -> None:
+        hide_user_id = bool(
+            self._app_settings.get("security", {}).get("hide_user_id_in_profile_by_default", False)
+        )
         self.account_drawer.set_profile(
             self._username or "Authenticated User",
             self._email or "Not available",
             self._user_id or "",
             self._display_global_role(),
+            hide_user_id=hide_user_id,
         )
-        self.account_drawer.open()
+
+    def _on_settings_changed(self, settings: dict[str, Any]) -> None:
+        self._app_settings = settings
+        AppSettingsStore.save(settings)
+        self._apply_app_settings()
+
+    def _apply_app_settings(self) -> None:
+        appearance = self._app_settings.get("appearance", {})
+        font_size = str(appearance.get("font_size", "Medium"))
+        font_size_map = {"Small": 9, "Medium": 10, "Large": 11}
+        app = QApplication.instance()
+        if app is not None:
+            app.setFont(app_font(font_size_map.get(font_size, 10)))
+
+        compact_layout = bool(appearance.get("compact_layout", False))
+        content_layout = self.app_shell.content_surface.layout()
+        if content_layout is not None:
+            margin = 18 if compact_layout else 24
+            spacing = 16 if compact_layout else 20
+            content_layout.setContentsMargins(margin, margin, margin, margin)
+            content_layout.setSpacing(spacing)
+
+        self.settings_page.set_settings(self._app_settings)
+        self._refresh_account_drawer()
+        if self._room_page is not None:
+            self._room_page.update_app_settings(self._app_settings)
+
+    def _record_activity(self, activity: dict[str, Any]) -> None:
+        if not activity:
+            return
+        self._local_activities.insert(0, dict(activity))
+        self._local_activities = self._local_activities[:10]
+        self.overview_page.set_local_activities(self._local_activities)
 
     def _on_room_page_back_requested(self) -> None:
         self._show_page("rooms")
