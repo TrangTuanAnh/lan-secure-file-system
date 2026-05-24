@@ -380,7 +380,12 @@ class BackendClient:
         
         # Handle unsolicited message (e.g., EVENT)
         elif message_type == "EVENT":
-            self._dispatch_event(message_type, payload)
+            # Backend broadcasts events with type=EVENT and
+            # the real event type inside payload.eventType.
+            # Extract it so callbacks registered with
+            # on_event("NEW_FILE", cb) actually fire.
+            event_type = payload.get("eventType", message_type)
+            self._dispatch_event(event_type, payload)
         
         else:
             logger.debug(f"Received unsolicited message: {message_type}")
@@ -563,10 +568,27 @@ class BackendClient:
         return self._send_request("FILE_DETAIL",
                                  self._add_token_to_payload({"fileId": file_id}))
     
-    def file_versions(self, file_id: str) -> Dict[str, Any]:
-        """Get file versions."""
+    # NOTE: file_versions is intentionally replaced by the protocol-correct
+    # version below. The old signature accepted fileId but the backend
+    # protocol requires roomId + originalName.
+    def file_versions(self, room_id: str, original_name: str) -> Dict[str, Any]:
+        """
+        Get file versions (by room and original name).
+        
+        Backend protocol: FILE_VERSIONS expects {roomId, originalName}.
+        
+        Args:
+            room_id: Room containing the file
+            original_name: Original filename (not fileId)
+        
+        Returns:
+            {versions: [...]}
+        """
         response = self._send_request("FILE_VERSIONS",
-                                     self._add_token_to_payload({"fileId": file_id}))
+                                     self._add_token_to_payload({
+                                         "roomId": room_id,
+                                         "originalName": original_name
+                                     }))
         return response.get("versions", [])
     
     def delete_file(self, file_id: str) -> Dict[str, Any]:
@@ -578,23 +600,53 @@ class BackendClient:
         self,
         room_id: str,
         file_info: Dict[str, Any],
-        storage_address: str = "localhost:8888"
+        storage_address: str = "localhost:9000"
     ) -> Dict[str, Any]:
         """
         Initialize file upload.
-        
+
+        Backend protocol expects file_info with:
+          - originalName (str)  -- was: name
+          - sizeBytes (int)     -- was: size
+          - mimeType (str)      -- was: missing
+          - sha256Whole (str)   -- unchanged
+
+        This method normalizes field names so existing callers can still
+        pass convenience names (name, size) and they get translated to
+        the backend's expected names.  chunkCount/chunkSize are no longer
+        sent to the control plane (they are data-plane properties derived
+        by the storage node).
+
         Args:
             room_id: Target room
-            file_info: {name, size, sha256Whole, chunkCount, chunkSize}
+            file_info: dict with file metadata (convenience names accepted)
             storage_address: Optional storage node address
-        
+
         Returns:
-            {uploadId, fileId, storageNodeId, ticket, ...}
+            {fileId, ticket, storageAddress, storageNodeId, chunkSize,
+             totalChunks, deduplicated, ...}
         """
+        # Normalize file_info to backend protocol field names.
+        # Allows existing callers to use convenience names (name, size)
+        # while ensuring the wire format matches backend expectations.
+        normalized_file_info = {}
+        normalized_file_info["originalName"] = file_info.get(
+            "originalName", file_info.get("name", "unknown")
+        )
+        normalized_file_info["sizeBytes"] = file_info.get(
+            "sizeBytes", file_info.get("size", 0)
+        )
+        normalized_file_info["mimeType"] = file_info.get(
+            "mimeType", file_info.get("mime_type", "application/octet-stream")
+        )
+        normalized_file_info["sha256Whole"] = file_info.get(
+            "sha256Whole", file_info.get("sha256_whole", "")
+        )
+
         return self._send_request("INIT_UPLOAD",
                                  self._add_token_to_payload({
                                      "roomId": room_id,
-                                     "fileInfo": file_info,
+                                     "fileInfo": normalized_file_info,
                                      "storageAddress": storage_address
                                  }))
     
@@ -630,18 +682,38 @@ class BackendClient:
     def create_share_token(
         self,
         file_id: str,
-        expiry_seconds: int = 86400
+        expiry_seconds: int = 86400,
+        max_downloads: int = 0
     ) -> Dict[str, Any]:
         """
         Create public share link.
-        
+
+        Backend protocol requires:
+          - maxDownloads (int, 0 = unlimited)
+          - expiresAt (ISO 8601 datetime string)
+
+        This method converts the convenience expiry_seconds parameter
+        into the backend's expected format.
+
+        The backend returns "token" in the response; the service layer
+        normalises this to "shareToken" for backward compatibility.
+
+        Args:
+            file_id: File to share
+            expiry_seconds: Link expiration in seconds from now
+            max_downloads: Max number of downloads (0 = unlimited)
+
         Returns:
-            {shareToken, expiresAt}
+            {token, fileId, maxDownloads, expiresAt}
         """
+        from datetime import datetime, timezone, timedelta
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=expiry_seconds)).isoformat()
+
         return self._send_request("CREATE_SHARE_TOKEN",
                                  self._add_token_to_payload({
                                      "fileId": file_id,
-                                     "expirySeconds": expiry_seconds
+                                     "maxDownloads": max_downloads,
+                                     "expiresAt": expires_at
                                  }))
     
     def subscribe_room(self, room_id: str) -> Dict[str, Any]:
@@ -656,8 +728,10 @@ class BackendClient:
     
     def unsubscribe_room(self, room_id: str) -> Dict[str, Any]:
         """Unsubscribe from room events."""
-        return self._send_request("UNSUBSCRIBE_ROOM",
-                                 {"roomId": room_id})
+        return self._send_request(
+            "UNSUBSCRIBE_ROOM",
+            self._add_token_to_payload({"roomId": room_id})
+        )
     
     def ping(self) -> Dict[str, Any]:
         """Health check."""
