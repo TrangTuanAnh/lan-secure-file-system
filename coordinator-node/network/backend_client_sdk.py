@@ -384,7 +384,11 @@ class BackendClient:
             # the real event type inside payload.eventType.
             # Extract it so callbacks registered with
             # on_event("NEW_FILE", cb) actually fire.
-            event_type = payload.get("eventType", message_type)
+            event_type = (
+                payload.get("event")
+                or payload.get("eventType")
+                or message_type
+            )
             self._dispatch_event(event_type, payload)
         
         else:
@@ -732,7 +736,7 @@ class BackendClient:
             "UNSUBSCRIBE_ROOM",
             self._add_token_to_payload({"roomId": room_id})
         )
-    
+        
     def ping(self) -> Dict[str, Any]:
         """Health check."""
         return self._send_request("PING", {})

@@ -28,8 +28,9 @@ from PySide6.QtWidgets import (
 )
 
 from services.services import BackendService
+from config import APP_CONFIG
 from ui.fonts import app_font, brand_font, load_app_fonts, ui_font_family
-from ui.pages.login_page import BackendStartupWorker, LoginRuntimeConfig, LoginWindow
+from ui.pages.login_page import BackendStartupWorker, LoginRuntimeConfig
 from ui.widgets.decorative_panel import DecorativePanel
 from ui.widgets.error_label import ErrorLabel
 from ui.widgets.modern_button import PALETTE, ModernButton
@@ -63,7 +64,9 @@ class SignupWorker(QObject):
         except TimeoutError:
             self.failure.emit("Connection timed out. Please try again.")
         except ConnectionRefusedError:
-            self.failure.emit("Connection refused. Is the server running on localhost:8080?")
+            self.failure.emit(
+                f"Connection refused. Is the server running on {APP_CONFIG.backend_host}:{APP_CONFIG.backend_port}?"
+            )
         except Exception as exc:
             self.failure.emit(f"Signup failed: {exc}")
         finally:
@@ -213,7 +216,13 @@ class SignupCard(QFrame):
 
 
 class SignupWindow(QMainWindow):
-    """Main signup window reusing the login layout and theme."""
+    """Main signup window reusing the login layout and theme.
+
+    This page emits navigation signals only. main.AppController decides which
+    window should be shown next.
+    """
+
+    back_to_login_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -223,7 +232,6 @@ class SignupWindow(QMainWindow):
         self._startup_worker: Optional[BackendStartupWorker] = None
         self._signup_thread: Optional[QThread] = None
         self._signup_worker: Optional[SignupWorker] = None
-        self._login_window: Optional[LoginWindow] = None
 
         self.setWindowTitle("LAN Secure File System - Sign Up")
         self.setGeometry(100, 100, 1200, 700)
@@ -458,10 +466,10 @@ class SignupWindow(QMainWindow):
         self.signup_card.show_signup_error(message)
 
     def _on_back_requested(self) -> None:
-        if self._login_window is None:
-            self._login_window = LoginWindow()
-        self._login_window.show()
-        self.close()
+        # Let main.AppController restore the original LoginWindow.
+        # Creating a new LoginWindow here breaks the login_successful signal
+        # connection and can make the app quit when this signup window closes.
+        self.back_to_login_requested.emit()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._startup_thread and self._startup_thread.isRunning():

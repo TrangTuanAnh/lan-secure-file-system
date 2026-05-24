@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from network.backend_client_sdk import BackendConfig
+from config import APP_CONFIG
 from services.services import BackendService
 from ui.fonts import app_font, brand_font, load_app_fonts, ui_font_family
 from ui.widgets.decorative_panel import DecorativePanel
@@ -43,18 +44,21 @@ APP_FONT = "Inter"
 class LoginRuntimeConfig:
     """Runtime settings for backend access."""
 
-    host: str = "localhost"
-    port: int = 8080
-    timeout: int = 15
+    host: str = APP_CONFIG.backend_host
+    port: int = APP_CONFIG.backend_port
+    timeout: int = APP_CONFIG.backend_timeout
+    socket_timeout: int = APP_CONFIG.backend_socket_timeout
+    max_retries: int = APP_CONFIG.backend_max_retries
+    retry_delay: int = APP_CONFIG.backend_retry_delay
 
     def to_backend_config(self) -> BackendConfig:
         return BackendConfig(
             host=self.host,
             port=self.port,
             timeout=self.timeout,
-            socket_timeout=5,
-            max_retries=2,
-            retry_delay=1,
+            socket_timeout=self.socket_timeout,
+            max_retries=self.max_retries,
+            retry_delay=self.retry_delay,
         )
 
 
@@ -105,13 +109,20 @@ class LoginWorker(QObject):
                 self.failure.emit("Cannot reach server. Please check if it is running.")
                 return
             if service.auth.login(self._username, self._password):
-                self.success.emit({"username": self._username})
+                self.success.emit(
+                    {
+                        "username": self._username,
+                        "token": service._client.get_token() or "",
+                    }
+                )
             else:
                 self.failure.emit("Invalid username or password.")
         except TimeoutError:
             self.failure.emit("Connection timed out. Please try again.")
         except ConnectionRefusedError:
-            self.failure.emit("Connection refused. Is the server running on localhost:8080?")
+            self.failure.emit(
+                f"Connection refused. Is the server running on {APP_CONFIG.backend_host}:{APP_CONFIG.backend_port}?"
+            )
         except Exception as exc:
             self.failure.emit(f"Login failed: {exc}")
         finally:
@@ -253,7 +264,15 @@ class LoginCard(QFrame):
 
 
 class LoginWindow(QMainWindow):
-    """Main login window using the shared widget system."""
+    """Main login window using the shared widget system.
+
+    This window only emits navigation signals. The actual page switching is
+    handled by main.AppController so every LoginWindow stays connected to the
+    same router.
+    """
+
+    login_successful = Signal(dict)
+    signup_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -263,7 +282,6 @@ class LoginWindow(QMainWindow):
         self._startup_worker: Optional[BackendStartupWorker] = None
         self._login_thread: Optional[QThread] = None
         self._login_worker: Optional[LoginWorker] = None
-        self._signup_window: Optional[QMainWindow] = None
 
         self.setWindowTitle("LAN Secure File System - Login")
         self.setGeometry(100, 100, 1200, 700)
@@ -496,23 +514,17 @@ class LoginWindow(QMainWindow):
         username = payload.get("username", "unknown")
         print(f"Login successful for user: {username}")
         print(f"Remember me: {self.login_card.remember_checkbox.isChecked()}")
-        self._prepare_transition()
+        self.login_successful.emit(payload)
 
     def _on_login_failed(self, message: str) -> None:
         self.login_card.set_login_loading(False)
         self.login_card.show_login_error(message)
 
-    def _prepare_transition(self) -> None:
-        """Placeholder for future dashboard handoff."""
-        pass
-
     def _on_signup_requested(self) -> None:
-        from ui.pages.signup_page import SignupWindow
-
-        if self._signup_window is None:
-            self._signup_window = SignupWindow()
-        self._signup_window.show()
-        self.hide()
+        # Navigation is handled by main.AppController.
+        # Do not create SignupWindow here, otherwise the new windows will not be
+        # connected to the app router.
+        self.signup_requested.emit()
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._startup_thread and self._startup_thread.isRunning():
