@@ -276,6 +276,38 @@ class TestFileService:
         
         # Cleanup
         db.execute_update("DELETE FROM room_members WHERE room_id = %s AND user_id = %s", (test_room, test_user))
+
+    def test_uploader_member_can_delete_own_file(self, file_service, test_user, test_room, db):
+        """Uploader can delete their own file even without OWNER role."""
+        db.execute_update(
+            """
+            INSERT INTO room_members (room_id, user_id, role, added_at)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (test_room, test_user, 'MEMBER', datetime.now(timezone.utc))
+        )
+
+        file_id = str(uuid.uuid4())
+        db.execute_update(
+            """
+            INSERT INTO files (id, room_id, original_name, stored_name, version, uploader_id,
+                              size_bytes, mime_type, sha256_whole, total_chunks, chunk_size, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (file_id, test_room, 'owned.txt', 'stored/owned.txt', 1, test_user,
+             2048, 'text/plain', 'b' * 64, 1, 524288, 'READY', datetime.now(timezone.utc))
+        )
+
+        success, error_code = file_service.delete_file(test_user, 'USER', file_id)
+
+        assert success is True
+        assert error_code is None
+
+        files = db.execute_query("SELECT status FROM files WHERE id = %s", (file_id,))
+        assert files[0]['status'] == 'DELETED'
+
+        db.execute_update("DELETE FROM room_members WHERE room_id = %s AND user_id = %s", (test_room, test_user))
+        db.execute_update("DELETE FROM files WHERE id = %s", (file_id,))
     
     def test_calculate_next_version_first_file(self, file_service, test_room):
         """Test calculating version for first file."""
