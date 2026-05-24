@@ -6,7 +6,7 @@ making it easy for UI code to interact with backend.
 """
 
 from typing import Optional, Dict, Any, Callable, List
-from backend_client_sdk import BackendClient, BackendConfig
+from network.backend_client_sdk import BackendClient, BackendConfig
 import logging
 
 logger = logging.getLogger(__name__)
