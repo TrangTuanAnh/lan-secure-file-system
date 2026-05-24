@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtWidgets import QBoxLayout, QFrame, QGridLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from services.services import BackendService
 from ui.dashboard_runtime import DashboardRuntimeConfig
@@ -21,8 +21,7 @@ from ui.widgets.activity_item import ActivityItem
 from ui.widgets.dashboard_stat_card import DashboardStatCard
 from ui.widgets.empty_state import EmptyState
 from ui.widgets.error_label import ErrorLabel
-from ui.widgets.modern_button import PALETTE, ModernButton
-from ui.widgets.status_badge import StatusBadge
+from ui.widgets.modern_button import PALETTE
 from ui.widgets.top_bar import TopBar
 from ui.widgets.room_card import RoomCard
 
@@ -33,11 +32,12 @@ class OverviewDataWorker(QObject):
     success = Signal(dict)
     failure = Signal(str)
 
-    def __init__(self, runtime: DashboardRuntimeConfig, token: str = "", username: str = "") -> None:
+    def __init__(self, runtime: DashboardRuntimeConfig, token: str = "", username: str = "", global_role: str = "") -> None:
         super().__init__()
         self._runtime = runtime
         self._token = token
         self._username = username
+        self._global_role = global_role
 
     def run(self) -> None:
         service: Optional[BackendService] = None
@@ -64,13 +64,7 @@ class OverviewDataWorker(QObject):
             for room in rooms:
                 room_id = room.get("roomId") or room.get("id") or ""
                 room_name = room.get("name") or room.get("roomName") or "Untitled Room"
-                role = (
-                    room.get("role")
-                    or room.get("memberRole")
-                    or room.get("myRole")
-                    or room.get("permission")
-                    or "Member"
-                )
+                role = room.get("role") or room.get("memberRole") or room.get("myRole")
                 member_count = int(room.get("memberCount") or room.get("membersCount") or 0)
                 file_count = room.get("fileCount")
                 if file_count is None and room_id:
@@ -102,7 +96,7 @@ class OverviewDataWorker(QObject):
                 "user": {
                     "username": self._username or "Authenticated User",
                     "email": "",
-                    "role": "Secure Operator",
+                    "global_role": self._global_role or "USER",
                     "token_present": bool(self._token),
                 },
                 "rooms": normalized_rooms,
@@ -127,19 +121,25 @@ class OverviewDataWorker(QObject):
 class OverviewPage(QWidget):
     """Dashboard overview content displayed inside the shared shell."""
 
-    room_open_requested = Signal(str)
+    room_open_requested = Signal(dict)
 
     def __init__(
         self,
         username: str = "",
+        user_id: str = "",
+        email: str = "",
         token: str = "",
+        global_role: str = "USER",
         runtime: Optional[DashboardRuntimeConfig] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._runtime = runtime or DashboardRuntimeConfig()
         self._username = username
+        self._user_id = user_id
+        self._email = email
         self._token = token
+        self._global_role = global_role
         self._data_thread: Optional[QThread] = None
         self._data_worker: Optional[OverviewDataWorker] = None
         self._room_cards: list[RoomCard] = []
@@ -162,8 +162,11 @@ class OverviewPage(QWidget):
             page_title="Security Overview",
             subtitle="Loading workspace telemetry and room intelligence...",
             user_display=self._username or "Authenticated User",
+            show_refresh_button=True,
         )
         self.top_bar.set_server_status("Loading", "warning")
+        self.top_bar.set_user_role(self._display_global_role())
+        self.top_bar.refresh_requested.connect(self.reload)
         root.addWidget(self.top_bar)
 
         self.scroll_area = QScrollArea()
@@ -193,29 +196,15 @@ class OverviewPage(QWidget):
         self.rooms_section["body"].addLayout(self.rooms_content)
         self.scroll_layout.addWidget(self.rooms_section["frame"])
 
-        self.lower_row = QBoxLayout(QBoxLayout.LeftToRight)
-        self.lower_row.setContentsMargins(0, 0, 0, 0)
-        self.lower_row.setSpacing(16)
-        self.scroll_layout.addLayout(self.lower_row)
-
         self.activity_section = self._build_section_frame("Recent Activity", "Realtime activity stream from monitored rooms.")
         self.activity_content = QVBoxLayout()
         self.activity_content.setContentsMargins(0, 0, 0, 0)
         self.activity_content.setSpacing(12)
         self.activity_section["body"].addLayout(self.activity_content)
-        self.lower_row.addWidget(self.activity_section["frame"], 2)
-
-        self.quick_actions_section = self._build_section_frame("Quick Actions", "Fast access to the next operations step.")
-        self.quick_actions_content = QVBoxLayout()
-        self.quick_actions_content.setContentsMargins(0, 0, 0, 0)
-        self.quick_actions_content.setSpacing(12)
-        self.quick_actions_section["body"].addLayout(self.quick_actions_content)
-        self.lower_row.addWidget(self.quick_actions_section["frame"], 1)
+        self.scroll_layout.addWidget(self.activity_section["frame"])
 
         self._build_stat_cards()
-        self._build_quick_actions()
         self._set_loading_state(True)
-        self._relayout_sections()
 
     def _build_section_frame(self, title: str, subtitle: str) -> dict[str, Any]:
         from PySide6.QtWidgets import QLabel
@@ -253,18 +242,6 @@ class OverviewPage(QWidget):
         self._stat_cards = [self.rooms_stat, self.files_stat, self.members_stat, self.status_stat]
         self._rebuild_stats_grid()
 
-    def _build_quick_actions(self) -> None:
-        self.refresh_button = ModernButton("Refresh Overview")
-        self.refresh_button.clicked.connect(self.reload)
-        self.quick_actions_content.addWidget(self.refresh_button)
-
-        self.open_rooms_button = ModernButton("Open My Rooms")
-        self.open_rooms_button.set_accent_color(PALETTE.accent_soft)
-        self.quick_actions_content.addWidget(self.open_rooms_button)
-
-        self.quick_status_badge = StatusBadge("SESSION ACTIVE", "online")
-        self.quick_actions_content.addWidget(self.quick_status_badge, 0, Qt.AlignLeft)
-
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             f"""
@@ -296,7 +273,7 @@ class OverviewPage(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self.error_toast.move_to_top_center(self)
-        self._relayout_sections()
+        self._rebuild_stats_grid()
 
     def _rebuild_stats_grid(self) -> None:
         while self.stats_grid.count():
@@ -321,17 +298,12 @@ class OverviewPage(QWidget):
         for column in range(columns):
             self.stats_grid.setColumnStretch(column, 1)
 
-    def _relayout_sections(self) -> None:
-        self._rebuild_stats_grid()
-        available_width = max(0, self.scroll_area.viewport().width())
-        self.lower_row.setDirection(QBoxLayout.TopToBottom if available_width and available_width < 920 else QBoxLayout.LeftToRight)
-
     def _set_loading_state(self, loading: bool) -> None:
-        self.refresh_button.set_loading(loading, "Loading" if loading else None)
-        if not loading:
-            self.refresh_button.set_loading(False)
-        self.open_rooms_button.setEnabled(not loading)
+        self.top_bar.set_refresh_enabled(not loading)
         self.top_bar.search_input.setEnabled(not loading)
+
+    def _display_global_role(self) -> str:
+        return "Administrator" if self._global_role.upper() == "ADMIN" else "Secure Operator"
 
     def reload(self) -> None:
         if self._data_thread and self._data_thread.isRunning():
@@ -343,7 +315,12 @@ class OverviewPage(QWidget):
         self.top_bar.set_server_status("Loading", "warning")
 
         self._data_thread = QThread(self)
-        self._data_worker = OverviewDataWorker(self._runtime, token=self._token, username=self._username)
+        self._data_worker = OverviewDataWorker(
+            self._runtime,
+            token=self._token,
+            username=self._username,
+            global_role=self._global_role,
+        )
         self._data_worker.moveToThread(self._data_thread)
         self._data_thread.started.connect(self._data_worker.run)
         self._data_worker.success.connect(self._on_data_loaded)
@@ -360,12 +337,12 @@ class OverviewPage(QWidget):
         user_info = payload.get("user", {})
         username = user_info.get("username") or self._username or "Authenticated User"
         self.top_bar.set_user_display(username)
+        resolved_global_role = user_info.get("global_role") or self._global_role or "USER"
+        self.top_bar.set_user_role("Administrator" if str(resolved_global_role).upper() == "ADMIN" else "Secure Operator")
 
         server_online = payload.get("server_online", False)
         self.top_bar.set_server_status("Online" if server_online else "Offline", "online" if server_online else "offline")
         self.top_bar.set_subtitle(payload.get("server_message", "Overview ready."))
-        self.quick_status_badge.set_variant("online" if user_info.get("token_present") else "warning")
-        self.quick_status_badge.setText("SESSION ACTIVE" if user_info.get("token_present") else "LIMITED SESSION")
 
         stats = payload.get("stats", {})
         self.rooms_stat.set_value(str(stats.get("room_count", 0)))
@@ -406,7 +383,18 @@ class OverviewPage(QWidget):
         for room in rooms[:3]:
             card = RoomCard()
             card.set_room_data(room)
-            card.open_requested.connect(self.room_open_requested.emit)
+            card.open_requested.connect(
+                lambda _room_id, room_payload=room: self.room_open_requested.emit(
+                    {
+                        **room_payload,
+                        "username": self._username,
+                        "email": self._email,
+                        "global_role": self._global_role,
+                        "current_username": self._username,
+                        "current_user_id": self._user_id,
+                    }
+                )
+            )
             self.rooms_content.addWidget(card)
             self._room_cards.append(card)
 

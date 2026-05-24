@@ -65,7 +65,7 @@ class RoomCard(QFrame):
         title_column.addWidget(self.room_id_label)
         header.addLayout(title_column, 1)
 
-        self.role_badge = StatusBadge("", variant="member")
+        self.role_badge = StatusBadge("ROOM ROLE", variant="member")
         header.addWidget(self.role_badge, 0, Qt.AlignTop)
         root.addLayout(header)
 
@@ -194,10 +194,11 @@ class RoomCard(QFrame):
 
     def set_room_data(self, room_data: dict[str, Any]) -> None:
         """Update the card from a normalized room payload."""
+        room_role = room_data.get("role") or room_data.get("memberRole") or room_data.get("myRole")
         normalized = {
             "room_id": room_data.get("room_id") or room_data.get("id") or room_data.get("roomId") or "",
             "room_name": room_data.get("room_name") or room_data.get("name") or room_data.get("roomName") or "Untitled Room",
-            "role": room_data.get("role") or room_data.get("memberRole") or room_data.get("myRole") or "Member",
+            "role": room_role or "",
             "member_count": room_data.get("member_count") or room_data.get("memberCount") or room_data.get("membersCount") or 0,
             "file_count": room_data.get("file_count") or room_data.get("fileCount") or 0,
             "summary": room_data.get("summary")
@@ -228,8 +229,12 @@ class RoomCard(QFrame):
         self.set_room_data(data)
 
     def set_role(self, role: str) -> None:
-        self.role_badge.setText(role.upper())
-        self.role_badge.set_variant(self._role_variant(role))
+        normalized_role = role.strip().upper()
+        has_room_role = bool(normalized_role)
+        self.role_badge.setVisible(has_room_role)
+        if has_room_role:
+            self.role_badge.setText(f"ROOM: {normalized_role}")
+            self.role_badge.set_variant(self._role_variant(role))
         data = dict(self._room_data)
         data["role"] = role
         self._room_data = data

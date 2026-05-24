@@ -21,9 +21,11 @@ class EmptyState(QFrame):
         title: str = "Nothing here yet",
         message: str = "",
         action_text: str = "",
+        minimal: bool = False,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        self._minimal = minimal
         self.setObjectName("emptyState")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -55,12 +57,15 @@ class EmptyState(QFrame):
         self._apply_styles()
 
     def _apply_styles(self) -> None:
+        background = "transparent" if self._minimal else "rgba(15, 15, 30, 158)"
+        border = "1px solid transparent" if self._minimal else "1px dashed rgba(0, 200, 83, 72)"
+        radius = "0px" if self._minimal else "18px"
         self.setStyleSheet(
             f"""
             QFrame#emptyState {{
-                background-color: rgba(15, 15, 30, 158);
-                border: 1px dashed rgba(0, 200, 83, 72);
-                border-radius: 18px;
+                background-color: {background};
+                border: {border};
+                border-radius: {radius};
             }}
             QLabel {{
                 background: transparent;

@@ -64,8 +64,12 @@ class AppController:
             self.login_window.hide()
 
     def _on_login_successful(self, payload: dict) -> None:
-        username = payload.get("username", "")
+        user_profile = payload.get("user") or {}
+        username = payload.get("username") or user_profile.get("username") or ""
+        email = payload.get("email") or user_profile.get("email") or ""
+        user_id = payload.get("user_id") or user_profile.get("id") or ""
         token = payload.get("token", "")
+        global_role = payload.get("global_role") or user_profile.get("globalRole") or "USER"
 
         login_runtime = self.login_window._runtime if self.login_window is not None else LoginRuntimeConfig()
         dashboard_runtime = DashboardRuntimeConfig(
@@ -79,7 +83,10 @@ class AppController:
 
         self.dashboard_window = DashboardWindow(
             username=username,
+            user_id=user_id,
+            email=email,
             token=token,
+            global_role=global_role,
             runtime=dashboard_runtime,
         )
         self.dashboard_window.logout_requested.connect(self._on_dashboard_logout_requested)

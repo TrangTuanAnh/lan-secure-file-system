@@ -8,7 +8,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -78,12 +77,6 @@ class SidebarNav(QFrame):
 
         layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
-        self.logout_button = QPushButton("Log Out")
-        self.logout_button.setObjectName("sidebarLogoutButton")
-        self.logout_button.setFont(app_font(10, 600))
-        self.logout_button.clicked.connect(self.logout_requested.emit)
-        layout.addWidget(self.logout_button)
-
         self._apply_styles()
 
     def _apply_styles(self) -> None:
@@ -122,17 +115,6 @@ class SidebarNav(QFrame):
                 color: #f4fff9;
                 background-color: rgba(0, 200, 83, 24);
                 border-color: rgba(0, 200, 83, 70);
-            }}
-            QPushButton#sidebarLogoutButton {{
-                color: #ffb2bf;
-                background-color: rgba(39, 15, 24, 220);
-                border: 1px solid rgba(255, 91, 121, 120);
-                border-radius: 16px;
-                padding: 12px 14px;
-                text-align: left;
-            }}
-            QPushButton#sidebarLogoutButton:hover {{
-                background-color: rgba(54, 18, 29, 236);
             }}
             """
         )

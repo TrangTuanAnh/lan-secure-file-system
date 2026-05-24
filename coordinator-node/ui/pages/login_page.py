@@ -108,11 +108,37 @@ class LoginWorker(QObject):
             if not service.connect():
                 self.failure.emit("Cannot reach server. Please check if it is running.")
                 return
-            if service.auth.login(self._username, self._password):
+            login_result = service._client.login(self._username, self._password)
+            if login_result:
+                user_payload = login_result.get("user") or {}
+                backend_username = str(user_payload.get("username") or self._username)
+                backend_email = str(user_payload.get("email") or "")
+                backend_user_id = str(user_payload.get("id") or user_payload.get("userId") or "")
+                global_role = (
+                    user_payload.get("globalRole")
+                    or user_payload.get("global_role")
+                    or user_payload.get("role")
+                    or login_result.get("user", {}).get("globalRole")
+                    or login_result.get("globalRole")
+                    or login_result.get("global_role")
+                    or login_result.get("role")
+                    or login_result.get("userRole")
+                    or ""
+                )
+                resolved_role = APP_CONFIG.resolve_global_role(backend_username, str(global_role))
                 self.success.emit(
                     {
-                        "username": self._username,
+                        "user": {
+                            "id": backend_user_id,
+                            "username": backend_username,
+                            "email": backend_email,
+                            "globalRole": resolved_role,
+                        },
+                        "user_id": backend_user_id,
+                        "username": backend_username,
+                        "email": backend_email,
                         "token": service._client.get_token() or "",
+                        "global_role": resolved_role,
                     }
                 )
             else:
@@ -462,6 +488,7 @@ class LoginWindow(QMainWindow):
         self._startup_worker.finished.connect(self._startup_thread.quit)
         self._startup_thread.finished.connect(self._startup_thread.deleteLater)
         self._startup_thread.finished.connect(self._startup_worker.deleteLater)
+        self._startup_thread.finished.connect(self._cleanup_startup_thread)
         self._startup_thread.start()
 
     def _on_backend_startup_finished(self, online: bool, message: str) -> None:
@@ -507,6 +534,7 @@ class LoginWindow(QMainWindow):
         self._login_worker.failure.connect(self._login_thread.quit)
         self._login_thread.finished.connect(self._login_thread.deleteLater)
         self._login_thread.finished.connect(self._login_worker.deleteLater)
+        self._login_thread.finished.connect(self._cleanup_login_thread)
         self._login_thread.start()
 
     def _on_login_success(self, payload: Dict[str, Any]) -> None:
@@ -526,15 +554,49 @@ class LoginWindow(QMainWindow):
         # connected to the app router.
         self.signup_requested.emit()
 
+    def _cleanup_startup_thread(self) -> None:
+        """Release references after the startup worker thread finishes.
+
+        QThread.deleteLater() deletes the underlying C++ object, so keeping the
+        old Python reference can make closeEvent crash when calling isRunning().
+        """
+        self._startup_thread = None
+        self._startup_worker = None
+
+    def _cleanup_login_thread(self) -> None:
+        """Release references after the login worker thread finishes."""
+        self._login_thread = None
+        self._login_worker = None
+
+    def _stop_thread_safely(self, thread_name: str) -> None:
+        """Stop a QThread reference without crashing if Qt already deleted it."""
+        thread = getattr(self, thread_name, None)
+        try:
+            if thread is not None and thread.isRunning():
+                thread.quit()
+                thread.wait(2000)
+        except RuntimeError:
+            # The C++ QThread may already be deleted by deleteLater().
+            pass
+        finally:
+            setattr(self, thread_name, None)
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._startup_thread and self._startup_thread.isRunning():
-            self._startup_thread.quit()
-            self._startup_thread.wait(2000)
-        if self._login_thread and self._login_thread.isRunning():
-            self._login_thread.quit()
-            self._login_thread.wait(2000)
-        if self._backend_service.is_connected():
-            self._backend_service.disconnect()
+        self._stop_thread_safely("_startup_thread")
+        self._stop_thread_safely("_login_thread")
+
+        if hasattr(self, "decorative_panel") and hasattr(self.decorative_panel, "stop_animation"):
+            try:
+                self.decorative_panel.stop_animation()
+            except Exception:
+                pass
+
+        try:
+            if self._backend_service.is_connected():
+                self._backend_service.disconnect()
+        except Exception:
+            pass
+
         super().closeEvent(event)
 
 

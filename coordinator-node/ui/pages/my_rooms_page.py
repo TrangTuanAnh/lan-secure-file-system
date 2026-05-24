@@ -31,10 +31,11 @@ class RoomsLoadWorker(QObject):
     success = Signal(list)
     failure = Signal(str)
 
-    def __init__(self, runtime: DashboardRuntimeConfig, token: str = "") -> None:
+    def __init__(self, runtime: DashboardRuntimeConfig, token: str = "", global_role: str = "") -> None:
         super().__init__()
         self._runtime = runtime
         self._token = token
+        self._global_role = global_role
 
     def run(self) -> None:
         service: Optional[BackendService] = None
@@ -54,7 +55,7 @@ class RoomsLoadWorker(QObject):
                     {
                         "room_id": room.get("roomId") or room.get("id") or "",
                         "room_name": room.get("name") or room.get("roomName") or "Untitled Room",
-                        "role": room.get("role") or room.get("memberRole") or room.get("myRole") or room.get("permission") or "Member",
+                        "role": room.get("role") or room.get("memberRole") or room.get("myRole") or "",
                         "member_count": int(room.get("memberCount") or room.get("membersCount") or 0),
                         "file_count": int(room.get("fileCount") or 0),
                         "summary": room.get("description")
@@ -113,19 +114,25 @@ class CreateRoomWorker(QObject):
 class MyRoomsPage(QWidget):
     """Authenticated room listing page with create room flow."""
 
-    room_open_requested = Signal(str)
+    room_open_requested = Signal(dict)
 
     def __init__(
         self,
         username: str = "",
+        user_id: str = "",
+        email: str = "",
         token: str = "",
+        global_role: str = "USER",
         runtime: Optional[DashboardRuntimeConfig] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._runtime = runtime or DashboardRuntimeConfig()
         self._username = username
+        self._user_id = user_id
+        self._email = email
         self._token = token
+        self._global_role = global_role
         self._load_thread: Optional[QThread] = None
         self._load_worker: Optional[RoomsLoadWorker] = None
         self._create_thread: Optional[QThread] = None
@@ -150,9 +157,12 @@ class MyRoomsPage(QWidget):
             subtitle="Loading your accessible secure rooms...",
             search_placeholder="Search rooms by name or summary",
             user_display=self._username or "Authenticated User",
+            show_refresh_button=True,
         )
         self.top_bar.set_server_status("Loading", "warning")
+        self.top_bar.set_user_role(self._display_global_role())
         self.top_bar.search_changed.connect(self._filter_rooms)
+        self.top_bar.refresh_requested.connect(self.reload_rooms)
         root.addWidget(self.top_bar)
 
         self.toolbar_frame = QFrame()
@@ -175,13 +185,10 @@ class MyRoomsPage(QWidget):
         text_column.addWidget(subtitle)
         toolbar_layout.addLayout(text_column, 1)
 
-        self.refresh_button = ModernButton("Refresh Rooms")
-        self.refresh_button.clicked.connect(self.reload_rooms)
-        toolbar_layout.addWidget(self.refresh_button)
-
         self.create_room_button = ModernButton("Create Room")
         self.create_room_button.set_accent_color(PALETTE.accent_soft)
         self.create_room_button.clicked.connect(self._open_create_dialog)
+        self.create_room_button.setVisible(self._can_create_rooms())
         toolbar_layout.addWidget(self.create_room_button)
         root.addWidget(self.toolbar_frame)
 
@@ -232,11 +239,15 @@ class MyRoomsPage(QWidget):
         self.error_toast.move_to_top_center(self)
 
     def _set_loading_state(self, loading: bool) -> None:
-        self.refresh_button.set_loading(loading, "Loading" if loading else None)
-        if not loading:
-            self.refresh_button.set_loading(False)
-        self.create_room_button.setEnabled(not loading)
+        self.top_bar.set_refresh_enabled(not loading)
+        self.create_room_button.setEnabled(not loading and self._can_create_rooms())
         self.top_bar.search_input.setEnabled(not loading)
+
+    def _can_create_rooms(self) -> bool:
+        return self._global_role.upper() == "ADMIN"
+
+    def _display_global_role(self) -> str:
+        return "Administrator" if self._global_role.upper() == "ADMIN" else "Secure Operator"
 
     def reload_rooms(self) -> None:
         if self._load_thread and self._load_thread.isRunning():
@@ -248,7 +259,7 @@ class MyRoomsPage(QWidget):
         self.top_bar.set_server_status("Loading", "warning")
 
         self._load_thread = QThread(self)
-        self._load_worker = RoomsLoadWorker(self._runtime, token=self._token)
+        self._load_worker = RoomsLoadWorker(self._runtime, token=self._token, global_role=self._global_role)
         self._load_worker.moveToThread(self._load_thread)
         self._load_thread.started.connect(self._load_worker.run)
         self._load_worker.success.connect(self._on_rooms_loaded)
@@ -257,6 +268,7 @@ class MyRoomsPage(QWidget):
         self._load_worker.failure.connect(self._load_thread.quit)
         self._load_thread.finished.connect(self._load_thread.deleteLater)
         self._load_thread.finished.connect(self._load_worker.deleteLater)
+        self._load_thread.finished.connect(self._cleanup_load_thread)
         self._load_thread.start()
 
     def _on_rooms_loaded(self, rooms: list[dict[str, Any]]) -> None:
@@ -284,17 +296,29 @@ class MyRoomsPage(QWidget):
         if not rooms:
             empty = EmptyState(
                 title="No rooms yet",
-                message="You do not have access to any rooms yet. Create a secure room to get started.",
-                action_text="Create Room",
+                message="You do not have access to any rooms yet.\nCreate a secure room to get started.",
+                minimal=True,
             )
-            empty.action_requested.connect(self._open_create_dialog)
+            self.rooms_layout.addStretch()
             self.rooms_layout.addWidget(empty)
+            self.rooms_layout.addStretch()
             return
 
         for room in rooms:
             card = RoomCard()
             card.set_room_data(room)
-            card.open_requested.connect(self.room_open_requested.emit)
+            card.open_requested.connect(
+                lambda _room_id, room_payload=room: self.room_open_requested.emit(
+                    {
+                        **room_payload,
+                        "username": self._username,
+                        "email": self._email,
+                        "global_role": self._global_role,
+                        "current_username": self._username,
+                        "current_user_id": self._user_id,
+                    }
+                )
+            )
             self.rooms_layout.addWidget(card)
             self._room_cards.append(card)
 
@@ -309,6 +333,8 @@ class MyRoomsPage(QWidget):
             card.setVisible(matches)
 
     def _open_create_dialog(self) -> None:
+        if not self._can_create_rooms():
+            return
         if self._create_dialog is None:
             self._create_dialog = CreateRoomDialog(self)
             self._create_dialog.create_requested.connect(self._start_create_room)
@@ -335,6 +361,7 @@ class MyRoomsPage(QWidget):
         self._create_worker.failure.connect(self._create_thread.quit)
         self._create_thread.finished.connect(self._create_thread.deleteLater)
         self._create_thread.finished.connect(self._create_worker.deleteLater)
+        self._create_thread.finished.connect(self._cleanup_create_thread)
         self._create_thread.start()
 
     def _on_room_created(self, payload: dict[str, Any]) -> None:
@@ -342,8 +369,9 @@ class MyRoomsPage(QWidget):
             self._create_dialog.set_loading(False)
             self._create_dialog.accept()
         room_name = payload.get("name") or payload.get("roomName") or "Room"
-        self.error_toast.move_to_top_center(self)
-        self.error_toast.show_error(f"Room '{room_name}' created successfully.")
+        self.error_toast.hide_error()
+        self.top_bar.set_server_status("Online", "online")
+        self.top_bar.set_subtitle(f"Room '{room_name}' created successfully.")
         self.reload_rooms()
 
     def _on_room_create_failed(self, message: str) -> None:
@@ -351,6 +379,14 @@ class MyRoomsPage(QWidget):
             self._create_dialog.set_loading(False)
             self._create_dialog.error_label.move_to_top_center(self._create_dialog)
             self._create_dialog.error_label.show_error(message)
+
+    def _cleanup_create_thread(self) -> None:
+        self._create_thread = None
+        self._create_worker = None
+
+    def _cleanup_load_thread(self) -> None:
+        self._load_thread = None
+        self._load_worker = None
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._load_thread and self._load_thread.isRunning():
