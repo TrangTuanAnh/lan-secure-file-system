@@ -20,7 +20,7 @@ from ui.fonts import app_font, load_app_fonts
 from ui.pages.my_rooms_page import MyRoomsPage
 from ui.pages.overview_page import OverviewPage
 from ui.pages.room_page import RoomPage
-from ui.widgets.account_dialog import AccountDialog
+from ui.widgets.account_drawer import AccountDrawer
 from ui.widgets.app_shell import AppShell
 from ui.widgets.modern_button import PALETTE
 
@@ -50,7 +50,6 @@ class DashboardWindow(QMainWindow):
         self._runtime = runtime or DashboardRuntimeConfig()
         self._pages: dict[str, QWidget] = {}
         self._room_page: Optional[RoomPage] = None
-        self._account_dialog: Optional[AccountDialog] = None
 
         self.setWindowTitle("LAN Secure File System - Dashboard")
         self.setMinimumSize(QSize(1260, 760))
@@ -83,6 +82,15 @@ class DashboardWindow(QMainWindow):
         self.page_stack = QStackedWidget()
         self.page_stack.setObjectName("dashboardPageStack")
         self.app_shell.add_content_widget(self.page_stack, 1)
+
+        self.account_drawer = AccountDrawer(self)
+        self.account_drawer.set_profile(
+            self._username or "Authenticated User",
+            self._email or "Not available",
+            self._user_id or "",
+            self._display_global_role(),
+        )
+        self.account_drawer.update_anchor_geometry()
 
         self.overview_page = OverviewPage(
             username=self._username,
@@ -181,25 +189,27 @@ class DashboardWindow(QMainWindow):
         self._show_page("room_page")
 
     def _show_account_dialog(self) -> None:
-        if self._account_dialog is None:
-            self._account_dialog = AccountDialog(
-                username=self._username or "Authenticated User",
-                email=self._email,
-                user_id=self._user_id,
-                global_role_label=self._display_global_role(),
-                parent=self,
-            )
-        self._account_dialog.show()
-        self._account_dialog.raise_()
-        self._account_dialog.activateWindow()
+        self.account_drawer.set_profile(
+            self._username or "Authenticated User",
+            self._email or "Not available",
+            self._user_id or "",
+            self._display_global_role(),
+        )
+        self.account_drawer.open()
 
     def _on_room_page_back_requested(self) -> None:
         self._show_page("rooms")
         self.my_rooms_page.reload_rooms()
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if hasattr(self, "account_drawer"):
+            self.account_drawer.update_anchor_geometry()
+
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         self._show_page("overview")
+        self.account_drawer.update_anchor_geometry()
 
 
 def main() -> None:

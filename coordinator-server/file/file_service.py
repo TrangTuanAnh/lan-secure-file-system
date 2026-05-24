@@ -267,10 +267,16 @@ class FileService:
             file = files[0]
             room_id = file['room_id']
             original_name = file['original_name']
+            uploader_id = file['uploader_id']
             
-            # Verify user is ADMIN or OWNER of file's room
-            if not self._can_delete_file(user_id, global_role, room_id):
-                logger.info(f"DELETE_FILE denied: user {user_id} is not ADMIN or OWNER of room {room_id}")
+            # Verify user is ADMIN, OWNER of file's room, or uploader of the file
+            if not self._can_delete_file(user_id, global_role, room_id, uploader_id):
+                logger.info(
+                    "DELETE_FILE denied: user %s is not ADMIN, OWNER, or uploader for room %s file %s",
+                    user_id,
+                    room_id,
+                    file_id,
+                )
                 return False, "PERMISSION_DENIED"
             
             # Update file status to 'DELETED'
@@ -366,9 +372,9 @@ class FileService:
         
         return len(members) > 0
     
-    def _can_delete_file(self, user_id: str, global_role: str, room_id: str) -> bool:
+    def _can_delete_file(self, user_id: str, global_role: str, room_id: str, uploader_id: str) -> bool:
         """
-        Check if user can delete files (ADMIN or OWNER).
+        Check if user can delete files (ADMIN, OWNER, or original uploader).
         
         Args:
             user_id: User identifier
@@ -382,6 +388,10 @@ class FileService:
         if global_role == 'ADMIN':
             return True
         
+        # Original uploader can delete their own file.
+        if uploader_id and str(uploader_id) == str(user_id):
+            return True
+
         # Check if user is OWNER of the room
         members = self.db.execute_query(
             "SELECT role FROM room_members WHERE room_id = %s AND user_id = %s",
