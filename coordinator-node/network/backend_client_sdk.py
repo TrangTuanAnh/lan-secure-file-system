@@ -503,7 +503,7 @@ class BackendClient:
         Authenticate user.
         
         Returns:
-            {token, expiresAt}
+            {token, expiresAt, user?}
         """
         response = self._send_request("LOGIN", {
             "username": username,
@@ -558,7 +558,7 @@ class BackendClient:
                                  self._add_token_to_payload({
                                      "roomId": room_id,
                                      "userId": user_id,
-                                     "newRole": new_role
+                                     "role": new_role
                                  }))
     
     def list_files(self, room_id: str) -> Dict[str, Any]:

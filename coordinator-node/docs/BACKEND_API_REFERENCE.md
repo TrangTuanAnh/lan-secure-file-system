@@ -138,7 +138,13 @@ Authenticate user and get session token.
 ```json
 {
   "token": "550e8400-e29b-41d4-a716-446655440000",
-  "expiresAt": 1620000000             // Unix timestamp (seconds)
+  "expiresAt": 1620000000,            // Unix timestamp (seconds)
+  "user": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "username": "alice",
+    "email": "alice@example.com",
+    "globalRole": "USER"              // ADMIN, USER
+  }
 }
 ```
 
@@ -167,7 +173,13 @@ Authenticate user and get session token.
   "requestId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
   "payload": {
     "token": "550e8400-e29b-41d4-a716-446655440000",
-    "expiresAt": 1725000000
+    "expiresAt": 1725000000,
+    "user": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "username": "alice",
+      "email": "alice@example.com",
+      "globalRole": "USER"
+    }
   }
 }
 ```
@@ -399,7 +411,7 @@ Change member role (OWNER only).
   "token": "string",
   "roomId": "uuid",
   "userId": "uuid",
-  "newRole": "string"       // OWNER, MEMBER, VIEWER
+  "role": "string"          // OWNER, MEMBER, VIEWER
 }
 ```
 
@@ -409,7 +421,7 @@ Change member role (OWNER only).
   "success": true,
   "roomId": "uuid",
   "userId": "uuid",
-  "newRole": "MEMBER"
+  "role": "MEMBER"
 }
 ```
 

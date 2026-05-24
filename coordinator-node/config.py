@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import FrozenSet
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -65,6 +66,17 @@ def _get_bool(key: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _get_csv_set(key: str, default: set[str]) -> FrozenSet[str]:
+    raw_value = os.getenv(key)
+    if raw_value is None or raw_value.strip() == "":
+        return frozenset(value.strip().lower() for value in default if value.strip())
+    return frozenset(
+        value.strip().lower()
+        for value in raw_value.split(",")
+        if value.strip()
+    )
+
+
 @dataclass(frozen=True)
 class AppConfig:
     """Runtime configuration for the frontend app."""
@@ -84,6 +96,7 @@ class AppConfig:
 
     storage_host: str
     storage_port: int
+    admin_usernames: FrozenSet[str]
 
     def backend_kwargs(self) -> dict[str, int | str]:
         """Common backend connection settings for UI pages/workers."""
@@ -95,6 +108,17 @@ class AppConfig:
             "max_retries": self.backend_max_retries,
             "retry_delay": self.backend_retry_delay,
         }
+
+    def is_admin_username(self, username: str) -> bool:
+        return username.strip().lower() in self.admin_usernames
+
+    def resolve_global_role(self, username: str, backend_role: str = "") -> str:
+        normalized_backend_role = backend_role.strip().upper()
+        if normalized_backend_role in {"ADMIN", "USER"}:
+            return normalized_backend_role
+        if self.is_admin_username(username):
+            return "ADMIN"
+        return "USER"
 
     @classmethod
     def load(cls) -> "AppConfig":
@@ -116,6 +140,7 @@ class AppConfig:
 
             storage_host=_get_str("STORAGE_HOST", "localhost"),
             storage_port=_get_int("STORAGE_PORT", 9001),
+            admin_usernames=_get_csv_set("ADMIN_USERNAMES", {"admin"}),
         )
 
 

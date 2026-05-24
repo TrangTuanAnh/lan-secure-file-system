@@ -28,7 +28,6 @@ from PySide6.QtWidgets import (
 )
 
 from services.services import BackendService
-from config import APP_CONFIG
 from ui.fonts import app_font, brand_font, load_app_fonts, ui_font_family
 from ui.pages.login_page import BackendStartupWorker, LoginRuntimeConfig
 from ui.widgets.decorative_panel import DecorativePanel
@@ -65,7 +64,7 @@ class SignupWorker(QObject):
             self.failure.emit("Connection timed out. Please try again.")
         except ConnectionRefusedError:
             self.failure.emit(
-                f"Connection refused. Is the server running on {APP_CONFIG.backend_host}:{APP_CONFIG.backend_port}?"
+                f"Connection refused. Is the server running on {self._config.host}:{self._config.port}?"
             )
         except Exception as exc:
             self.failure.emit(f"Signup failed: {exc}")
@@ -90,8 +89,8 @@ class SignupCard(QFrame):
         self._error_host: Optional[QWidget] = self
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(46, 32, 46, 32)
-        layout.setSpacing(10)
+        layout.setContentsMargins(46, 44, 46, 44)
+        layout.setSpacing(14)
 
         title = QLabel("LAN Secure File System")
         title.setObjectName("cardTitle")
@@ -106,7 +105,7 @@ class SignupCard(QFrame):
         subtitle.setFont(app_font(10))
         layout.addWidget(subtitle)
 
-        layout.addSpacing(10)
+        layout.addSpacing(18)
         layout.addWidget(self._build_field_label("Username"))
         self.username_input = ModernLineEdit("Choose a username")
         layout.addWidget(self.username_input)
@@ -146,7 +145,7 @@ class SignupCard(QFrame):
         back_container.setLayout(back_row)
         layout.addWidget(back_container, alignment=Qt.AlignCenter)
 
-        layout.addSpacing(6)
+        layout.addSpacing(10)
         status_row = QHBoxLayout()
         status_row.setContentsMargins(0, 0, 0, 0)
         status_row.setSpacing(8)
@@ -163,6 +162,7 @@ class SignupCard(QFrame):
         status_container = QWidget()
         status_container.setLayout(status_row)
         layout.addWidget(status_container)
+        layout.addStretch()
 
         self.create_account_button.clicked.connect(self._emit_signup_request)
         self.confirm_password_input.returnPressed.connect(self._emit_signup_request)
@@ -186,10 +186,6 @@ class SignupCard(QFrame):
             self.confirm_password_input.text(),
         )
 
-    def set_error_host(self, host: QWidget) -> None:
-        self._error_host = host
-        self.signup_error.move_to_top_center(host)
-
     def set_server_status(self, online: bool, message: str) -> None:
         self.status_indicator.setStyleSheet(
             f"color: {PALETTE.accent_alt if online else PALETTE.error}; font-size: 14px;"
@@ -198,6 +194,10 @@ class SignupCard(QFrame):
         self.status_text.setStyleSheet(
             f"color: {PALETTE.accent_soft if online else '#ff98a9'}; font-size: 11px; font-weight: 600;"
         )
+
+    def set_error_host(self, host: QWidget) -> None:
+        self._error_host = host
+        self.signup_error.move_to_top_center(host)
 
     def set_signup_loading(self, loading: bool) -> None:
         self.username_input.setEnabled(not loading)
@@ -216,11 +216,7 @@ class SignupCard(QFrame):
 
 
 class SignupWindow(QMainWindow):
-    """Main signup window reusing the login layout and theme.
-
-    This page emits navigation signals only. main.AppController decides which
-    window should be shown next.
-    """
+    """Main signup window reusing the login layout and theme."""
 
     back_to_login_requested = Signal()
 
@@ -392,6 +388,7 @@ class SignupWindow(QMainWindow):
         self._startup_worker.finished.connect(self._startup_thread.quit)
         self._startup_thread.finished.connect(self._startup_thread.deleteLater)
         self._startup_thread.finished.connect(self._startup_worker.deleteLater)
+        self._startup_thread.finished.connect(self._cleanup_startup_thread)
         self._startup_thread.start()
 
     def _on_backend_startup_finished(self, online: bool, message: str) -> None:
@@ -454,6 +451,7 @@ class SignupWindow(QMainWindow):
         self._signup_worker.failure.connect(self._signup_thread.quit)
         self._signup_thread.finished.connect(self._signup_thread.deleteLater)
         self._signup_thread.finished.connect(self._signup_worker.deleteLater)
+        self._signup_thread.finished.connect(self._cleanup_signup_thread)
         self._signup_thread.start()
 
     def _on_signup_success(self, payload: Dict[str, Any]) -> None:
@@ -466,20 +464,51 @@ class SignupWindow(QMainWindow):
         self.signup_card.show_signup_error(message)
 
     def _on_back_requested(self) -> None:
-        # Let main.AppController restore the original LoginWindow.
-        # Creating a new LoginWindow here breaks the login_successful signal
-        # connection and can make the app quit when this signup window closes.
         self.back_to_login_requested.emit()
 
+    def _cleanup_startup_thread(self) -> None:
+        """Release references after the startup worker thread finishes.
+
+        QThread.deleteLater() deletes the underlying C++ object, so keeping the
+        old Python reference can make closeEvent crash when calling isRunning().
+        """
+        self._startup_thread = None
+        self._startup_worker = None
+
+    def _cleanup_signup_thread(self) -> None:
+        """Release references after the signup worker thread finishes."""
+        self._signup_thread = None
+        self._signup_worker = None
+
+    def _stop_thread_safely(self, thread_name: str) -> None:
+        """Stop a QThread reference without crashing if Qt already deleted it."""
+        thread = getattr(self, thread_name, None)
+        try:
+            if thread is not None and thread.isRunning():
+                thread.quit()
+                thread.wait(2000)
+        except RuntimeError:
+            # The C++ QThread may already be deleted by deleteLater().
+            pass
+        finally:
+            setattr(self, thread_name, None)
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        if self._startup_thread and self._startup_thread.isRunning():
-            self._startup_thread.quit()
-            self._startup_thread.wait(2000)
-        if self._signup_thread and self._signup_thread.isRunning():
-            self._signup_thread.quit()
-            self._signup_thread.wait(2000)
-        if self._backend_service.is_connected():
-            self._backend_service.disconnect()
+        self._stop_thread_safely("_startup_thread")
+        self._stop_thread_safely("_signup_thread")
+
+        if hasattr(self, "decorative_panel") and hasattr(self.decorative_panel, "stop_animation"):
+            try:
+                self.decorative_panel.stop_animation()
+            except Exception:
+                pass
+
+        try:
+            if self._backend_service.is_connected():
+                self._backend_service.disconnect()
+        except Exception:
+            pass
+
         super().closeEvent(event)
 
 
