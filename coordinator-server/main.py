@@ -126,7 +126,7 @@ def main():
         # Business logic services
         notification_service = NotificationService()
         room_service = RoomService(db, audit_service, notification_service)
-        file_service = FileService(db, authorization_service)
+        file_service = FileService(db, audit_service, notification_service)
         upload_service = UploadService(
             database=db,
             redis_client=redis_client,
