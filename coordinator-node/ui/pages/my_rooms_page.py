@@ -17,10 +17,17 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QVBoxLayout, QWi
 from services.services import BackendService
 from ui.dashboard_runtime import DashboardRuntimeConfig
 from ui.fonts import app_font, ui_font, ui_font_family
+from ui.room_data import (
+    ROOM_FILE_COUNT_KEYS,
+    ROOM_MEMBER_COUNT_KEYS,
+    ROOM_ROLE_KEYS,
+    infer_room_role_from_members,
+    normalize_room_payload,
+)
 from ui.widgets.create_room_dialog import CreateRoomDialog
 from ui.widgets.empty_state import EmptyState
 from ui.widgets.error_label import ErrorLabel
-from ui.widgets.modern_button import PALETTE, ModernButton
+from ui.widgets.modern_button import ModernButton
 from ui.widgets.room_card import RoomCard
 from ui.widgets.top_bar import TopBar
 
@@ -31,11 +38,20 @@ class RoomsLoadWorker(QObject):
     success = Signal(list)
     failure = Signal(str)
 
-    def __init__(self, runtime: DashboardRuntimeConfig, token: str = "", global_role: str = "") -> None:
+    def __init__(
+        self,
+        runtime: DashboardRuntimeConfig,
+        token: str = "",
+        global_role: str = "",
+        user_id: str = "",
+        username: str = "",
+    ) -> None:
         super().__init__()
         self._runtime = runtime
         self._token = token
         self._global_role = global_role
+        self._user_id = user_id
+        self._username = username
 
     def run(self) -> None:
         service: Optional[BackendService] = None
@@ -51,18 +67,44 @@ class RoomsLoadWorker(QObject):
             rooms = service.rooms.get_rooms()
             normalized: list[dict[str, Any]] = []
             for room in rooms:
+                room_id = room.get("roomId") or room.get("id") or room.get("room_id") or ""
+                member_count: int | None = None
+                file_count: int | None = None
+
+                if room_id and not any(key in room and room.get(key) is not None for key in ROOM_MEMBER_COUNT_KEYS):
+                    try:
+                        room_members = service.rooms.get_room_members(room_id)
+                        member_count = len(room_members)
+                    except Exception:
+                        member_count = 0
+                        room_members = []
+                else:
+                    room_members = []
+                if room_id and not any(key in room and room.get(key) is not None for key in ROOM_FILE_COUNT_KEYS):
+                    try:
+                        file_count = len(service.files.get_files(room_id))
+                    except Exception:
+                        file_count = 0
+
+                room_payload = dict(room)
+                if room_id and not any(key in room and room.get(key) is not None for key in ROOM_ROLE_KEYS):
+                    if not room_members:
+                        try:
+                            room_members = service.rooms.get_room_members(room_id)
+                        except Exception:
+                            room_members = []
+                    room_payload["current_user_role"] = infer_room_role_from_members(
+                        room_members,
+                        user_id=self._user_id,
+                        username=self._username,
+                    )
+
                 normalized.append(
-                    {
-                        "room_id": room.get("roomId") or room.get("id") or "",
-                        "room_name": room.get("name") or room.get("roomName") or "Untitled Room",
-                        "role": room.get("role") or room.get("memberRole") or room.get("myRole") or "",
-                        "member_count": int(room.get("memberCount") or room.get("membersCount") or 0),
-                        "file_count": int(room.get("fileCount") or 0),
-                        "summary": room.get("description")
-                        or room.get("summary")
-                        or "Secure collaborative room with encrypted document access.",
-                        "last_activity": room.get("lastActivity") or room.get("updatedAt") or "No recent activity recorded.",
-                    }
+                    normalize_room_payload(
+                        room_payload,
+                        fallback_member_count=member_count,
+                        fallback_file_count=file_count,
+                    )
                 )
             self.success.emit(normalized)
         except TimeoutError:
@@ -139,6 +181,7 @@ class MyRoomsPage(QWidget):
         self._load_worker: Optional[RoomsLoadWorker] = None
         self._create_thread: Optional[QThread] = None
         self._create_worker: Optional[CreateRoomWorker] = None
+        self._rooms: list[dict[str, Any]] = []
         self._room_cards: list[RoomCard] = []
         self._create_dialog: Optional[CreateRoomDialog] = None
 
@@ -157,7 +200,7 @@ class MyRoomsPage(QWidget):
         self.top_bar = TopBar(
             page_title="My Rooms",
             subtitle="Loading your accessible secure rooms...",
-            search_placeholder="Search rooms by name or summary",
+            search_placeholder="Search rooms by name, ID, or summary",
             user_display=self._username or "Authenticated User",
             show_refresh_button=True,
         )
@@ -187,11 +230,12 @@ class MyRoomsPage(QWidget):
         text_column.addWidget(subtitle)
         toolbar_layout.addLayout(text_column, 1)
 
-        self.create_room_button = ModernButton("Create Room")
-        self.create_room_button.set_accent_color(PALETTE.accent_soft)
+        self.create_room_button = ModernButton("Create")
         self.create_room_button.clicked.connect(self._open_create_dialog)
         self.create_room_button.setVisible(self._can_create_rooms())
-        toolbar_layout.addWidget(self.create_room_button)
+        self.create_room_button.setToolTip("Create Room")
+        self.create_room_button.setAccessibleName("Create Room")
+        toolbar_layout.addWidget(self.create_room_button, 0, Qt.AlignVCenter)
         root.addWidget(self.toolbar_frame)
 
         self.scroll_area = QScrollArea()
@@ -261,7 +305,13 @@ class MyRoomsPage(QWidget):
         self.top_bar.set_server_status("Loading", "warning")
 
         self._load_thread = QThread(self)
-        self._load_worker = RoomsLoadWorker(self._runtime, token=self._token, global_role=self._global_role)
+        self._load_worker = RoomsLoadWorker(
+            self._runtime,
+            token=self._token,
+            global_role=self._global_role,
+            user_id=self._user_id,
+            username=self._username,
+        )
         self._load_worker.moveToThread(self._load_thread)
         self._load_thread.started.connect(self._load_worker.run)
         self._load_worker.success.connect(self._on_rooms_loaded)
@@ -275,10 +325,11 @@ class MyRoomsPage(QWidget):
 
     def _on_rooms_loaded(self, rooms: list[dict[str, Any]]) -> None:
         self._set_loading_state(False)
+        self._rooms = [dict(room) for room in rooms]
         self.top_bar.set_server_status("Online", "online")
         self.top_bar.set_subtitle(f"{len(rooms)} room(s) available to your authenticated session.")
         self.rooms_loaded.emit(list(rooms))
-        self._render_rooms(rooms)
+        self._filter_rooms(self.top_bar.search_input.text())
 
     def _on_rooms_failed(self, message: str) -> None:
         self._set_loading_state(False)
@@ -286,6 +337,7 @@ class MyRoomsPage(QWidget):
         self.top_bar.set_subtitle("Unable to load room inventory.")
         self.error_toast.move_to_top_center(self)
         self.error_toast.show_error(message)
+        self._rooms = []
         self._render_rooms([])
 
     def _render_rooms(self, rooms: list[dict[str, Any]]) -> None:
@@ -329,11 +381,15 @@ class MyRoomsPage(QWidget):
 
     def _filter_rooms(self, query: str) -> None:
         normalized = query.strip().lower()
-        for card in self._room_cards:
-            room_name = card.room_name_label.text().lower()
-            summary = card.summary_label.text().lower()
-            matches = not normalized or normalized in room_name or normalized in summary
-            card.setVisible(matches)
+        filtered = [
+            room
+            for room in self._rooms
+            if not normalized
+            or normalized in str(room.get("room_name", "")).lower()
+            or normalized in str(room.get("room_id", "")).lower()
+            or normalized in str(room.get("summary", "")).lower()
+        ]
+        self._render_rooms(filtered)
 
     def _open_create_dialog(self) -> None:
         if not self._can_create_rooms():

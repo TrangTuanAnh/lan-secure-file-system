@@ -13,16 +13,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QObject, QElapsedTimer, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -34,6 +34,7 @@ from services.services import BackendService
 from ui.app_settings import DEFAULT_APP_SETTINGS
 from ui.dashboard_runtime import DashboardRuntimeConfig
 from ui.fonts import app_font, load_app_fonts, ui_font, ui_font_family
+from ui.room_data import normalize_room_role, resolve_room_role
 from ui.widgets.error_label import ErrorLabel
 from ui.widgets.modern_button import PALETTE, ModernButton
 from ui.widgets.modern_lineedit import ModernLineEdit
@@ -46,6 +47,7 @@ ROLE_OPTIONS = ("OWNER", "MEMBER", "VIEWER")
 MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
 _HASH_BLOCK_SIZE = 64 * 1024
+_UPLOAD_ICON_PATH = PROJECT_ROOT / "assets" / "icon" / "upload.png"
 
 
 def _format_timestamp(value: Any) -> str:
@@ -87,7 +89,7 @@ def _normalize_member(member: dict[str, Any]) -> dict[str, Any]:
         "user_id": member.get("userId") or member.get("user_id") or member.get("id") or "",
         "username": member.get("username") or "Unknown User",
         "email": member.get("email") or "No email",
-        "role": str(member.get("role") or "").upper(),
+        "role": normalize_room_role(member.get("role")),
         "joined_at": member.get("addedAt") or member.get("joinedAt") or member.get("joined_at") or "",
     }
 
@@ -187,6 +189,56 @@ class FileListCard(QFrame):
             event.accept()
             return
         super().mousePressEvent(event)
+
+
+class InAppModalOverlay(QFrame):
+    """Centered in-app modal overlay with dimmed background."""
+
+    def __init__(self, parent: Optional[QWidget] = None, *, card_object_name: str = "roomModalCard") -> None:
+        super().__init__(parent)
+        self.setObjectName("roomModalOverlay")
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.hide()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(28, 28, 28, 28)
+        root.setSpacing(0)
+
+        root.addStretch(1)
+        center_row = QHBoxLayout()
+        center_row.setContentsMargins(0, 0, 0, 0)
+        center_row.setSpacing(0)
+        center_row.addStretch(1)
+
+        self.card = QFrame()
+        self.card.setObjectName(card_object_name)
+        self.card.setMinimumWidth(420)
+        self.card.setMaximumWidth(460)
+        self.card_layout = QVBoxLayout(self.card)
+        self.card_layout.setContentsMargins(22, 20, 22, 20)
+        self.card_layout.setSpacing(12)
+        center_row.addWidget(self.card, 0, Qt.AlignCenter)
+        center_row.addStretch(1)
+
+        root.addLayout(center_row)
+        root.addStretch(1)
+
+    def update_geometry(self) -> None:
+        parent = self.parentWidget()
+        if parent is not None:
+            self.setGeometry(parent.rect())
+
+    def open_overlay(self) -> None:
+        self.update_geometry()
+        self.show()
+        self.raise_()
+        self.setFocus()
+
+    def close_overlay(self) -> None:
+        self.hide()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        event.accept()
 
 
 class BaseRoomDialog(QDialog):
@@ -770,11 +822,16 @@ class FileDownloadWorker(QObject):
                 service.disconnect()
 
 
+_MIN_UPLOAD_STATUS_MS = 3000
+
+
 class RoomPage(QWidget):
     """Primary room content focused on secure file management."""
 
     back_requested = Signal()
     activity_occurred = Signal(dict)
+    upload_status_changed = Signal(bool, str)
+    sidebar_status_changed = Signal(object)
 
     def __init__(
         self,
@@ -797,7 +854,7 @@ class RoomPage(QWidget):
         self._global_role = global_role.upper()
         self._room_data = dict(room_data)
         self._app_settings = app_settings or DEFAULT_APP_SETTINGS
-        self._room_role = str(room_data.get("role") or room_data.get("memberRole") or "").upper()
+        self._room_role = resolve_room_role(room_data)
         self._current_user_id = str(room_data.get("current_user_id") or user_id or room_data.get("user_id") or "").strip()
         self._current_username = str(room_data.get("current_username") or username or "").strip()
 
@@ -823,9 +880,14 @@ class RoomPage(QWidget):
         self._file_cards: list[FileListCard] = []
         self._pending_uploaded_file_name: str = ""
         self._pending_delete_file: dict[str, Any] = {}
+        self._pending_remove_member: dict[str, Any] = {}
+        self._pending_set_role_member: dict[str, Any] = {}
         self._members_drawer: Optional[RoomMembersDrawer] = None
-        self._set_role_dialog: Optional[SetRoleDialog] = None
         self._versions_dialog: Optional[FileVersionsDialog] = None
+        self._upload_status_active = False
+        self._upload_status_timer = QElapsedTimer()
+        self._pending_upload_completion: Optional[tuple[bool, str]] = None
+        self._active_member_action = ""
 
         self._build_ui()
         self._apply_styles()
@@ -887,12 +949,14 @@ class RoomPage(QWidget):
 
         self.members_button = ModernButton("Members")
         self.members_button.clicked.connect(self._open_members_dialog)
+        self.members_button.setVisible(self._can_view_members())
         toolbar_layout.addWidget(self.members_button)
 
-        self.upload_button = ModernButton("Upload File")
+        self.upload_button = ModernButton("", variant="icon")
         self.upload_button.clicked.connect(self._open_upload_dialog)
+        self._configure_upload_button()
         self.upload_button.setVisible(self._can_upload_files())
-        toolbar_layout.addWidget(self.upload_button)
+        toolbar_layout.addWidget(self.upload_button, 0, Qt.AlignVCenter)
 
         self.delete_room_button = ModernButton("Delete Room")
         self.delete_room_button.setVisible(False)
@@ -909,18 +973,20 @@ class RoomPage(QWidget):
         self.files_section = self._build_section_frame("Files", "Protected files available in this room.")
         files_body = self.files_section["body"]
 
-        self.files_empty_container = QWidget()
+        self.files_empty_container = QFrame()
+        self.files_empty_container.setObjectName("filesEmptyState")
         empty_layout = QVBoxLayout(self.files_empty_container)
-        empty_layout.setContentsMargins(0, 0, 0, 0)
-        empty_layout.setSpacing(0)
+        empty_layout.setContentsMargins(24, 24, 24, 24)
+        empty_layout.setSpacing(8)
         empty_layout.addStretch()
 
-        self.files_empty_label = QLabel("No files available in this room.")
-        self.files_empty_label.setObjectName("emptyFilesLabel")
+        self.files_empty_label = QLabel("No files available")
+        self.files_empty_label.setObjectName("emptyFilesTitle")
         self.files_empty_label.setWordWrap(True)
         self.files_empty_label.setAlignment(Qt.AlignCenter)
-        self.files_empty_label.setFont(ui_font(10))
+        self.files_empty_label.setFont(app_font(13, 700))
         empty_layout.addWidget(self.files_empty_label, 0, Qt.AlignCenter)
+
         empty_layout.addStretch()
         files_body.addWidget(self.files_empty_container, 1)
 
@@ -986,8 +1052,7 @@ class RoomPage(QWidget):
         self.download_button.clicked.connect(self._start_download_selected)
         detail_actions.addWidget(self.download_button)
 
-        self.delete_file_button = ModernButton("Delete")
-        self.delete_file_button.set_accent_color(PALETTE.error)
+        self.delete_file_button = ModernButton("Delete", variant="danger")
         self.delete_file_button.clicked.connect(self._delete_selected_file)
         detail_actions.addWidget(self.delete_file_button)
 
@@ -995,14 +1060,8 @@ class RoomPage(QWidget):
         content_row.addWidget(self.detail_card, 2)
         self._update_file_detail({})
 
-        self.delete_confirm_panel = QFrame(self)
-        self.delete_confirm_panel.setObjectName("deleteConfirmPanel")
-        self.delete_confirm_panel.setFixedWidth(420)
-        self.delete_confirm_panel.hide()
-
-        confirm_layout = QVBoxLayout(self.delete_confirm_panel)
-        confirm_layout.setContentsMargins(22, 20, 22, 20)
-        confirm_layout.setSpacing(12)
+        self.delete_confirm_overlay = InAppModalOverlay(self, card_object_name="roomModalCardDanger")
+        confirm_layout = self.delete_confirm_overlay.card_layout
 
         confirm_title = QLabel("Delete file?")
         confirm_title.setObjectName("sectionTitle")
@@ -1024,12 +1083,94 @@ class RoomPage(QWidget):
         self.delete_confirm_cancel.clicked.connect(self._hide_delete_confirm_panel)
         confirm_actions.addWidget(self.delete_confirm_cancel)
 
-        self.delete_confirm_accept = ModernButton("Delete")
-        self.delete_confirm_accept.set_accent_color(PALETTE.error)
+        self.delete_confirm_accept = ModernButton("Delete", variant="danger")
         self.delete_confirm_accept.clicked.connect(self._execute_delete_confirmed)
         confirm_actions.addWidget(self.delete_confirm_accept)
 
         confirm_layout.addLayout(confirm_actions)
+
+        self.member_remove_confirm_overlay = InAppModalOverlay(self, card_object_name="roomModalCardDanger")
+        member_remove_layout = self.member_remove_confirm_overlay.card_layout
+
+        member_remove_title = QLabel("Remove member?")
+        member_remove_title.setObjectName("sectionTitle")
+        member_remove_title.setFont(app_font(13, 700))
+        member_remove_layout.addWidget(member_remove_title)
+
+        self.member_remove_confirm_message = QLabel("Remove this member from the room?")
+        self.member_remove_confirm_message.setObjectName("sectionSubtitle")
+        self.member_remove_confirm_message.setWordWrap(True)
+        self.member_remove_confirm_message.setFont(ui_font(9))
+        member_remove_layout.addWidget(self.member_remove_confirm_message)
+
+        member_remove_actions = QHBoxLayout()
+        member_remove_actions.setContentsMargins(0, 0, 0, 0)
+        member_remove_actions.setSpacing(10)
+
+        self.member_remove_confirm_cancel = ModernButton("Cancel")
+        self.member_remove_confirm_cancel.set_button_style(background_color=PALETTE.surface, background_alt=PALETTE.surface_alt)
+        self.member_remove_confirm_cancel.clicked.connect(self._hide_member_remove_confirm_panel)
+        member_remove_actions.addWidget(self.member_remove_confirm_cancel)
+
+        self.member_remove_confirm_accept = ModernButton("Remove", variant="danger")
+        self.member_remove_confirm_accept.clicked.connect(self._execute_member_remove_confirmed)
+        member_remove_actions.addWidget(self.member_remove_confirm_accept)
+
+        member_remove_layout.addLayout(member_remove_actions)
+
+        self.set_role_overlay = InAppModalOverlay(self, card_object_name="roomModalCard")
+        self.set_role_error = ErrorLabel(parent=self.set_role_overlay.card)
+        set_role_layout = self.set_role_overlay.card_layout
+
+        self.set_role_title = QLabel("Set Member Role")
+        self.set_role_title.setObjectName("sectionTitle")
+        self.set_role_title.setFont(app_font(13, 700))
+        set_role_layout.addWidget(self.set_role_title)
+
+        self.set_role_subtitle = QLabel("Update room role for this member.")
+        self.set_role_subtitle.setObjectName("sectionSubtitle")
+        self.set_role_subtitle.setWordWrap(True)
+        self.set_role_subtitle.setFont(ui_font(9))
+        set_role_layout.addWidget(self.set_role_subtitle)
+
+        role_field_label = QLabel("Role")
+        role_field_label.setObjectName("fieldLabel")
+        role_field_label.setFont(app_font(10, 600))
+        set_role_layout.addWidget(role_field_label)
+
+        self.set_role_combo = QComboBox()
+        self.set_role_combo.setObjectName("membersRoleCombo")
+        self.set_role_combo.addItems(list(ROLE_OPTIONS))
+        self.set_role_combo.setEditable(False)
+        set_role_layout.addWidget(self.set_role_combo)
+
+        set_role_actions = QHBoxLayout()
+        set_role_actions.setContentsMargins(0, 0, 0, 0)
+        set_role_actions.setSpacing(10)
+
+        self.set_role_cancel = ModernButton("Cancel")
+        self.set_role_cancel.set_button_style(background_color=PALETTE.surface, background_alt=PALETTE.surface_alt)
+        self.set_role_cancel.clicked.connect(self._hide_set_role_overlay)
+        set_role_actions.addWidget(self.set_role_cancel)
+
+        self.set_role_save = ModernButton("Save Role")
+        self.set_role_save.clicked.connect(self._submit_set_role_overlay)
+        set_role_actions.addWidget(self.set_role_save)
+
+        set_role_layout.addLayout(set_role_actions)
+
+    def _configure_upload_button(self) -> None:
+        if _UPLOAD_ICON_PATH.exists():
+            self.upload_button.set_variant("icon")
+            self.upload_button.setIcon(QIcon(str(_UPLOAD_ICON_PATH)))
+            self.upload_button.setIconSize(QSize(18, 18))
+            self.upload_button.setText("")
+            self.upload_button.setToolTip("Upload File")
+            return
+        self.upload_button.set_variant("primary")
+        self.upload_button.setIcon(QIcon())
+        self.upload_button.setText("Upload File")
+        self.upload_button.setToolTip("")
 
     def _build_section_frame(self, title: str, subtitle: str) -> dict[str, Any]:
         frame = QFrame()
@@ -1073,25 +1214,59 @@ class RoomPage(QWidget):
             QFrame#roomActionToolbar,
             QFrame#roomSection,
             QFrame#fileDetailCard,
-            QFrame#deleteConfirmPanel,
-            QFrame#dialogRow {{
+            QFrame#dialogRow,
+            QFrame#filesEmptyState {{
                 background-color: rgba(26, 26, 46, 220);
                 border: 1px solid rgba(255, 255, 255, 0.05);
                 border-radius: 22px;
+            }}
+            QFrame#roomModalOverlay {{
+                background-color: rgba(6, 10, 18, 0.58);
+                border: none;
+            }}
+            QFrame#roomModalCard,
+            QFrame#roomModalCardDanger {{
+                background-color: rgba(15, 15, 30, 246);
+                border: 1px solid rgba(0, 200, 83, 0.24);
+                border-radius: 20px;
             }}
             QFrame#fileDetailCard {{
                 background-color: rgba(15, 15, 30, 176);
                 border-radius: 22px;
             }}
-            QFrame#deleteConfirmPanel {{
-                background-color: rgba(15, 15, 30, 244);
-                border: 1px solid rgba(255, 82, 82, 0.35);
-                border-radius: 20px;
+            QFrame#roomModalCardDanger {{
+                border: 1px solid rgba(255, 82, 82, 0.30);
             }}
             QScrollArea#filesScroll,
             QWidget#filesListContent {{
                 background-color: transparent;
                 border: none;
+            }}
+            QComboBox#membersRoleCombo {{
+                min-height: 46px;
+                padding: 0 14px;
+                color: {PALETTE.text};
+                background-color: rgba(26, 26, 46, 220);
+                border: 1px solid rgba(0, 200, 83, 48);
+                border-radius: 12px;
+                font-family: "{ui_font_family()}";
+            }}
+            QComboBox#membersRoleCombo:hover,
+            QComboBox#membersRoleCombo:focus {{
+                border-color: rgba(0, 230, 118, 98);
+                background-color: rgba(18, 18, 36, 230);
+            }}
+            QComboBox#membersRoleCombo::drop-down {{
+                width: 28px;
+                border: none;
+                background: transparent;
+            }}
+            QComboBox#membersRoleCombo QAbstractItemView {{
+                background-color: rgba(15, 15, 30, 244);
+                color: {PALETTE.text};
+                border: 1px solid rgba(0, 200, 83, 42);
+                selection-background-color: rgba(0, 200, 83, 18);
+                outline: none;
             }}
             QFrame#fileListCard {{
                 background-color: rgba(15, 15, 30, 150);
@@ -1116,12 +1291,14 @@ class RoomPage(QWidget):
             }}
             QLabel#sectionSubtitle,
             QLabel#fileDetailMeta,
-            QLabel#emptyFilesLabel,
             QLabel#fileCardMeta,
             QLabel#fileCardSubtle,
             QLabel#memberMeta,
             QLabel#memberHint {{
                 color: #8aa39a;
+            }}
+            QLabel#emptyFilesTitle {{
+                color: #f4fff9;
             }}
             """
         )
@@ -1129,11 +1306,12 @@ class RoomPage(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self.error_toast.move_to_top_center(self)
-        if hasattr(self, "delete_confirm_panel"):
-            panel_width = self.delete_confirm_panel.width()
-            panel_x = max(24, (self.width() - panel_width) // 2)
-            panel_y = max(140, (self.height() - self.delete_confirm_panel.sizeHint().height()) // 2)
-            self.delete_confirm_panel.move(panel_x, panel_y)
+        for overlay_name in ("delete_confirm_overlay", "member_remove_confirm_overlay", "set_role_overlay"):
+            overlay = getattr(self, overlay_name, None)
+            if overlay is not None:
+                overlay.update_geometry()
+        if hasattr(self, "set_role_error"):
+            self.set_role_error.move_to_top_center(self.set_role_overlay.card)
         if self._members_drawer is not None:
             self._members_drawer.update_anchor_geometry()
 
@@ -1141,13 +1319,16 @@ class RoomPage(QWidget):
         return "Administrator" if self._global_role == "ADMIN" else "Secure Operator"
 
     def _can_manage_members(self) -> bool:
-        return self._global_role == "ADMIN" or self._room_role == "OWNER"
+        return normalize_room_role(self._room_role) == "OWNER"
 
     def _can_upload_files(self) -> bool:
-        return self._global_role == "ADMIN" or self._room_role in {"OWNER", "MEMBER"}
+        return normalize_room_role(self._room_role) in {"OWNER", "MEMBER"}
 
     def _can_delete_files(self) -> bool:
-        return self._global_role == "ADMIN" or self._room_role == "OWNER"
+        return normalize_room_role(self._room_role) == "OWNER"
+
+    def _can_view_members(self) -> bool:
+        return True
 
     def update_app_settings(self, settings: dict[str, Any]) -> None:
         self._app_settings = settings or DEFAULT_APP_SETTINGS
@@ -1203,7 +1384,9 @@ class RoomPage(QWidget):
         self.top_bar.set_refresh_enabled(not loading)
         self.top_bar.search_input.setEnabled(not loading)
         self.back_button.setEnabled(not loading)
-        self.members_button.setEnabled(not loading)
+        self.members_button.setVisible(self._can_view_members())
+        self.members_button.setEnabled(not loading and self._can_view_members())
+        self.upload_button.setVisible(self._can_upload_files())
         self.upload_button.setEnabled(not loading and self._can_upload_files())
 
     def reload_room_data(self) -> None:
@@ -1238,13 +1421,52 @@ class RoomPage(QWidget):
     def _can_delete_file_item(self, file_data: dict[str, Any]) -> bool:
         if not file_data:
             return False
-        if self._global_role == "ADMIN":
-            return True
-        if self._room_role == "OWNER":
-            return True
-        if self._room_role == "VIEWER":
-            return False
-        return self._is_file_uploader(file_data)
+        return self._can_delete_files()
+
+    def _resolve_current_room_role(self, members: list[dict[str, Any]]) -> str:
+        payload_role = resolve_room_role(self._room_data, default="")
+        for member in members:
+            member_user_id = str(member.get("user_id") or member.get("id") or "").strip()
+            member_username = str(member.get("username") or "").strip().lower()
+            if self._current_user_id and member_user_id and member_user_id == self._current_user_id:
+                return normalize_room_role(member.get("role"))
+            if self._current_username and member_username and member_username == self._current_username.lower():
+                return normalize_room_role(member.get("role"))
+        return payload_role or "VIEWER"
+
+    def _apply_role_permissions(self) -> None:
+        self.members_button.setVisible(self._can_view_members())
+        self.upload_button.setVisible(self._can_upload_files())
+        if self._members_drawer is not None:
+            self._members_drawer.set_manage_permissions(self._can_manage_members())
+
+    def _any_modal_visible(self) -> bool:
+        return any(
+            overlay.isVisible()
+            for overlay in (
+                self.delete_confirm_overlay,
+                self.member_remove_confirm_overlay,
+                self.set_role_overlay,
+            )
+        )
+
+    def _emit_sidebar_status(self, variant: str, message: str, auto_hide_ms: int = 0) -> None:
+        self.sidebar_status_changed.emit(
+            {
+                "variant": variant,
+                "message": message,
+                "auto_hide_ms": auto_hide_ms,
+            }
+        )
+
+    def _show_sidebar_success(self, message: str, auto_hide_ms: int = 4200) -> None:
+        self._emit_sidebar_status("success", message, auto_hide_ms)
+
+    def _show_sidebar_error(self, message: str, auto_hide_ms: int = 5200) -> None:
+        self._emit_sidebar_status("error", message, auto_hide_ms)
+
+    def _show_sidebar_loading(self, message: str) -> None:
+        self._emit_sidebar_status("loading", message, 0)
 
     def _on_room_data_loaded(self, payload: dict[str, Any]) -> None:
         self._set_loading_state(False)
@@ -1252,6 +1474,9 @@ class RoomPage(QWidget):
         files = payload.get("files", [])
         self._members = [dict(member) for member in members]
         self._files = [dict(file_item) for file_item in files]
+        self._room_role = self._resolve_current_room_role(self._members)
+        self._room_data["role"] = self._room_role
+        self._apply_role_permissions()
         self.top_bar.set_server_status("Online", "online")
         self.top_bar.set_subtitle(f"{len(files)} file(s), {len(members)} member(s)")
         self._render_members_dialog()
@@ -1264,6 +1489,8 @@ class RoomPage(QWidget):
         self.error_toast.show_error(message)
         self._members = []
         self._files = []
+        self._room_role = self._resolve_current_room_role([])
+        self._apply_role_permissions()
         self._render_members_dialog()
         self._render_file_cards([])
 
@@ -1276,6 +1503,7 @@ class RoomPage(QWidget):
             or normalized in str(file_item.get("name", "")).lower()
             or normalized in str(file_item.get("uploaded_by", "")).lower()
             or normalized in str(file_item.get("status", "")).lower()
+            or normalized in str(file_item.get("scan_status", "")).lower()
         ]
         self._render_file_cards(self._filtered_files)
 
@@ -1408,18 +1636,18 @@ class RoomPage(QWidget):
 
     def _start_download_selected(self) -> None:
         if not self._selected_file:
-            self.error_toast.show_error("Select a file before downloading.")
+            self._show_sidebar_error("Select a file before downloading.")
             return
         if self._security_setting("warn_before_downloading_unscanned_files", True):
             scan_status = str(self._selected_file.get("scan_status") or self._selected_file.get("status") or "").upper()
             if scan_status and scan_status not in {"READY", "CLEAN", "COMPLETED"}:
-                self.error_toast.show_error("This file has not been marked clean yet. Please review before downloading.")
+                self._show_sidebar_error("This file has not been marked clean yet. Please review before downloading.")
                 return
         self._start_download(self._selected_file)
 
     def _delete_selected_file(self) -> None:
         if not self._selected_file:
-            self.error_toast.show_error("Select a file before deleting.")
+            self._show_sidebar_error("Select a file before deleting.")
             return
         self._confirm_delete_file(self._selected_file)
 
@@ -1429,17 +1657,11 @@ class RoomPage(QWidget):
             f"Delete {file_data.get('name', 'this file')}? This action cannot be undone."
         )
         self.delete_confirm_accept.set_loading(False)
-        self.delete_confirm_panel.adjustSize()
-        panel_width = self.delete_confirm_panel.width()
-        panel_x = max(24, (self.width() - panel_width) // 2)
-        panel_y = max(140, (self.height() - self.delete_confirm_panel.height()) // 2)
-        self.delete_confirm_panel.move(panel_x, panel_y)
-        self.delete_confirm_panel.show()
-        self.delete_confirm_panel.raise_()
+        self.delete_confirm_overlay.open_overlay()
 
     def _hide_delete_confirm_panel(self) -> None:
         self.delete_confirm_accept.set_loading(False)
-        self.delete_confirm_panel.hide()
+        self.delete_confirm_overlay.close_overlay()
         self._pending_delete_file = {}
 
     def _execute_delete_confirmed(self) -> None:
@@ -1462,6 +1684,8 @@ class RoomPage(QWidget):
         return self._members_drawer
 
     def _open_members_dialog(self) -> None:
+        if not self._can_view_members():
+            return
         drawer = self._ensure_members_drawer()
         self._render_members_dialog()
         drawer.show_members_view()
@@ -1494,32 +1718,33 @@ class RoomPage(QWidget):
     def _open_set_role_dialog(self, member: dict[str, Any]) -> None:
         if not self._can_change_member_role(member):
             if self._is_current_member(member):
-                self.error_toast.show_error("You cannot change your own role from this view.")
+                self._show_sidebar_error("You cannot change your own role from this view.")
             elif self._is_last_owner(member):
-                self.error_toast.show_error("The last owner cannot be demoted.")
+                self._show_sidebar_error("The last owner cannot be demoted.")
             return
-        self._set_role_dialog = SetRoleDialog(member.get("username", "Member"), member.get("role", ""), self)
-        self._set_role_dialog.submitted.connect(lambda role: self._start_set_role(member, role))
-        self._set_role_dialog.show()
-        self._set_role_dialog.raise_()
-        self._set_role_dialog.activateWindow()
+        if self._members_drawer is not None:
+            self._members_drawer.close_drawer()
+        self._pending_set_role_member = dict(member)
+        self.set_role_title.setText(f"Set Role for {member.get('username', 'Member')}")
+        self.set_role_subtitle.setText(f"Update room role for {member.get('username', 'this member')}.")
+        self.set_role_combo.setCurrentText(normalize_room_role(member.get("role"), default="MEMBER"))
+        self.set_role_combo.setEnabled(True)
+        self.set_role_cancel.setEnabled(True)
+        self.set_role_save.set_loading(False)
+        self.set_role_error.hide_error()
+        self.set_role_error.move_to_top_center(self.set_role_overlay.card)
+        self.set_role_overlay.open_overlay()
 
     def _confirm_remove_member(self, member: dict[str, Any]) -> None:
         if not self._can_remove_member(member):
             if self._is_current_member(member):
-                self.error_toast.show_error("You cannot remove your own account from this room here.")
+                self._show_sidebar_error("You cannot remove your own account from this room here.")
             elif self._is_last_owner(member):
-                self.error_toast.show_error("The last owner cannot be removed.")
+                self._show_sidebar_error("The last owner cannot be removed.")
             return
-        confirm = QMessageBox.question(
-            self,
-            "Remove Member",
-            f"Remove {member.get('username', 'this member')} from the room?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if confirm == QMessageBox.Yes:
-            self._start_remove_member(member)
+        if self._members_drawer is not None:
+            self._members_drawer.close_drawer()
+        self._show_member_remove_confirm_panel(member)
 
     def _run_member_action(self, action: str, user_id: str, role: str = "") -> None:
         if self._member_thread and self._member_thread.isRunning():
@@ -1551,28 +1776,76 @@ class RoomPage(QWidget):
             return
         if self._members_drawer is not None:
             self._members_drawer.set_add_member_loading(True)
+        self._active_member_action = "add"
         self._run_member_action("add", user_id=user_id.strip(), role=role)
 
     def _start_set_role(self, member: dict[str, Any], role: str) -> None:
         if not self._can_change_member_role(member):
             return
-        if self._set_role_dialog is not None:
-            self._set_role_dialog.set_loading(True)
+        self.set_role_combo.setEnabled(False)
+        self.set_role_cancel.setEnabled(False)
+        self.set_role_save.set_loading(True, "Saving")
+        self._active_member_action = "set_role"
         self._run_member_action("set_role", user_id=str(member.get("user_id") or ""), role=role)
 
     def _start_remove_member(self, member: dict[str, Any]) -> None:
         if not self._can_remove_member(member):
             return
+        self._active_member_action = "remove"
         self._run_member_action("remove", user_id=str(member.get("user_id") or ""))
 
+    def _show_member_remove_confirm_panel(self, member: dict[str, Any]) -> None:
+        self._pending_remove_member = dict(member)
+        self.member_remove_confirm_message.setText(
+            f"Remove {member.get('username', 'this member')} from this room?"
+        )
+        self.member_remove_confirm_accept.set_loading(False)
+        self.member_remove_confirm_overlay.open_overlay()
+
+    def _hide_member_remove_confirm_panel(self) -> None:
+        self.member_remove_confirm_accept.set_loading(False)
+        self.member_remove_confirm_overlay.close_overlay()
+        self._pending_remove_member = {}
+
+    def _hide_set_role_overlay(self) -> None:
+        self.set_role_save.set_loading(False)
+        self.set_role_combo.setEnabled(True)
+        self.set_role_cancel.setEnabled(True)
+        self.set_role_error.hide_error()
+        self.set_role_overlay.close_overlay()
+        self._pending_set_role_member = {}
+
+    def _submit_set_role_overlay(self) -> None:
+        member = dict(self._pending_set_role_member)
+        if not member:
+            self._hide_set_role_overlay()
+            return
+        selected_role = self.set_role_combo.currentText().strip().upper()
+        if selected_role not in ROLE_OPTIONS:
+            self.set_role_error.move_to_top_center(self.set_role_overlay.card)
+            self.set_role_error.show_error("Role must be OWNER, MEMBER, or VIEWER.")
+            return
+        self._start_set_role(member, selected_role)
+
+    def _execute_member_remove_confirmed(self) -> None:
+        member = dict(self._pending_remove_member)
+        if not member:
+            self._hide_member_remove_confirm_panel()
+            return
+        self.member_remove_confirm_accept.set_loading(True, "Removing")
+        self._start_remove_member(member)
+
     def _on_member_action_success(self, message: str) -> None:
+        success_message = {
+            "add": "Member added successfully.",
+            "remove": "Member removed successfully.",
+            "set_role": "Member role updated successfully.",
+        }.get(self._active_member_action, message or "Member action completed successfully.")
         if self._members_drawer is not None:
             self._members_drawer.set_add_member_loading(False)
             self._members_drawer.show_members_view()
-        if self._set_role_dialog is not None:
-            self._set_role_dialog.set_loading(False)
-            self._set_role_dialog.accept()
-            self._set_role_dialog = None
+        self._hide_member_remove_confirm_panel()
+        self._hide_set_role_overlay()
         self.activity_occurred.emit(
             {
                 "type": "Member",
@@ -1580,17 +1853,23 @@ class RoomPage(QWidget):
                 "timestamp": "Just now",
             }
         )
-        self.top_bar.set_subtitle(message)
+        self._show_sidebar_success(success_message)
+        self.top_bar.set_subtitle(success_message)
+        self._active_member_action = ""
         self.reload_room_data()
 
     def _on_member_action_failed(self, message: str) -> None:
         if self._members_drawer is not None:
             self._members_drawer.set_add_member_loading(False)
-            self._members_drawer.show_error(message)
-        if self._set_role_dialog is not None:
-            self._set_role_dialog.set_loading(False)
-            self._set_role_dialog.error_label.show_error(message)
-        self.error_toast.show_error(message)
+        self.member_remove_confirm_accept.set_loading(False)
+        if self._pending_remove_member:
+            self._hide_member_remove_confirm_panel()
+        if self.set_role_overlay.isVisible():
+            self.set_role_save.set_loading(False)
+            self.set_role_combo.setEnabled(True)
+            self.set_role_cancel.setEnabled(True)
+        self._show_sidebar_error(message)
+        self._active_member_action = ""
 
     def _open_versions_dialog(self, file_data: dict[str, Any]) -> None:
         if self._versions_thread and self._versions_thread.isRunning():
@@ -1630,7 +1909,7 @@ class RoomPage(QWidget):
 
     def _confirm_delete_file(self, file_data: dict[str, Any]) -> None:
         if not self._can_delete_file_item(file_data):
-            self.error_toast.show_error("You do not have permission to delete this file.")
+            self._show_sidebar_error("You do not have permission to delete this file.")
             return
         if not self._security_setting("confirm_before_deleting_files", True):
             self._start_delete_worker(file_data)
@@ -1666,12 +1945,19 @@ class RoomPage(QWidget):
                 "timestamp": "Just now",
             }
         )
-        self.top_bar.set_subtitle(message)
+        self._show_sidebar_success("File deleted successfully.")
+        self.top_bar.set_subtitle("File deleted successfully.")
         self.reload_room_data()
 
     def _on_delete_failed(self, message: str) -> None:
         self._hide_delete_confirm_panel()
-        self.error_toast.show_error(message)
+        self._show_sidebar_error(message)
+
+    def handle_global_click(self, global_pos) -> None:
+        if self._any_modal_visible():
+            return
+        if self._members_drawer is not None:
+            self._members_drawer.handle_global_click(global_pos)
 
     def _open_upload_dialog(self) -> None:
         if not self._can_upload_files():
@@ -1681,12 +1967,12 @@ class RoomPage(QWidget):
             return
         try:
             if Path(file_path).stat().st_size > MAX_UPLOAD_SIZE_BYTES:
-                self.error_toast.show_error("File is larger than 100 MB. Please choose a smaller file.")
+                self._show_sidebar_error("File is larger than 100 MB. Please choose a smaller file.")
                 return
         except OSError as exc:
-            self.error_toast.show_error(f"Cannot read selected file: {exc}")
+            self._show_sidebar_error(f"Cannot read selected file: {exc}")
             return
-        if self._upload_thread and self._upload_thread.isRunning():
+        if self._upload_status_active or (self._upload_thread and self._upload_thread.isRunning()):
             return
 
         self._upload_thread = QThread(self)
@@ -1707,24 +1993,61 @@ class RoomPage(QWidget):
         self._upload_thread.finished.connect(self._upload_thread.deleteLater)
         self._upload_thread.finished.connect(self._upload_worker.deleteLater)
         self._upload_thread.finished.connect(self._cleanup_upload_thread)
+        self._begin_upload_status("Scanning uploaded file...")
         self._upload_thread.start()
         self.top_bar.set_subtitle("Uploading file to secure storage...")
 
     def _on_upload_success(self, message: str) -> None:
-        uploaded_name = self._pending_uploaded_file_name or "file"
-        self.activity_occurred.emit(
-            {
-                "type": "Upload",
-                "message": f"Uploaded '{uploaded_name}' to '{self.room_name}'.",
-                "timestamp": "Just now",
-            }
-        )
-        self.top_bar.set_subtitle(message)
-        self.reload_room_data()
+        self._complete_upload_status(True, message)
 
     def _on_upload_failed(self, message: str) -> None:
+        self._complete_upload_status(False, message)
+
+    def _begin_upload_status(self, message: str) -> None:
+        self._upload_status_active = True
+        self._pending_upload_completion = None
+        self._upload_status_timer.start()
+        self._show_sidebar_loading(message)
+        self.upload_status_changed.emit(True, message)
+
+    def _complete_upload_status(self, success: bool, message: str) -> None:
+        if not self._upload_status_active:
+            self._finalize_upload_result(success, message)
+            return
+
+        elapsed = self._upload_status_timer.elapsed() if self._upload_status_timer.isValid() else 0
+        remaining = max(0, _MIN_UPLOAD_STATUS_MS - elapsed)
+        self._pending_upload_completion = (success, message)
+        if remaining > 0:
+            QTimer.singleShot(remaining, self._flush_pending_upload_completion)
+            return
+        self._flush_pending_upload_completion()
+
+    def _flush_pending_upload_completion(self) -> None:
+        if self._pending_upload_completion is None:
+            return
+        success, message = self._pending_upload_completion
+        self._pending_upload_completion = None
+        self.upload_status_changed.emit(False, "")
+        self._upload_status_active = False
+        self._finalize_upload_result(success, message)
+
+    def _finalize_upload_result(self, success: bool, message: str) -> None:
+        if success:
+            uploaded_name = self._pending_uploaded_file_name or "file"
+            self.activity_occurred.emit(
+                {
+                    "type": "Upload",
+                    "message": f"Uploaded '{uploaded_name}' to '{self.room_name}'.",
+                    "timestamp": "Just now",
+                }
+            )
+            self._show_sidebar_success("File uploaded successfully.")
+            self.top_bar.set_subtitle("File uploaded successfully.")
+            self.reload_room_data()
+            return
         self._pending_uploaded_file_name = ""
-        self.error_toast.show_error(message)
+        self._show_sidebar_error(message)
 
     def _start_download(self, file_data: dict[str, Any]) -> None:
         default_name = str(file_data.get("name") or "download.bin")
@@ -1754,13 +2077,15 @@ class RoomPage(QWidget):
         self._download_thread.finished.connect(self._download_worker.deleteLater)
         self._download_thread.finished.connect(self._cleanup_download_thread)
         self._download_thread.start()
+        self._show_sidebar_loading("Preparing file download...")
         self.top_bar.set_subtitle("Preparing secure download...")
 
     def _on_download_success(self, message: str) -> None:
-        self.top_bar.set_subtitle(message)
+        self._show_sidebar_success("File downloaded successfully.")
+        self.top_bar.set_subtitle("File downloaded successfully.")
 
     def _on_download_failed(self, message: str) -> None:
-        self.error_toast.show_error(message)
+        self._show_sidebar_error(message)
 
     def _cleanup_data_thread(self) -> None:
         self._data_thread = None

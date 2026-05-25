@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from ui.fonts import app_font, ui_font, ui_font_family
+from ui.room_data import normalize_room_payload
 from ui.widgets.modern_button import PALETTE, ModernButton
 from ui.widgets.status_badge import StatusBadge
 
@@ -18,6 +21,7 @@ ROLE_VARIANTS = {
     "member": "member",
     "viewer": "viewer",
 }
+_JOIN_ICON_PATH = Path(__file__).resolve().parents[2] / "assets" / "icon" / "join.png"
 
 
 class RoomCard(QFrame):
@@ -39,7 +43,7 @@ class RoomCard(QFrame):
         self._room_data: dict[str, Any] = {}
         self.setObjectName("roomCard")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setMinimumHeight(208)
+        self.setMinimumHeight(172)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(22, 20, 22, 20)
@@ -65,8 +69,27 @@ class RoomCard(QFrame):
         title_column.addWidget(self.room_id_label)
         header.addLayout(title_column, 1)
 
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
+
         self.role_badge = StatusBadge("ROOM ROLE", variant="member")
-        header.addWidget(self.role_badge, 0, Qt.AlignTop)
+        actions_row.addWidget(self.role_badge, 0, Qt.AlignVCenter)
+
+        self.open_button = ModernButton("", variant="icon")
+        self.open_button.clicked.connect(self._emit_open_requested)
+        self.open_button.setToolTip("Open Room")
+        self.open_button.setAccessibleName("Open Room")
+        if _JOIN_ICON_PATH.exists():
+            self.open_button.setIcon(QIcon(str(_JOIN_ICON_PATH)))
+            self.open_button.setIconSize(QSize(18, 18))
+            self.open_button.setText("")
+        else:
+            self.open_button.set_variant("primary")
+            self.open_button.setText("Open")
+        actions_row.addWidget(self.open_button, 0, Qt.AlignVCenter)
+
+        header.addLayout(actions_row, 0)
         root.addLayout(header)
 
         metric_row = QHBoxLayout()
@@ -77,41 +100,6 @@ class RoomCard(QFrame):
         metric_row.addWidget(self.member_metric, 1)
         metric_row.addWidget(self.file_metric, 1)
         root.addLayout(metric_row)
-
-        body_row = QHBoxLayout()
-        body_row.setContentsMargins(0, 0, 0, 0)
-        body_row.setSpacing(14)
-
-        text_column = QVBoxLayout()
-        text_column.setContentsMargins(0, 0, 0, 0)
-        text_column.setSpacing(9)
-
-        self.summary_label = QLabel("")
-        self.summary_label.setObjectName("roomSummaryLabel")
-        self.summary_label.setWordWrap(True)
-        self.summary_label.setFont(ui_font(9))
-        text_column.addWidget(self.summary_label)
-
-        self.last_activity_label = QLabel("")
-        self.last_activity_label.setObjectName("lastActivityLabel")
-        self.last_activity_label.setFont(ui_font(9, 600))
-        self.last_activity_label.setWordWrap(True)
-        text_column.addWidget(self.last_activity_label)
-        text_column.addStretch()
-        body_row.addLayout(text_column, 1)
-
-        button_column = QVBoxLayout()
-        button_column.setContentsMargins(0, 0, 0, 0)
-        button_column.setSpacing(10)
-        button_column.addStretch()
-
-        self.open_button = ModernButton("Open Room")
-        self.open_button.setMinimumWidth(136)
-        self.open_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.open_button.clicked.connect(self._emit_open_requested)
-        button_column.addWidget(self.open_button, 0, Qt.AlignRight)
-        body_row.addLayout(button_column)
-        root.addLayout(body_row)
 
         self._apply_styles()
         self.set_room_data(
@@ -167,12 +155,8 @@ class RoomCard(QFrame):
             QLabel#roomIdLabel {{
                 color: #7f948d;
             }}
-            QLabel#metricTitle,
-            QLabel#roomSummaryLabel {{
+            QLabel#metricTitle {{
                 color: #8aa39a;
-            }}
-            QLabel#lastActivityLabel {{
-                color: #b7d9ca;
             }}
             """
         )
@@ -194,26 +178,11 @@ class RoomCard(QFrame):
 
     def set_room_data(self, room_data: dict[str, Any]) -> None:
         """Update the card from a normalized room payload."""
-        room_role = room_data.get("role") or room_data.get("memberRole") or room_data.get("myRole")
-        normalized = {
-            "room_id": room_data.get("room_id") or room_data.get("id") or room_data.get("roomId") or "",
-            "room_name": room_data.get("room_name") or room_data.get("name") or room_data.get("roomName") or "Untitled Room",
-            "role": room_role or "",
-            "member_count": room_data.get("member_count") or room_data.get("memberCount") or room_data.get("membersCount") or 0,
-            "file_count": room_data.get("file_count") or room_data.get("fileCount") or 0,
-            "summary": room_data.get("summary")
-            or room_data.get("description")
-            or "Secure collaborative room with encrypted document access.",
-            "last_activity": room_data.get("last_activity")
-            or room_data.get("lastActivity")
-            or "No recent activity recorded.",
-        }
+        normalized = normalize_room_payload(room_data)
         self._room_data = normalized
 
         self.room_name_label.setText(str(normalized["room_name"]))
         self.room_id_label.setText(str(normalized["room_id"]) or "Room ID unavailable")
-        self.summary_label.setText(str(normalized["summary"]))
-        self.last_activity_label.setText(f"Last activity: {normalized['last_activity']}")
         self._set_metric_value(self.member_metric, int(normalized["member_count"]))
         self._set_metric_value(self.file_metric, int(normalized["file_count"]))
         self.set_role(str(normalized["role"]))
@@ -233,7 +202,7 @@ class RoomCard(QFrame):
         has_room_role = bool(normalized_role)
         self.role_badge.setVisible(has_room_role)
         if has_room_role:
-            self.role_badge.setText(f"ROOM: {normalized_role}")
+            self.role_badge.setText(normalized_role)
             self.role_badge.set_variant(self._role_variant(role))
         data = dict(self._room_data)
         data["role"] = role

@@ -49,31 +49,12 @@ class RoomMembersDrawer(QFrame):
 
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(12)
-
-        self.back_button = ModernButton("Back")
-        self.back_button.setMinimumWidth(84)
-        self.back_button.set_button_style(
-            background_color=PALETTE.surface,
-            background_alt=PALETTE.surface_alt,
-        )
-        self.back_button.clicked.connect(self.show_members_view)
-        self.back_button.hide()
-        header.addWidget(self.back_button)
+        header.setSpacing(0)
 
         self.title_label = QLabel("Room Members")
         self.title_label.setObjectName("drawerTitle")
         self.title_label.setFont(app_font(16, 700))
-        header.addWidget(self.title_label, 1)
-
-        self.close_button = ModernButton("Close")
-        self.close_button.setMinimumWidth(92)
-        self.close_button.set_button_style(
-            background_color=PALETTE.surface,
-            background_alt=PALETTE.surface_alt,
-        )
-        self.close_button.clicked.connect(self.close_drawer)
-        header.addWidget(self.close_button)
+        header.addWidget(self.title_label, 1, Qt.AlignLeft)
         root.addLayout(header)
 
         self.stack = QStackedWidget()
@@ -118,12 +99,6 @@ class RoomMembersDrawer(QFrame):
         add_layout.setContentsMargins(0, 0, 0, 0)
         add_layout.setSpacing(14)
 
-        add_subtitle = QLabel("Enter the user's UUID. The user can copy it from Account profile.")
-        add_subtitle.setObjectName("drawerSubtitle")
-        add_subtitle.setWordWrap(True)
-        add_subtitle.setFont(ui_font(9))
-        add_layout.addWidget(add_subtitle)
-
         add_layout.addWidget(self._field_label("User ID"))
         self.user_id_input = ModernLineEdit("Enter user UUID")
         add_layout.addWidget(self.user_id_input)
@@ -140,13 +115,11 @@ class RoomMembersDrawer(QFrame):
         add_actions = QHBoxLayout()
         add_actions.setContentsMargins(0, 0, 0, 0)
         add_actions.setSpacing(12)
-        self.cancel_add_button = ModernButton("Cancel")
-        self.cancel_add_button.set_button_style(
-            background_color=PALETTE.surface,
-            background_alt=PALETTE.surface_alt,
-        )
-        self.cancel_add_button.clicked.connect(self.show_members_view)
-        add_actions.addWidget(self.cancel_add_button)
+        self.add_member_back_button = ModernButton("Back", variant="danger")
+        self.add_member_back_button.clicked.connect(self.show_members_view)
+        add_actions.addWidget(self.add_member_back_button)
+
+        add_actions.addStretch(1)
 
         self.submit_add_button = ModernButton("Add Member")
         self.submit_add_button.clicked.connect(self._submit_add_member)
@@ -308,13 +281,11 @@ class RoomMembersDrawer(QFrame):
 
     def show_members_view(self) -> None:
         self.title_label.setText("Room Members")
-        self.back_button.hide()
         self.stack.setCurrentWidget(self.members_page)
         self.hide_error()
 
     def show_add_member_view(self) -> None:
         self.title_label.setText("Add Member")
-        self.back_button.show()
         self.stack.setCurrentWidget(self.add_member_page)
         self.user_id_input.setFocus()
         self.hide_error()
@@ -334,11 +305,16 @@ class RoomMembersDrawer(QFrame):
             can_set_role=bool(member.get("can_set_role")),
             can_remove=bool(member.get("can_remove"))
         )
-        
-        # Position menu near the row
-        row_global_pos = row.mapToGlobal(row.rect().topRight())
-        menu_pos = QPoint(row_global_pos.x() - menu.width() - 8, row_global_pos.y())
-        menu.show_at_position(menu_pos)
+
+        menu.adjustSize()
+        row_top_right = row.mapTo(self, row.rect().topRight())
+        desired_x = row_top_right.x() - menu.width() - 8
+        desired_y = row.mapTo(self, QPoint(0, 0)).y() + 6
+        menu_x = max(12, desired_x)
+        menu_y = max(12, desired_y)
+        max_x = max(12, self.width() - menu.width() - 12)
+        max_y = max(12, self.height() - menu.height() - 12)
+        menu.show_at_position(QPoint(min(menu_x, max_x), min(menu_y, max_y)))
 
     def _on_context_set_role(self) -> None:
         """Handle Set Role action from context menu."""
@@ -372,7 +348,7 @@ class RoomMembersDrawer(QFrame):
     def set_add_member_loading(self, loading: bool) -> None:
         self.user_id_input.setEnabled(not loading)
         self.role_combo.setEnabled(not loading)
-        self.cancel_add_button.setEnabled(not loading)
+        self.add_member_back_button.setEnabled(not loading)
         self.submit_add_button.set_loading(loading, "Adding")
 
     def show_error(self, message: str) -> None:
@@ -402,6 +378,18 @@ class RoomMembersDrawer(QFrame):
             return
         self._animate(opening=False)
 
+    def contains_global_pos(self, global_pos) -> bool:
+        if not self.isVisible():
+            return False
+        return self.rect().contains(self.mapFromGlobal(global_pos))
+
+    def handle_global_click(self, global_pos) -> None:
+        if self._context_menu is not None and self._context_menu.isVisible():
+            if not self._context_menu.contains_global_pos(global_pos):
+                self._context_menu.hide_menu()
+        if self.isVisible() and not self.contains_global_pos(global_pos):
+            self.close_drawer()
+
     def _animate(self, opening: bool) -> None:
         parent = self.parentWidget()
         if parent is None:
@@ -427,6 +415,8 @@ class RoomMembersDrawer(QFrame):
     def _on_animation_finished(self) -> None:
         self._animating = False
         if not self._is_open:
+            if self._context_menu is not None:
+                self._context_menu.hide_menu()
             self.hide()
             self.hide_error()
 
