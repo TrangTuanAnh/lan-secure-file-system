@@ -1,124 +1,209 @@
-# Đồ án LTM - Storage Node
+```text
+ _     ____  _        ____  _____ ____ _     ____  _____   _____ _  _     _____   ____ ___  _ ____ _____ _____ _     
+/ \   /  _ \/ \  /|  / ___\/  __//   _Y \ /\/  __\/  __/  /    // \/ \   /  __/  / ___\\  \/// ___Y__ __Y  __// \__/|
+| |   | / \|| |\ ||  |    \|  \  |  / | | |||  \/||  \    |  __\| || |   |  \    |    \ \  / |    \ / \ |  \  | |\/||
+| |_/\| |-||| | \||  \___ ||  /_ |  \_| \_/||    /|  /_   | |   | || |_/\|  /_   \___ | / /  \___ | | | |  /_ | |  ||
+\____/\_/ \|\_/  \|  \____/\____\\____|____/\_/\_\\____\  \_/   \_/\____/\____\  \____//_/   \____/ \_/ \____\\_/  \|
+                                                                                                                     
+```
 
-Repository này hiện tập trung vào phần **Storage Node / Data Plane** của hệ thống truyền file LAN an toàn:
 
-- Upload/download theo chunk qua TCP socket
-- Resume upload
-- Verify SHA-256 theo chunk và whole file
-- Quét virus tại Storage Node trước khi commit file vào ổ
-- Coordinator cân bằng upload theo storage node khỏe có ít upload active nhất
-- Dedup theo nội dung
-- Mã hóa truyền bằng hybrid ECDH P-256 + ML-KEM-768, AES-256-GCM (giữ RSA/AES-CBC legacy)
+# LAN Secure File System
 
-## 1) Tổng quan thành phần trong repo
+Repository này chứa một hệ thống chia sẻ file an toàn trong mạng LAN với kiến trúc tách thành control plane và data plane. Mục tiêu của repo là quản lý phòng chia sẻ file, cấp quyền thành viên, khởi tạo upload/download qua Coordinator, và truyền file chunked đến Storage Node với cơ chế xác thực, kiểm tra toàn vẹn, dedup và quét virus.
 
-- `storage-node/src/main/java/storagenode`: mã nguồn storage node
-- `storage-node/docs/DATA_PLANE_PROTOCOL.md`: đặc tả message/frame data plane
-- `storage-node/docs/CHUNK_FORMAT.md`: format chunk, lưu trữ, mã hóa
-- `storage-node/src/test/java/storagenode/test/StorageNodeIntegrationTest.java`: test tích hợp JUnit
+## Tổng quan hệ thống
 
-## 2) Trạng thái tính năng
+Hệ thống gồm 3 khối nghiệp vụ chính:
 
-| Nhóm tính năng | Trạng thái |
-|---|---|
-| Cấu trúc lưu trữ (`temp/store/meta`, session meta, dedup registry) | Đã làm |
-| Giao thức socket data plane (frame + message type + field chuẩn) | Đã làm |
-| Upload chunk + verify ticket/hash/index/size + ACK | Đã làm |
-| Resume upload (`OPEN_UPLOAD` resume + `QUERY_MISSING`) | Đã làm |
-| Finalize upload + verify whole hash + lưu store | Đã làm |
-| Download theo chunk, hỗ trợ request out-of-order | Đã làm |
-| Bảo mật truyền (hybrid PQ/ECC key exchange, AES-GCM, ticket gate) | Đã làm |
-| Toàn vẹn dữ liệu SHA-256 chunk/file | Đã làm |
-| Dedup mức dữ liệu theo hash | Đã làm |
-| Quét virus local ở Storage Node bằng ClamAV/clamd | Đã làm |
-| Load balancing upload qua nhiều Storage Node | Đã làm |
-| Monitoring/log | Làm một phần |
-| Tài liệu + test tự động | Đã làm |
+- `coordinator-node`: desktop client viết bằng Python + PySide6.
+- `coordinator-server`: backend control plane viết bằng Python, dùng PostgreSQL + Redis.
+- `storage-node`: data plane viết bằng Java, nhận/ghép chunk, scan file và lưu trữ.
 
-## 3) Các bug critical đã xử lý
+Ngoài ra repo còn có:
 
-- Chặn `chunkIndex` âm/out-of-range khi upload (`INVALID_CHUNK_INDEX`)
-- Chặn `chunkSize` sai chuẩn (`INVALID_CHUNK_SIZE`)
-- Finalize không còn làm rớt socket khi lỗi I/O, trả `FINALIZE_IO_ERROR`
-- Download không còn gửi `DOWNLOAD_COMPLETE` sớm khi client request chunk sai thứ tự
-- Bổ sung bước bootstrap public key cho `KEY_EXCHANGE` (giữ tương thích ngược)
+- `docker-compose.yml`: dùng để dựng nhanh toàn bộ stack.
+- `docs/`: tài liệu phân tích, topology, docker, manual test.
+- `test-data/`: file mẫu để test upload/download.
+- `run_client.bat`: script mở desktop client trên Windows.
 
-## 4) Chạy hệ thống
+## Kiến trúc và luồng chạy
 
-Yêu cầu:
+Lượt upload:
 
-- Java 8
-- Maven 3.8+
-- ClamAV `clamd` nếu bật `antivirus.enabled=true`
+1. Client đăng nhập vào `coordinator-server`.
+2. Client gọi `INIT_UPLOAD` để xin upload plan.
+3. Coordinator chọn `storage-node` khỏe nhất, tạo ticket và trả về `storageAddress`.
+4. Client kết nối trực tiếp đến `storage-node` để gửi chunk.
+5. Storage Node verify chunk/hash, finalize file, scan virus, commit file vào store.
+6. Storage Node báo `UPLOAD_COMPLETE` về Coordinator.
+7. Coordinator cập nhật metadata, audit log và phát sự kiện realtime.
 
-Build:
+Lượt download:
+
+1. Client gọi `INIT_DOWNLOAD` lên Coordinator.
+2. Coordinator kiểm tra quyền, tạo ticket download và trả về thông tin file.
+3. Client kết nối trực tiếp đến `storage-node`.
+4. Storage Node phục vụ chunk, client ghi file streaming và verify SHA-256.
+
+## Cấu trúc repo
+
+```text
+.
+|-- coordinator-node/        # Desktop client
+|   |-- main.py
+|   |-- config.py
+|   |-- network/
+|   |-- services/
+|   |-- ui/
+|   `-- assets/
+|-- coordinator-server/      # Control plane backend
+|   |-- main.py
+|   |-- auth/
+|   |-- room/
+|   |-- file/
+|   |-- upload/
+|   |-- download/
+|   |-- notification/
+|   |-- storage_node/
+|   |-- protocol/
+|   `-- alembic/
+|-- storage-node/            # Data plane storage service
+|   |-- src/main/java/storagenode/
+|   |-- antivirus/
+|   `-- docs/
+|-- docs/                    # Tài liệu tổng hợp cấp repo
+|-- test-data/               # Dữ liệu test
+|-- docker-compose.yml
+|-- run_client.bat
+`-- test-integration.sh
+```
+
+## Mô tả nhanh từng thành phần
+
+### 1. `coordinator-node`
+
+Client desktop cho người dùng cuối:
+
+- Đăng nhập, đăng ký.
+- Xem overview và danh sách room.
+- Tạo room nếu có quyền `ADMIN`.
+- Xem thành viên, thêm/xóa/sửa role trong room.
+- Upload/download file.
+- Xem metadata file, version, trạng thái scan.
+- Chỉnh một số setting giao diện và hành vi an toàn local.
+
+### 2. `coordinator-server`
+
+Backend trung tâm:
+
+- Xác thực người dùng, quản lý session.
+- Quản lý room, member, role.
+- Quản lý metadata file và version.
+- Khởi tạo upload/download plan.
+- Chọn storage node cho upload.
+- Tạo và verify ticket.
+- Broadcast sự kiện realtime.
+- Ghi audit log.
+- Theo dõi heartbeat storage node.
+
+### 3. `storage-node`
+
+Nơi xử lý data plane:
+
+- Nhận file theo chunk qua TCP socket.
+- Resume upload.
+- Verify hash từng chunk và toàn file.
+- Quét virus với ClamAV/clamd.
+- Lưu file vào store và hỗ trợ dedup.
+- Phục vụ download theo chunk.
+- Kết nối control plane để auth, ping, gửi manifest và thông báo kết quả upload.
+
+## Cách sử dụng
+
+### Chạy bằng Docker Compose
+
+Tại thư mục gốc:
+
+```bash
+docker compose up --build
+```
+
+Mặc định stack sẽ khởi tạo:
+
+- `postgres` trên port `5432`
+- `redis` trên port `6379`
+- `coordinator-server` trên port `8080`, `8081`, `8082`
+- `storage-node-1` trên port `9001`
+- `clamd-storage-node-1`
+
+Nếu muốn mở thêm storage node thứ hai:
+
+```bash
+docker compose --profile multi-node up --build
+```
+
+### Chạy desktop client
+
+Trên Windows:
+
+```bat
+run_client.bat
+```
+
+Script này sẽ chuyển vào `coordinator-node/` và chạy:
+
+```bat
+pythonw main.py
+```
+
+### Chạy riêng từng thành phần
+
+#### Coordinator Server
+
+```bash
+cd coordinator-server
+python main.py
+```
+
+Cần cấu hình PostgreSQL và Redis phù hợp qua `.env` hoặc environment variables.
+
+#### Storage Node
 
 ```bash
 cd storage-node
 mvn clean package
+java -jar target/storage-node-1.0.0.jar storage-node.properties
 ```
 
-Run node:
+#### Coordinator Node
 
 ```bash
-cd storage-node
-java -jar target/storage-node-1.0.0-shaded.jar storage-node.properties
+cd coordinator-node
+python main.py
 ```
 
-### Quét virus khi upload
+## Công nghệ chính
 
-Storage Node scan file bằng ClamAV trong bước `FINALIZE_UPLOAD`, sau khi ghép chunk và verify SHA-256, trước khi move sang `data/store`. Client không cần gửi scan report.
+- Frontend desktop: Python, PySide6
+- Backend control plane: Python
+- Data plane: Java
+- Database: PostgreSQL
+- Cache/ticket/session: Redis
+- Antivirus: ClamAV / clamd
+- Đồng bộ và truyền thông: TCP socket protocol tự định nghĩa
 
-Các cấu hình chính trong `storage-node.properties`:
+## Tài liệu bổ sung
 
-```properties
-antivirus.enabled=true
-antivirus.host=127.0.0.1
-antivirus.port=3310
-antivirus.timeout.ms=30000
-antivirus.quarantine.dir=data/quarantine
-antivirus.fail.closed=true
-```
+- `REPORT.md`: báo cáo chi tiết về tất cả node, giao tiếp và giao diện.
+- `docs/SYSTEM_TOPOLOGY_AND_DATA_FLOW_VI.md`: topology và data flow.
+- `docs/DOCKER_SETUP.md`: hướng dẫn dựng Docker.
+- `docs/MANUAL_TEST_GUIDE.md`: kiểm thử thủ công.
+- `storage-node/docs/DATA_PLANE_PROTOCOL.md`: protocol data plane.
 
-Với Docker Compose, service `clamd-storage-node-1` chạy sidecar và mount cùng volume `/app/data` ở chế độ read-only để scan file staging.
+## Ghi chú hiện trạng
 
-## 5) Chạy test tự động
-
-```bash
-cd storage-node
-mvn test
-```
-
-Test tích hợp hiện cover các luồng bắt buộc:
-
-- Upload small/large
-- Resume upload sau disconnect
-- Corrupt chunk + retry
-- Invalid chunk index/size nhưng connection vẫn sống
-- Finalize I/O error trả frame chuẩn
-- Download out-of-order không complete sớm
-- KEY_EXCHANGE bootstrap + upload mã hóa
-
-## 6) Cập nhật protocol đáng chú ý
-
-- Upload chunk có thêm status:
-  - `INVALID_CHUNK_INDEX`
-  - `INVALID_CHUNK_SIZE`
-- Finalize có thêm status:
-  - `FINALIZE_IO_ERROR`
-  - `VIRUS_DETECTED`
-  - `SCAN_TIMEOUT`
-  - `SCAN_UNAVAILABLE`
-  - `SCAN_ERROR`
-- `DOWNLOAD_COMPLETE` chỉ gửi khi đã phục vụ đủ toàn bộ tập chunk của session
-- `KEY_EXCHANGE` có bootstrap hiện đại:
-  - Client request hybrid public keys (`GET_HYBRID_PUBLIC_KEY`)
-  - Server trả ECDH P-256 public key, ML-KEM-768 public key và nonce
-  - Client gửi ECDH public key + ML-KEM ciphertext để derive AES-256-GCM session key
-  - RSA/OAEP + AES-CBC cũ vẫn được giữ để tương thích ngược
-
-## 7) Giới hạn hiện tại
-
-- `CoordinatorClient.notifyUploadComplete/notifyUploadFailed` mới là stub log nội bộ, chưa gọi control plane thật
-- Monitoring counters nâng cao (throughput chính xác theo request) chưa được wire đầy đủ
-- Chưa triển khai TLS/mTLS; data-plane hiện dùng AES-256-GCM với hybrid PQ/ECC key exchange ở tầng ứng dụng
+- Repo hiện tập trung rất rõ vào luồng upload/download an toàn trong LAN.
+- `coordinator-server` là nơi quyết định metadata, phân quyền và phân bổ node.
+- `storage-node` là nơi xử lý file thực tế.
+- `coordinator-node` đã có giao diện desktop khá đầy đủ cho demo và vận hành cơ bản.
