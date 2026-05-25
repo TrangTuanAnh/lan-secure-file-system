@@ -7,6 +7,7 @@ from config import load_config
 from room.room_service import RoomService
 from audit.audit_service import AuditService
 from notification.notification_service import NotificationService
+from db_test_utils import cleanup_database
 
 
 @pytest.fixture
@@ -15,8 +16,12 @@ def db():
     config = load_config()
     database = Database(config.database)
     database.connect()
-    yield database
-    database.close()
+    cleanup_database(database)
+    try:
+        yield database
+    finally:
+        cleanup_database(database)
+        database.close()
 
 
 @pytest.fixture
@@ -54,9 +59,7 @@ def admin_user(db):
     )
     
     yield {"id": user_id, "username": username, "email": email, "global_role": "ADMIN"}
-    
-    # Cleanup
-    db.execute_update("DELETE FROM users WHERE id = %s", (user_id,))
+    cleanup_database(db)
 
 
 @pytest.fixture
@@ -76,9 +79,7 @@ def regular_user(db):
     )
     
     yield {"id": user_id, "username": username, "email": email, "global_role": "USER"}
-    
-    # Cleanup
-    db.execute_update("DELETE FROM users WHERE id = %s", (user_id,))
+    cleanup_database(db)
 
 
 def test_create_room_as_admin(room_service, admin_user):

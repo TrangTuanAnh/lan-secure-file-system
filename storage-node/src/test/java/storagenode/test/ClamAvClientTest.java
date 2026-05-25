@@ -46,6 +46,19 @@ public class ClamAvClientTest {
     }
 
     @Test
+    public void parseLimitExceededResponse() {
+        ScanResult result = ClamAvClient.parseResponse(
+                "/app/data/temp/s1/assembled: size limit exceeded. ERROR\0",
+                5L,
+                "clamd"
+        );
+
+        assertEquals(ScanStatus.LIMIT_EXCEEDED, result.getStatus());
+        assertFalse(result.isClean());
+        assertTrue(result.getMessage().contains("size limit"));
+    }
+
+    @Test
     public void parseMalformedResponseAsError() {
         ScanResult result = ClamAvClient.parseResponse("unexpected response\0", 1L, "clamd");
 

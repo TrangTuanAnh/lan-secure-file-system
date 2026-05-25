@@ -10,6 +10,7 @@ from audit.audit_service import AuditService
 from notification.notification_service import NotificationService
 from protocol.message import Message
 from protocol.message_types import MessageType
+from db_test_utils import cleanup_database
 
 
 @pytest.fixture
@@ -18,8 +19,12 @@ def db():
     config = load_config()
     database = Database(config.database)
     database.connect()
-    yield database
-    database.close()
+    cleanup_database(database)
+    try:
+        yield database
+    finally:
+        cleanup_database(database)
+        database.close()
 
 
 @pytest.fixture
@@ -58,8 +63,7 @@ def test_user(db):
         (user_id, 'testuser', 'test@example.com', 'hash', 'USER')
     )
     yield user_id
-    # Cleanup
-    db.execute_update("DELETE FROM users WHERE id = %s", (user_id,))
+    cleanup_database(db)
 
 
 @pytest.fixture
@@ -74,8 +78,7 @@ def test_admin(db):
         (admin_id, 'admin', 'admin@example.com', 'hash', 'ADMIN')
     )
     yield admin_id
-    # Cleanup
-    db.execute_update("DELETE FROM users WHERE id = %s", (admin_id,))
+    cleanup_database(db)
 
 
 @pytest.fixture
@@ -98,9 +101,7 @@ def test_room(db, test_admin):
         (room_id, test_admin, 'OWNER', datetime.now(timezone.utc))
     )
     yield room_id
-    # Cleanup
-    db.execute_update("DELETE FROM room_members WHERE room_id = %s", (room_id,))
-    db.execute_update("DELETE FROM rooms WHERE id = %s", (room_id,))
+    cleanup_database(db)
 
 
 @pytest.fixture
@@ -117,8 +118,7 @@ def test_file(db, test_room, test_admin):
          1024, 'text/plain', 'a' * 64, 1, 524288, 'READY', datetime.now(timezone.utc))
     )
     yield file_id
-    # Cleanup
-    db.execute_update("DELETE FROM files WHERE id = %s", (file_id,))
+    cleanup_database(db)
 
 
 class TestFileService:

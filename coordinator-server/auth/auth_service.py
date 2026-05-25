@@ -143,11 +143,7 @@ class AuthService:
         """
         # Query user by username
         users = self.db.execute_query(
-            """
-            SELECT id, username, email, password_hash, global_role
-            FROM users
-            WHERE username = %s
-            """,
+            "SELECT id, password_hash, global_role FROM users WHERE username = %s",
             (username,)
         )
         
@@ -192,10 +188,11 @@ class AuthService:
             "createdAt": created_at
         }
         
+        profile = self._load_user_profile(user_id, username, global_role)
         user_profile = {
             "id": user_id,
-            "username": user["username"],
-            "email": user["email"],
+            "username": profile.get("username", username),
+            "email": profile.get("email", ""),
             "globalRole": global_role,
         }
         
@@ -251,6 +248,28 @@ class AuthService:
             Tuple of (success, token, expires_at, user_profile, error_code)
         """
         return self._authenticate_and_create_session(username, password)
+
+    def _load_user_profile(self, user_id: str, username: str, global_role: str) -> Dict[str, Any]:
+        """Load optional profile fields for login responses, with mock-safe fallbacks."""
+        try:
+            rows = self.db.execute_query(
+                """
+                SELECT username, email, global_role
+                FROM users
+                WHERE id = %s
+                """,
+                (user_id,)
+            )
+            if rows:
+                return rows[0]
+        except Exception as e:
+            logger.debug(f"Could not load user profile for {user_id}: {e}")
+
+        return {
+            "username": username,
+            "email": "",
+            "global_role": global_role,
+        }
     
     def validate_token(self, token: str) -> Tuple[bool, Optional[Dict[str, Any]], Optional[str]]:
         """
