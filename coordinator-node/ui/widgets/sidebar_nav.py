@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.fonts import app_font, brand_font, brand_font_family, ui_font, ui_font_family
+from ui.utils.avatar_resolver import render_svg_avatar, resolve_avatar_path
 from ui.widgets.modern_button import PALETTE, with_alpha
 
 
@@ -33,6 +36,9 @@ class SidebarNav(QFrame):
         self._button_group.idClicked.connect(self._emit_navigation_requested)
         self._nav_buttons: dict[str, QPushButton] = {}
         self._button_ids: list[str] = []
+        self._avatar_username = "Security Operator"
+        self._avatar_user_id = ""
+        self._avatar_global_role = "USER"
 
         self.setObjectName("sidebarNav")
         self.setMinimumWidth(280)
@@ -54,13 +60,32 @@ class SidebarNav(QFrame):
         user_layout.setContentsMargins(16, 16, 16, 16)
         user_layout.setSpacing(6)
 
+        identity_row = QHBoxLayout()
+        identity_row.setContentsMargins(0, 0, 0, 0)
+        identity_row.setSpacing(10)
+
+        self.user_avatar_label = QLabel("--")
+        self.user_avatar_label.setObjectName("sidebarUserAvatar")
+        self.user_avatar_label.setAlignment(Qt.AlignCenter)
+        self.user_avatar_label.setMinimumSize(42, 42)
+        self.user_avatar_label.setMaximumSize(42, 42)
+        self.user_avatar_label.setFont(app_font(11, 700))
+        identity_row.addWidget(self.user_avatar_label)
+
+        identity_text = QVBoxLayout()
+        identity_text.setContentsMargins(0, 0, 0, 0)
+        identity_text.setSpacing(3)
+
         self.user_name_label = QLabel("Security Operator")
         self.user_name_label.setFont(app_font(11, 600))
-        user_layout.addWidget(self.user_name_label)
+        identity_text.addWidget(self.user_name_label)
 
         self.user_email_label = QLabel("operator@coordinator.local")
         self.user_email_label.setFont(ui_font(9))
-        user_layout.addWidget(self.user_email_label)
+        identity_text.addWidget(self.user_email_label)
+
+        identity_row.addLayout(identity_text, 1)
+        user_layout.addLayout(identity_row)
 
         self.user_role_label = QLabel("Operations Control")
         self.user_role_label.setFont(ui_font(9))
@@ -130,6 +155,15 @@ class SidebarNav(QFrame):
         self.user_role_label.setStyleSheet(
             f"color: {with_alpha(PALETTE.accent_soft, 230).name()};"
         )
+        self.user_avatar_label.setStyleSheet(
+            f"""
+            color: {PALETTE.accent_bright};
+            background-color: {with_alpha(PALETTE.accent_alt, 22).name()};
+            border: 1px solid {with_alpha(PALETTE.accent_alt, 72).name()};
+            border-radius: 21px;
+            """
+        )
+        self._update_avatar()
 
     def add_nav_item(self, item_id: str, label: str, checked: bool = False) -> None:
         """Add a reusable sidebar navigation button."""
@@ -150,10 +184,30 @@ class SidebarNav(QFrame):
         if button is not None:
             button.setChecked(True)
 
-    def set_user_info(self, name: str, email: str, role: str) -> None:
+    def set_user_info(self, name: str, email: str, role: str, user_id: str = "") -> None:
         self.user_name_label.setText(name)
         self.user_email_label.setText(email)
         self.user_role_label.setText(role)
+        self._avatar_username = name
+        self._avatar_user_id = user_id
+        self._avatar_global_role = role
+        self._update_avatar()
+
+    def _update_avatar(self) -> None:
+        avatar_path = resolve_avatar_path(
+            self._avatar_username,
+            user_id=self._avatar_user_id,
+            global_role=self._avatar_global_role,
+        )
+        pixmap = render_svg_avatar(avatar_path, QSize(42, 42))
+        if pixmap is not None:
+            self.user_avatar_label.setPixmap(pixmap)
+            self.user_avatar_label.setText("")
+            return
+
+        self.user_avatar_label.setPixmap(QPixmap())
+        initials = "".join(part[0] for part in self._avatar_username.split()[:2]).upper()
+        self.user_avatar_label.setText(initials or "--")
 
     def _emit_navigation_requested(self, button_id: int) -> None:
         if 0 <= button_id < len(self._button_ids):
