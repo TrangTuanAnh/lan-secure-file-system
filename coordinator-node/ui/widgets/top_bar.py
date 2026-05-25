@@ -170,7 +170,7 @@ class TopBar(QFrame):
             f"""
             color: {PALETTE.accent_bright};
             background-color: {with_alpha(PALETTE.accent_alt, 28).name()};
-            border: 1px solid {with_alpha(PALETTE.accent_alt, 85).name()};
+            border: none;
             border-radius: 17px;
             """
         )

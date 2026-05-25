@@ -56,9 +56,11 @@ def render_svg_avatar(svg_path: Optional[Path], size: QSize) -> Optional[QPixmap
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing, True)
     painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
 
+    # Create circular clipping path
     clip_path = QPainterPath()
-    clip_path.addEllipse(QRectF(0, 0, side, side))
+    clip_path.addEllipse(QRectF(0.5, 0.5, side - 1, side - 1))
     painter.setClipPath(clip_path)
 
     default_size = renderer.defaultSize()
@@ -82,6 +84,7 @@ def render_svg_avatar(svg_path: Optional[Path], size: QSize) -> Optional[QPixmap
 
     renderer.render(painter, target_rect)
     painter.end()
+    
     return pixmap
 
 

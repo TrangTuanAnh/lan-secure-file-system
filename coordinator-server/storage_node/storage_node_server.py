@@ -531,7 +531,7 @@ class StorageNodeServer(BaseSocketServer):
             )
             connection.send_message(error_msg)
             return
-        
+
         logger.warning(
             f"UPLOAD_FAILED received: file_id={file_id}, "
             f"reason={reason}, from={connection.connection_id}"
@@ -560,4 +560,85 @@ class StorageNodeServer(BaseSocketServer):
                 request_id=message.request_id
             )
             connection.send_message(error_msg)
+
+    def _handle_manifest_delta(
+        self,
+        connection: SocketConnection,
+        message: Message
+    ) -> None:
+        """
+        Handle MANIFEST_DELTA message.
+
+        Storage Nodes send incremental sha256 additions/removals after the
+        initial manifest snapshot included in STORAGE_AUTH.
+
+        Args:
+            connection: Connection that sent the message
+            message: MANIFEST_DELTA message with payload:
+                {
+                    "added": ["sha256-1", ...],
+                    "removed": ["sha256-2", ...]
+                }
+        """
+        node_info = self.registry.get_by_connection(connection)
+        if not node_info or not node_info.authenticated:
+            logger.warning(f"MANIFEST_DELTA from unauthenticated node: {connection.connection_id}")
+            error_msg = Message.create_error(
+                "NOT_AUTHENTICATED",
+                "Must authenticate before sending MANIFEST_DELTA",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
+
+        added = message.payload.get('added', [])
+        removed = message.payload.get('removed', [])
+
+        if added is None:
+            added = []
+        if removed is None:
+            removed = []
+
+        if not isinstance(added, list) or not isinstance(removed, list):
+            logger.warning(
+                f"MANIFEST_DELTA invalid payload from {connection.connection_id}: "
+                f"added_type={type(added).__name__}, removed_type={type(removed).__name__}"
+            )
+            error_msg = Message.create_error(
+                "INVALID_PAYLOAD",
+                "MANIFEST_DELTA requires list fields: added, removed",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
+
+        applied = self.registry.apply_manifest_delta(
+            node_info.node_id,
+            added=added,
+            removed=removed,
+        )
+        if not applied:
+            logger.warning(
+                f"MANIFEST_DELTA could not be applied: node_id={node_info.node_id}, "
+                f"connection={connection.connection_id}"
+            )
+            error_msg = Message.create_error(
+                "NODE_NOT_FOUND",
+                "Failed to apply manifest delta for storage node",
+                request_id=message.request_id
+            )
+            connection.send_message(error_msg)
+            return
+
+        logger.info(
+            f"MANIFEST_DELTA applied: node_id={node_info.node_id}, "
+            f"added={len(added)}, removed={len(removed)}"
+        )
+
+        ack = Message.create_response(
+            MessageType.ACK,
+            {"status": "success"},
+            request_id=message.request_id
+        )
+        connection.send_message(ack)
 
