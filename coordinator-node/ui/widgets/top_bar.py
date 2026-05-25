@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QPoint, QSize, Qt, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from ui.fonts import app_font, ui_font, ui_font_family
+from ui.utils.avatar_resolver import render_svg_avatar, resolve_avatar_path
 from ui.widgets.modern_button import PALETTE, with_alpha
 from ui.widgets.modern_lineedit import ModernLineEdit
 from ui.widgets.status_badge import StatusBadge
@@ -21,7 +22,6 @@ class TopBar(QFrame):
     search_changed = Signal(str)
     refresh_requested = Signal()
     account_requested = Signal()
-    settings_requested = Signal()
     logout_requested = Signal()
 
     def __init__(
@@ -34,6 +34,9 @@ class TopBar(QFrame):
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
+        self._avatar_username = user_display
+        self._avatar_user_id = ""
+        self._avatar_global_role = "USER"
         self.setObjectName("topBar")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
@@ -115,6 +118,7 @@ class TopBar(QFrame):
         self.user_role_label.mousePressEvent = self._show_user_menu  # type: ignore[assignment]
 
         self._apply_styles()
+        self._update_avatar()
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
@@ -218,12 +222,10 @@ class TopBar(QFrame):
         )
 
         account_action = menu.addAction("Account")
-        settings_action = menu.addAction("Settings")
         menu.addSeparator()
         logout_action = menu.addAction("Log Out")
 
         account_action.triggered.connect(self.account_requested.emit)
-        settings_action.triggered.connect(self.settings_requested.emit)
         logout_action.triggered.connect(self.logout_requested.emit)
         logout_action.setIconVisibleInMenu(False)
         return menu
@@ -247,13 +249,34 @@ class TopBar(QFrame):
         self.server_badge.setText(label.upper())
         self.server_badge.set_variant(variant)
 
-    def set_user_display(self, display_name: str) -> None:
+    def set_user_display(self, display_name: str, user_id: Optional[str] = None) -> None:
         self.user_display_label.setText(display_name)
-        initials = "".join(part[0] for part in display_name.split()[:2]).upper() if display_name else "--"
-        self.user_initials.setText(initials or "--")
+        self._avatar_username = display_name
+        if user_id is not None:
+            self._avatar_user_id = user_id
+        self._update_avatar()
 
     def set_user_role(self, role_label: str) -> None:
         self.user_role_label.setText(role_label)
+        self._avatar_global_role = role_label
+        self._update_avatar()
+
+    def _update_avatar(self) -> None:
+        avatar_path = resolve_avatar_path(
+            self._avatar_username,
+            user_id=self._avatar_user_id,
+            global_role=self._avatar_global_role,
+        )
+        pixmap = render_svg_avatar(avatar_path, QSize(34, 34))
+        if pixmap is not None:
+            self.user_initials.setPixmap(pixmap)
+            self.user_initials.setText("")
+            return
+
+        display_name = self._avatar_username or self.user_display_label.text()
+        initials = "".join(part[0] for part in display_name.split()[:2]).upper() if display_name else "--"
+        self.user_initials.setPixmap(QPixmap())
+        self.user_initials.setText(initials or "--")
 
     def set_refresh_visible(self, visible: bool) -> None:
         self.refresh_button.setVisible(visible)
