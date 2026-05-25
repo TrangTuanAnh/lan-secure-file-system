@@ -183,6 +183,16 @@ class UploadService:
         if not all([original_name, size_bytes is not None, mime_type, sha256_whole]):
             logger.warning("INIT_UPLOAD failed: missing required file info fields")
             return False, None, "INVALID_INPUT"
+
+        same_room_duplicate = self.dedup_checker.find_same_room_duplicate(room_id, sha256_whole)
+        if same_room_duplicate:
+            logger.info(
+                "INIT_UPLOAD rejected duplicate in same room: room=%s existing_file=%s hash=%s",
+                room_id,
+                same_room_duplicate.get('id'),
+                str(sha256_whole)[:16] + "...",
+            )
+            return False, None, "DUPLICATE_FILE_IN_ROOM"
         
         # Step 2: Check for deduplication. Antivirus enforcement happens on the storage node
         # during FINALIZE_UPLOAD, before the object is committed to permanent storage.

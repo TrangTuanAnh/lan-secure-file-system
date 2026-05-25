@@ -288,6 +288,8 @@ class TestUploadService(unittest.TestCase):
         
         # Mock deduplication check to return existing file
         self.mock_db.execute_query.side_effect = [
+            # Same-room duplicate check
+            [],
             # Deduplication check
             [{
                 'id': 'existing-file',
@@ -324,6 +326,8 @@ class TestUploadService(unittest.TestCase):
         
         # Mock deduplication check to return no match
         self.mock_db.execute_query.side_effect = [
+            # Same-room duplicate check
+            [],
             # Deduplication check
             [],
             # Version calculation
@@ -368,6 +372,7 @@ class TestUploadService(unittest.TestCase):
         self.mock_authz.check_permission.return_value = True
         self.mock_db.execute_query.side_effect = [
             [],
+            [],
             [{'max_version': None}]
         ]
         self.mock_db.execute_update.return_value = 1
@@ -402,6 +407,7 @@ class TestUploadService(unittest.TestCase):
         self.mock_authz.check_permission.return_value = True
         self.mock_db.execute_query.side_effect = [
             [],
+            [],
             [{'max_version': None}]
         ]
 
@@ -431,6 +437,7 @@ class TestUploadService(unittest.TestCase):
         )
         self.mock_authz.check_permission.return_value = True
         self.mock_db.execute_query.side_effect = [
+            [],
             [{
                 'id': 'existing-file',
                 'stored_name': 'room-1/existing-file',
@@ -472,6 +479,7 @@ class TestUploadService(unittest.TestCase):
         )
         self.mock_authz.check_permission.return_value = True
         self.mock_db.execute_query.side_effect = [
+            [],
             [{
                 'id': 'existing-file',
                 'stored_name': 'room-1/existing-file',
@@ -496,6 +504,59 @@ class TestUploadService(unittest.TestCase):
         self.assertFalse(upload_plan['deduplicated'])
         self.assertEqual(upload_plan['storageNodeId'], 'node-2')
         self.assertIn('ticket', upload_plan)
+
+    def test_init_upload_rejects_same_room_duplicate_hash(self):
+        """Same room + same hash should be rejected before dedup/version logic."""
+        self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.return_value = [{
+            'id': 'existing-file',
+            'room_id': self.room_id,
+            'original_name': 'already-there.txt',
+            'status': 'READY',
+            'stored_name': f'{self.room_id}/existing-file',
+            'size_bytes': 1048576,
+            'storage_node_id': 'node-1',
+        }]
+
+        success, upload_plan, error_code = self.service.handle_init_upload(
+            user_id=self.user_id,
+            global_role='USER',
+            room_id=self.room_id,
+            file_info=self.file_info
+        )
+
+        self.assertFalse(success)
+        self.assertIsNone(upload_plan)
+        self.assertEqual(error_code, "DUPLICATE_FILE_IN_ROOM")
+        self.mock_db.execute_update.assert_not_called()
+        self.mock_redis.set_ticket.assert_not_called()
+
+    def test_init_upload_allows_cross_room_same_hash(self):
+        """Same hash in a different room can still be uploaded via dedup."""
+        self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.side_effect = [
+            [],
+            [{
+                'id': 'existing-file',
+                'stored_name': 'other-room/existing-file',
+                'room_id': 'other-room',
+                'original_name': 'test.txt',
+                'size_bytes': 1048576
+            }],
+            [{'max_version': None}]
+        ]
+        self.mock_db.execute_update.return_value = 1
+
+        success, upload_plan, error_code = self.service.handle_init_upload(
+            user_id=self.user_id,
+            global_role='USER',
+            room_id=self.room_id,
+            file_info=self.file_info
+        )
+
+        self.assertTrue(success)
+        self.assertIsNone(error_code)
+        self.assertTrue(upload_plan['deduplicated'])
     
     def test_handle_upload_complete_success(self):
         """Test UPLOAD_COMPLETE handler."""

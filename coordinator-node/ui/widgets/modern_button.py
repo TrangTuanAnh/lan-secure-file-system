@@ -1,4 +1,4 @@
-"""Reusable premium green button for the desktop security UI.
+"""Reusable button for the desktop security UI.
 
 Drop-in replacement for ui/widgets/modern_button.py.
 Keeps the old public API:
@@ -14,8 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from PySide6.QtCore import QEasingCurve, Property, QPropertyAnimation, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QEasingCurve, Property, QPropertyAnimation, QRectF, QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QPushButton, QSizePolicy, QWidget
 
 from ui.fonts import app_font, ui_font_family
@@ -37,6 +37,12 @@ class CyberPalette:
     disabled_text: str = "#5f6d6a"
     error: str = "#ff4d6d"
     error_fill: str = "#32141d"
+    danger: str = "#cf334f"
+    danger_alt: str = "#e14a61"
+    danger_soft: str = "#ff7086"
+    icon_surface: str = "#0f1727"
+    icon_surface_alt: str = "#172033"
+    icon_border: str = "#2a7252"
 
 
 PALETTE = CyberPalette()
@@ -65,19 +71,20 @@ def blend(color_a: QColor | str, color_b: QColor | str, ratio: float) -> QColor:
 
 
 class ModernButton(QPushButton):
-    """Clean rounded green button with smooth hover/press/loading states."""
+    """Clean rounded button with subtle hover/press/loading states."""
 
-    def __init__(self, text: str = "", parent: Optional[QWidget] = None) -> None:
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None, *, variant: str = "primary") -> None:
         super().__init__(text, parent)
 
+        self._variant = variant
         self._accent_color = QColor(PALETTE.accent)
         self._accent_color_alt = QColor(PALETTE.accent_alt)
         self._text_color = QColor("#ffffff")
-        self._radius = 16
+        self._radius = 10
+        self._custom_accent = False
 
         self._hover_progress = 0.0
         self._press_progress = 0.0
-        self._shine_progress = 0.0
 
         self._loading = False
         self._cached_text = text
@@ -85,7 +92,6 @@ class ModernButton(QPushButton):
 
         self._hover_animation = self._build_animation(b"hoverProgress", 170)
         self._press_animation = self._build_animation(b"pressProgress", 95)
-        self._shine_animation = self._build_animation(b"shineProgress", 520)
 
         self._spinner_timer = QTimer(self)
         self._spinner_timer.setInterval(22)
@@ -98,6 +104,8 @@ class ModernButton(QPushButton):
         self.setCheckable(False)
         self.setFlat(True)
         self.setAttribute(Qt.WA_Hover, True)
+        self.setIconSize(QSize(18, 18))
+        self.set_variant(variant)
         self.set_button_style()
 
     def _build_animation(self, prop_name: bytes, duration: int) -> QPropertyAnimation:
@@ -118,6 +126,11 @@ class ModernButton(QPushButton):
 
     def sizeHint(self):
         hint = super().sizeHint()
+        if self._variant == "icon":
+            icon_side = max(42, self.minimumHeight(), self.iconSize().width() + 24)
+            hint.setHeight(icon_side)
+            hint.setWidth(icon_side)
+            return hint
         hint.setHeight(max(hint.height(), 46))
         hint.setWidth(max(hint.width(), 132))
         return hint
@@ -168,15 +181,6 @@ class ModernButton(QPushButton):
 
     pressProgress = Property(float, getPressProgress, setPressProgress)
 
-    def getShineProgress(self) -> float:
-        return self._shine_progress
-
-    def setShineProgress(self, value: float) -> None:
-        self._shine_progress = max(0.0, min(value, 1.0))
-        self.update()
-
-    shineProgress = Property(float, getShineProgress, setShineProgress)
-
     def set_loading(self, is_loading: bool, text: Optional[str] = None) -> None:
         self._loading = is_loading
         if text is not None:
@@ -192,8 +196,33 @@ class ModernButton(QPushButton):
         self.update()
 
     def set_accent_color(self, color: QColor | str) -> None:
+        self._custom_accent = True
         self._accent_color = to_color(color)
-        self._accent_color_alt = blend(self._accent_color, PALETTE.accent_bright, 0.38)
+        self._accent_color_alt = blend(self._accent_color, "#ffffff", 0.14)
+        self.update()
+
+    def set_variant(self, variant: str) -> None:
+        self._variant = variant
+        if not self._custom_accent:
+            if variant == "danger":
+                self._accent_color = QColor(PALETTE.danger)
+                self._accent_color_alt = QColor(PALETTE.danger_alt)
+            elif variant == "icon":
+                self._accent_color = QColor(PALETTE.icon_surface)
+                self._accent_color_alt = QColor(PALETTE.icon_surface_alt)
+            else:
+                self._accent_color = QColor(PALETTE.accent)
+                self._accent_color_alt = QColor(PALETTE.accent_alt)
+        if variant == "icon":
+            self._radius = 10
+            self.setMinimumSize(42, 42)
+            self.setMaximumWidth(42)
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        else:
+            self.setMinimumSize(0, 46)
+            self.setMinimumHeight(46)
+            self.setMaximumWidth(16777215)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.update()
 
     def set_button_style(
@@ -212,8 +241,10 @@ class ModernButton(QPushButton):
         if radius is not None:
             self._radius = max(10, radius)
         if background_color is not None:
+            self._custom_accent = True
             self._accent_color = blend(background_color, self._accent_color, 0.72)
         if background_alt is not None:
+            self._custom_accent = True
             self._accent_color_alt = blend(background_alt, self._accent_color_alt, 0.72)
         if text_color is not None:
             self._text_color = to_color(text_color)
@@ -236,9 +267,14 @@ class ModernButton(QPushButton):
         self.update()
 
     def _button_rect(self) -> QRectF:
-        # Extra inset prevents glow/border from being clipped at the widget edge.
-        press_inset = 1.2 * self._press_progress
-        return QRectF(self.rect()).adjusted(3.0 + press_inset, 3.0 + press_inset, -3.0 - press_inset, -3.0 - press_inset)
+        press_inset = 0.9 * self._press_progress
+        edge_inset = 1.5
+        return QRectF(self.rect()).adjusted(
+            edge_inset + press_inset,
+            edge_inset + press_inset,
+            -edge_inset - press_inset,
+            -edge_inset - press_inset,
+        )
 
     def _rounded_path(self, rect: QRectF) -> QPainterPath:
         radius = min(self._radius, rect.height() / 2.0)
@@ -257,50 +293,44 @@ class ModernButton(QPushButton):
 
         if not self.isEnabled():
             self._paint_disabled(painter, rect, path)
-            self._paint_text(painter, rect, QColor(PALETTE.disabled_text))
+            self._paint_content(painter, rect, QColor(PALETTE.disabled_text))
             return
 
-        self._paint_soft_shadow(painter, path)
         self._paint_fill(painter, rect, path)
         self._paint_border(painter, rect, path)
 
         if self._loading:
             self._paint_spinner(painter, rect)
 
-        self._paint_text(painter, rect, self._text_color)
-
-    def _paint_soft_shadow(self, painter: QPainter, path: QPainterPath) -> None:
-        glow_strength = 0.12 + 0.14 * self._hover_progress
-        for width, alpha in ((5, int(26 * glow_strength)), (2, int(54 * glow_strength))):
-            painter.setPen(QPen(with_alpha(self._accent_color, alpha), width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-            painter.drawPath(path)
+        self._paint_content(painter, rect, self._text_color)
 
     def _paint_fill(self, painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
         hover = self._hover_progress
         press = self._press_progress
         gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        gradient.setColorAt(0.00, blend("#086d43", PALETTE.accent_bright, 0.18 + hover * 0.08))
-        gradient.setColorAt(0.46, blend(PALETTE.accent, PALETTE.accent_bright, 0.06 + hover * 0.10))
-        gradient.setColorAt(1.00, blend(PALETTE.accent_alt, "#008a47", 0.22 + press * 0.20))
+        if self._variant == "icon":
+            gradient.setColorAt(0.00, blend(self._accent_color, "#ffffff", 0.01 + hover * 0.015))
+            gradient.setColorAt(1.00, blend(self._accent_color_alt, "#000000", 0.08 + press * 0.06))
+        else:
+            gradient.setColorAt(0.00, blend(self._accent_color, "#ffffff", 0.05 + hover * 0.025))
+            gradient.setColorAt(1.00, blend(self._accent_color_alt, "#10141d", 0.10 + press * 0.08))
         painter.fillPath(path, gradient)
-
-    def _paint_inner_highlight(self, painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
-        del painter, rect, path
-
-    def _paint_shine(self, painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
-        del painter, rect, path
 
     def _paint_border(self, painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
         border = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        border.setColorAt(0.0, with_alpha(PALETTE.accent_bright, 180 + int(18 * self._hover_progress)))
-        border.setColorAt(0.42, with_alpha(PALETTE.accent_soft, 148 + int(24 * self._hover_progress)))
-        border.setColorAt(1.0, with_alpha("#007a42", 190))
-        pen = QPen(border, 1.35, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        if self._variant == "icon":
+            border.setColorAt(0.0, with_alpha(blend(PALETTE.icon_border, "#7fffc5", 0.10), 112 + int(18 * self._hover_progress)))
+            border.setColorAt(1.0, with_alpha(blend(PALETTE.icon_border, "#0d111a", 0.16), 124))
+        else:
+            border.setColorAt(0.0, with_alpha(blend(self._accent_color_alt, "#ffffff", 0.08), 126 + int(14 * self._hover_progress)))
+            border.setColorAt(1.0, with_alpha(blend(self._accent_color, "#10141d", 0.24), 138))
+        pen = QPen(border, 1.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         painter.setPen(pen)
         painter.drawPath(path)
 
-        inner = self._rounded_path(rect.adjusted(1.7, 1.7, -1.7, -1.7))
-        painter.setPen(QPen(with_alpha("#003c26", 72), 1.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        inner = self._rounded_path(rect.adjusted(1.25, 1.25, -1.25, -1.25))
+        inner_alpha = 22 if self._variant == "icon" else 28
+        painter.setPen(QPen(with_alpha("#000000", inner_alpha), 1.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         painter.drawPath(inner)
 
     def _paint_disabled(self, painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
@@ -308,20 +338,59 @@ class ModernButton(QPushButton):
         painter.setPen(QPen(with_alpha(PALETTE.border, 150), 1.0))
         painter.drawPath(path)
 
-    def _paint_text(self, painter: QPainter, rect: QRectF, color: QColor) -> None:
+    def _paint_content(self, painter: QPainter, rect: QRectF, color: QColor) -> None:
         text = self._cached_text if self._loading and self._cached_text else self.text()
-        text_rect = QRectF(rect).adjusted(18, 0, -18, 0)
-        if self._loading:
-            text_rect.adjust(20, 0, 0, 0)
+        icon = self.icon()
+        has_icon = not icon.isNull()
+        has_text = bool(text)
 
+        inset = 10 if self._variant == "icon" else 14
+        content_rect = QRectF(rect).adjusted(inset, 0, -inset, 0)
+        if self._loading:
+            content_rect.adjust(20, 0, 0, 0)
+
+        if has_icon:
+            pixmap = icon.pixmap(self.iconSize(), QIcon.Mode.Normal, QIcon.State.Off)
+            self._paint_icon_and_text(painter, content_rect, pixmap, text if has_text else "", color)
+            return
+
+        self._paint_text_only(painter, content_rect, text, color)
+
+    def _paint_icon_and_text(self, painter: QPainter, rect: QRectF, pixmap: QPixmap, text: str, color: QColor) -> None:
+        if pixmap.isNull():
+            self._paint_text_only(painter, rect, text, color)
+            return
+        if not text:
+            icon_x = rect.center().x() - pixmap.width() / 2.0
+            icon_y = rect.center().y() - pixmap.height() / 2.0
+            painter.drawPixmap(round(icon_x), round(icon_y), pixmap)
+            return
+
+        spacing = 10
+        total_width = pixmap.width() + spacing + max(0, painter.fontMetrics().horizontalAdvance(text))
+        start_x = rect.center().x() - total_width / 2
+        icon_y = rect.center().y() - pixmap.height() / 2
+        painter.drawPixmap(round(start_x), round(icon_y), pixmap)
+
+        text_rect = QRectF(start_x + pixmap.width() + spacing, rect.top(), rect.right() - start_x, rect.height())
+        self._paint_text_only(painter, text_rect, text, color, alignment=Qt.AlignVCenter | Qt.AlignLeft)
+
+    def _paint_text_only(
+        self,
+        painter: QPainter,
+        rect: QRectF,
+        text: str,
+        color: QColor,
+        *,
+        alignment: Qt.AlignmentFlag | Qt.Alignment = Qt.AlignCenter,
+    ) -> None:
         font = painter.font()
         font.setBold(True)
+        if self._variant == "icon":
+            font.setPointSize(max(8, font.pointSize() - 1))
         painter.setFont(font)
-
-        painter.setPen(with_alpha("#001f13", 115))
-        painter.drawText(text_rect.adjusted(0, 1, 0, 1), Qt.AlignCenter, text)
         painter.setPen(color)
-        painter.drawText(text_rect, Qt.AlignCenter, text)
+        painter.drawText(rect, alignment, text)
 
     def _paint_spinner(self, painter: QPainter, rect: QRectF) -> None:
         spinner_size = 14

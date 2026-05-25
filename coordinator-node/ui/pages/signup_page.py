@@ -85,8 +85,6 @@ class SignupCard(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMinimumWidth(420)
         self.setMaximumWidth(480)
-        self.signup_error = ErrorLabel(parent=self)
-        self._error_host: Optional[QWidget] = self
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(46, 44, 46, 44)
@@ -195,10 +193,6 @@ class SignupCard(QFrame):
             f"color: {PALETTE.accent_soft if online else '#ff98a9'}; font-size: 11px; font-weight: 600;"
         )
 
-    def set_error_host(self, host: QWidget) -> None:
-        self._error_host = host
-        self.signup_error.move_to_top_center(host)
-
     def set_signup_loading(self, loading: bool) -> None:
         self.username_input.setEnabled(not loading)
         self.email_input.setEnabled(not loading)
@@ -206,13 +200,6 @@ class SignupCard(QFrame):
         self.confirm_password_input.setEnabled(not loading)
         self.back_to_login_link.setEnabled(not loading)
         self.create_account_button.set_loading(loading, "Creating Account")
-
-    def show_signup_error(self, message: str) -> None:
-        self.signup_error.move_to_top_center(self._error_host)
-        self.signup_error.show_error(message)
-
-    def hide_signup_error(self) -> None:
-        self.signup_error.hide_error()
 
 
 class SignupWindow(QMainWindow):
@@ -263,6 +250,7 @@ class SignupWindow(QMainWindow):
         right_layout.addWidget(self.signup_card, alignment=Qt.AlignCenter)
         main_layout.addWidget(right_panel, 11)
         self._toast_host = self
+        self.error_toast = ErrorLabel(parent=self)
 
     def _apply_window_theme(self) -> None:
         palette = QPalette()
@@ -366,11 +354,11 @@ class SignupWindow(QMainWindow):
         self._fade_in.setStartValue(0.0)
         self._fade_in.setEndValue(1.0)
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
-        self.signup_card.set_error_host(self)
+        self.error_toast.move_to_top_center(self._toast_host)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self.signup_card.signup_error.move_to_top_center(self._toast_host)
+        self.error_toast.move_to_top_center(self._toast_host)
 
     def _connect_signals(self) -> None:
         self.signup_card.signup_requested.connect(self._on_signup_requested)
@@ -397,10 +385,10 @@ class SignupWindow(QMainWindow):
     def _on_signup_requested(self, username: str, email: str, password: str, confirm_password: str) -> None:
         validation_error = self._validate_signup_inputs(username, email, password, confirm_password)
         if validation_error:
-            self.signup_card.show_signup_error(validation_error)
+            self.error_toast.show_error(validation_error)
             return
 
-        self.signup_card.hide_signup_error()
+        self.error_toast.hide_error()
         self.signup_card.set_signup_loading(True)
         self._start_signup_worker(username, email, password)
 
@@ -461,7 +449,7 @@ class SignupWindow(QMainWindow):
 
     def _on_signup_failed(self, message: str) -> None:
         self.signup_card.set_signup_loading(False)
-        self.signup_card.show_signup_error(message)
+        self.error_toast.show_error(message)
 
     def _on_back_requested(self) -> None:
         self.back_to_login_requested.emit()

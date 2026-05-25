@@ -225,6 +225,11 @@ class AccountDrawer(QFrame):
             return
         self._animate(opening=False)
 
+    def contains_global_pos(self, global_pos) -> bool:
+        if not self.isVisible():
+            return False
+        return self.rect().contains(self.mapFromGlobal(global_pos))
+
     def _animate(self, opening: bool) -> None:
         parent = self.parentWidget()
         if parent is None:
