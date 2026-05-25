@@ -123,6 +123,7 @@ class OverviewPage(QWidget):
     """Dashboard overview content displayed inside the shared shell."""
 
     room_open_requested = Signal(dict)
+    rooms_loaded = Signal(list)
 
     def __init__(
         self,
@@ -355,6 +356,9 @@ class OverviewPage(QWidget):
         self.status_stat.set_value(stats.get("server_label", "Unknown"))
         self.status_stat.set_subtitle("Coordinator backend health and transport status.")
 
+        backend_rooms = list(payload.get("rooms", []))
+        self._recent_rooms = RecentRoomsStore.sync_with_valid_rooms(backend_rooms)
+        self.rooms_loaded.emit(backend_rooms)
         self._render_recent_rooms(self._recent_rooms)
         self._remote_activities = list(payload.get("activities", []))
         self._render_activities(self._current_activity_feed())
