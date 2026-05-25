@@ -8,6 +8,7 @@ from auth.authorization_service import AuthorizationService
 from audit.audit_service import AuditService
 from download.download_service import DownloadService
 from config import load_config
+from db_test_utils import cleanup_database
 
 
 @pytest.fixture
@@ -21,8 +22,12 @@ def database(config):
     """Create database connection."""
     db = Database(config.database)
     db.connect()
-    yield db
-    db.close()
+    cleanup_database(db)
+    try:
+        yield db
+    finally:
+        cleanup_database(db)
+        db.close()
 
 
 @pytest.fixture
@@ -72,8 +77,7 @@ def test_user(database):
          datetime.now(timezone.utc), datetime.now(timezone.utc))
     )
     yield user_id
-    # Cleanup
-    database.execute_update("DELETE FROM users WHERE id = %s", (user_id,))
+    cleanup_database(database)
 
 
 @pytest.fixture
@@ -89,8 +93,7 @@ def test_admin(database):
          datetime.now(timezone.utc), datetime.now(timezone.utc))
     )
     yield admin_id
-    # Cleanup
-    database.execute_update("DELETE FROM users WHERE id = %s", (admin_id,))
+    cleanup_database(database)
 
 
 @pytest.fixture
@@ -113,9 +116,7 @@ def test_room(database, test_user):
         (room_id, test_user, 'OWNER', datetime.now(timezone.utc))
     )
     yield room_id
-    # Cleanup
-    database.execute_update("DELETE FROM room_members WHERE room_id = %s", (room_id,))
-    database.execute_update("DELETE FROM rooms WHERE id = %s", (room_id,))
+    cleanup_database(database)
 
 
 @pytest.fixture
@@ -137,8 +138,7 @@ def test_file(database, test_room, test_user):
         )
     )
     yield file_id
-    # Cleanup
-    database.execute_update("DELETE FROM files WHERE id = %s", (file_id,))
+    cleanup_database(database)
 
 
 class TestDownloadDirect:
@@ -185,8 +185,7 @@ class TestDownloadDirect:
         assert error == 'PERMISSION_DENIED'
         assert download_plan is None
         
-        # Cleanup
-        database.execute_update("DELETE FROM users WHERE id = %s", (other_user_id,))
+        cleanup_database(database)
     
     def test_init_download_admin_access(self, download_service, test_admin, test_file):
         """Test ADMIN can download any file."""
@@ -262,8 +261,7 @@ class TestShareToken:
         assert error == 'PERMISSION_DENIED'
         assert token is None
         
-        # Cleanup
-        database.execute_update("DELETE FROM users WHERE id = %s", (other_user_id,))
+        cleanup_database(database)
     
     def test_init_download_with_share_token(self, download_service, test_user, test_file):
         """Test download with valid share token."""

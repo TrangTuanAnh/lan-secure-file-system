@@ -1,5 +1,6 @@
 """Test script to verify project setup."""
 import sys
+import pytest
 from config import load_config
 from database import Database
 from redis_client import RedisClient
@@ -9,7 +10,13 @@ setup_logging(level='INFO')
 logger = get_logger(__name__)
 
 
-def test_config():
+@pytest.fixture
+def config():
+    """Load configuration once for setup tests."""
+    return load_test_config()
+
+
+def load_test_config():
     """Test configuration loading."""
     print("\n=== Testing Configuration ===")
     try:
@@ -26,7 +33,12 @@ def test_config():
         return None
 
 
-def test_database(config):
+def test_config(config):
+    """Test configuration loading."""
+    assert config is not None
+
+
+def check_database(config):
     """Test database connection."""
     print("\n=== Testing Database Connection ===")
     try:
@@ -46,7 +58,12 @@ def test_database(config):
         return False
 
 
-def test_redis(config):
+def test_database(config):
+    """Test database connection."""
+    assert check_database(config) is True
+
+
+def check_redis(config):
     """Test Redis connection."""
     print("\n=== Testing Redis Connection ===")
     try:
@@ -85,6 +102,11 @@ def test_redis(config):
         return False
 
 
+def test_redis(config):
+    """Test Redis connection."""
+    assert check_redis(config) is True
+
+
 def main():
     """Run all tests."""
     print("=" * 60)
@@ -92,16 +114,16 @@ def main():
     print("=" * 60)
     
     # Test configuration
-    config = test_config()
+    config = load_test_config()
     if not config:
         print("\n✗ Setup test failed: Configuration error")
         sys.exit(1)
     
     # Test database
-    db_ok = test_database(config)
+    db_ok = check_database(config)
     
     # Test Redis
-    redis_ok = test_redis(config)
+    redis_ok = check_redis(config)
     
     # Summary
     print("\n" + "=" * 60)

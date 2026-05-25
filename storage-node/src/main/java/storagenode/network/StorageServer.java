@@ -73,7 +73,8 @@ public class StorageServer {
                 ClientHandler handler = new ClientHandler(
                     clientSocket, sessionManager, fileStore, dedupStore,
                     coordinator, rsaKeyExchange, config.getChunkSize(),
-                    antivirusScanner, config.isAntivirusFailClosed()
+                    antivirusScanner, config.isAntivirusFailClosed(),
+                    config.getAntivirusMaxScanBytes()
                 );
                 threadPool.execute(handler);
             } catch (IOException e) {
