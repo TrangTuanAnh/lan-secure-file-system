@@ -37,11 +37,15 @@ public class DedupStore {
 
     /** Check if a file with the given hash is already stored. */
     public boolean exists(String sha256) {
-        String path = registry.get(sha256.toLowerCase());
+        String key = sha256.toLowerCase();
+        String path = registry.get(key);
         if (path == null) return false;
         // Verify the file still exists on disk
         if (!Files.exists(Paths.get(path))) {
-            registry.remove(sha256.toLowerCase());
+            // BUGFIX M22: persist the stale-entry removal so the bad
+            // mapping doesn't reload on next restart.
+            registry.remove(key);
+            save();
             return false;
         }
         return true;
@@ -82,6 +86,10 @@ public class DedupStore {
             }
         } catch (IOException e) {
             LOG.warning("Failed to load dedup registry: " + e.getMessage());
+        } catch (RuntimeException e) {
+            // BUGFIX: Gson throws JsonSyntaxException (RuntimeException) on
+            // corrupt JSON. Don't let it escape the constructor.
+            LOG.warning("Corrupt dedup registry, starting fresh: " + e.getMessage());
         }
     }
 

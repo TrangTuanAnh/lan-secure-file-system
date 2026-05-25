@@ -64,22 +64,21 @@ class CleanupService:
             self._stop_event.wait(self.interval_seconds)
     
     def cleanup_orphaned_uploads(self) -> int:
-        """
-        Clean up orphaned upload sessions.
-        
-        Finds files with status='UPLOADING' that were created more than 1 hour ago
-        and updates their status to 'DELETED'.
-        
-        Returns:
-            Number of orphaned uploads cleaned
+        """Clean up orphaned upload sessions.
+
+        BUGFIX M11: tighter window — after 35 minutes (slightly more than the
+        upload ticket TTL of 30 min), any file still in UPLOADING must be
+        truly orphaned (no client is going to come back with a valid ticket).
+        Old code waited 1 hour, which made VERSION-skipping bug from M3 worse
+        because failed uploads sat around eating version numbers.
         """
         try:
-            # Query for orphaned uploads (UPLOADING status, created > 1 hour ago)
+            # Query for orphaned uploads (UPLOADING status, created > 35 minutes)
             query = """
                 UPDATE files
                 SET status = 'DELETED'
                 WHERE status = 'UPLOADING'
-                  AND created_at < NOW() - INTERVAL '1 hour'
+                  AND created_at < NOW() - INTERVAL '35 minutes'
                 RETURNING id, storage_node_id
             """
             

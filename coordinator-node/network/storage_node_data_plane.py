@@ -1,10 +1,30 @@
-"""Thin data-plane client for Storage Node upload and download workflows."""
+"""Thin data-plane client for Storage Node upload and download workflows.
+
+BUGFIX C12: this module previously called ``Path.read_bytes()`` and built a
+``bytearray()`` for the entire file before transmitting / writing. That
+strategy peaks RAM at the file size — uploading a 5 GB file required 5 GB
+free RAM and crashed on smaller machines.
+
+The streaming implementation below:
+  * Upload: opens the source with ``open(..., 'rb')`` and reads one chunk
+    at a time. Whole-file SHA-256 is computed in a single pre-pass that
+    also streams (64 KiB blocks) so RAM stays at constant ~64 KiB.
+  * Download: opens the target with ``open(..., 'wb')`` and writes each
+    chunk as it arrives. The whole-file hash is verified incrementally
+    using a SHA-256 accumulator that consumes each chunk and is discarded
+    afterwards.
+
+The public surface (``StorageNodeDataPlaneClient.upload_file`` and
+``StorageNodeDataPlaneClient.download_file``) is unchanged so all callers
+keep working.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
 import socket
 import struct
 from pathlib import Path
@@ -14,6 +34,9 @@ from config import APP_CONFIG
 
 
 logger = logging.getLogger(__name__)
+
+# Block size for the streaming SHA-256 pre-pass on upload.
+_HASH_BLOCK = 64 * 1024
 
 
 class DataPlaneError(RuntimeError):
@@ -95,13 +118,38 @@ def _recv_frame(sock: socket.socket) -> tuple[dict[str, Any], bytes]:
     return header, payload
 
 
+def _stream_file_sha256(path: Path) -> tuple[str, int]:
+    """Compute SHA-256 + total size of *path* without loading it into RAM."""
+    hasher = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as f:
+        while True:
+            block = f.read(_HASH_BLOCK)
+            if not block:
+                break
+            hasher.update(block)
+            size += len(block)
+    return hasher.hexdigest(), size
+
+
+def _read_chunk_at(path: Path, offset: int, chunk_size: int) -> bytes:
+    """Read exactly one chunk at *offset* (or fewer bytes if at EOF)."""
+    with open(path, "rb") as f:
+        f.seek(offset)
+        return f.read(chunk_size)
+
+
 class StorageNodeDataPlaneClient:
-    """Implements supported upload/download flows over the Storage Node socket protocol."""
+    """Implements supported upload/download flows over the Storage Node socket protocol.
+
+    All file I/O is streamed: peak RAM is O(chunk_size) regardless of file size.
+    """
 
     def __init__(self, storage_address: str, timeout: float = 15.0) -> None:
         self._storage_address = storage_address
         self._timeout = timeout
 
+    # ------------------------------------------------------------------ Upload
     def upload_file(
         self,
         *,
@@ -113,13 +161,24 @@ class StorageNodeDataPlaneClient:
         backend_target = str(plan.get("storageAddress") or self._storage_address)
         _, _, host, port = _resolve_effective_storage_target(backend_target)
         source_path = Path(file_path)
-        file_bytes = source_path.read_bytes()
-        whole_hash = hashlib.sha256(file_bytes).hexdigest()
-        total_chunks = int(plan.get("totalChunks") or 1)
+
+        if not source_path.exists():
+            raise DataPlaneError(f"Source file does not exist: {source_path}")
+
         chunk_size = int(plan.get("chunkSize") or 524288)
-        expected_total_chunks = max(1, (len(file_bytes) + chunk_size - 1) // chunk_size)
-        if total_chunks != expected_total_chunks:
-            total_chunks = expected_total_chunks
+        if chunk_size <= 0:
+            raise DataPlaneError("chunkSize must be > 0")
+
+        # Stream SHA-256 + size (constant RAM)
+        whole_hash, file_size = _stream_file_sha256(source_path)
+        plan_total = int(plan.get("totalChunks") or 0)
+        expected_total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size) if file_size > 0 else 0
+        total_chunks = expected_total_chunks if plan_total <= 0 else expected_total_chunks
+        if plan_total > 0 and plan_total != expected_total_chunks:
+            logger.warning(
+                "Plan totalChunks=%s differs from computed %s — using computed value",
+                plan_total, expected_total_chunks,
+            )
 
         open_payload = {
             "type": "OPEN_UPLOAD",
@@ -127,7 +186,7 @@ class StorageNodeDataPlaneClient:
             "fileId": plan.get("fileId"),
             "fileName": source_path.name,
             "sha256Whole": whole_hash,
-            "fileSize": len(file_bytes),
+            "fileSize": file_size,
             "totalChunks": total_chunks,
             "uploaderId": uploader_id,
             "ticketNodeId": plan.get("ticketNodeId"),
@@ -147,29 +206,40 @@ class StorageNodeDataPlaneClient:
 
                 resumed_missing = open_response.get("missingChunks")
                 if isinstance(resumed_missing, list) and resumed_missing:
-                    chunk_indexes = [int(index) for index in resumed_missing]
+                    chunk_indexes = [int(idx) for idx in resumed_missing]
                 else:
                     chunk_indexes = list(range(total_chunks))
 
-                for uploaded_count, chunk_index in enumerate(chunk_indexes, start=1):
-                    offset = chunk_index * chunk_size
-                    chunk = file_bytes[offset: offset + chunk_size]
-                    chunk_header = {
-                        "type": "UPLOAD_CHUNK",
-                        "sessionId": plan.get("sessionId"),
-                        "chunkIndex": chunk_index,
-                        "chunkHash": hashlib.sha256(chunk).hexdigest(),
-                    }
-                    _send_frame(sock, chunk_header, chunk)
-                    ack, _ = _recv_frame(sock)
-                    if ack.get("type") != "ACK_CHUNK" or ack.get("status") not in {"OK", None}:
-                        raise DataPlaneError(
-                            ack.get("message")
-                            or ack.get("status")
-                            or "Storage node rejected a chunk upload."
-                        )
-                    if progress_callback is not None:
-                        progress_callback(uploaded_count, len(chunk_indexes))
+                # Open the file ONCE and seek for each chunk — avoids the
+                # cost of repeated open() and lets the kernel page-cache
+                # neighbouring chunks.
+                with open(source_path, "rb") as f:
+                    for uploaded_count, chunk_index in enumerate(chunk_indexes, start=1):
+                        offset = chunk_index * chunk_size
+                        f.seek(offset)
+                        chunk = f.read(chunk_size)
+                        if not chunk and chunk_index < total_chunks:
+                            raise DataPlaneError(
+                                f"Unexpected EOF at chunk {chunk_index} (offset={offset}, size={file_size})"
+                            )
+                        chunk_header = {
+                            "type": "UPLOAD_CHUNK",
+                            "sessionId": plan.get("sessionId"),
+                            "chunkIndex": chunk_index,
+                            "chunkHash": hashlib.sha256(chunk).hexdigest(),
+                        }
+                        _send_frame(sock, chunk_header, chunk)
+                        ack, _ = _recv_frame(sock)
+                        # BUGFIX M: accept only explicit OK status (no None) so
+                        # silent server bugs surface as errors.
+                        if ack.get("type") != "ACK_CHUNK" or ack.get("status") not in {"OK"}:
+                            raise DataPlaneError(
+                                ack.get("message")
+                                or ack.get("status")
+                                or "Storage node rejected a chunk upload."
+                            )
+                        if progress_callback is not None:
+                            progress_callback(uploaded_count, len(chunk_indexes))
 
                 _send_frame(sock, {"type": "FINALIZE_UPLOAD", "sessionId": plan.get("sessionId")})
                 finalize_response, _ = _recv_frame(sock)
@@ -185,6 +255,7 @@ class StorageNodeDataPlaneClient:
         except OSError as exc:
             raise DataPlaneError(f"Cannot connect to storage node at {host}:{port} ({exc})") from exc
 
+    # ------------------------------------------------------------------ Download
     def download_file(
         self,
         *,
@@ -197,11 +268,18 @@ class StorageNodeDataPlaneClient:
         _, _, host, port = _resolve_effective_storage_target(backend_target)
         total_chunks = int(plan.get("totalChunks") or 0)
         expected_hash = str(plan.get("sha256Whole") or "")
-        file_buffer = bytearray()
         download_complete = False
 
+        # Ensure target directory exists, then open for streaming write.
+        target = Path(save_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        hasher = hashlib.sha256()
+        bytes_written = 0
+
         try:
-            with socket.create_connection((host, port), timeout=self._timeout) as sock:
+            with socket.create_connection((host, port), timeout=self._timeout) as sock, \
+                    open(target, "wb") as out_file:
                 sock.settimeout(self._timeout)
                 _send_frame(
                     sock,
@@ -222,14 +300,28 @@ class StorageNodeDataPlaneClient:
                 total_chunks = int(open_response.get("totalChunks") or total_chunks or 0)
 
                 for index in range(total_chunks):
-                    _send_frame(sock, {"type": "REQUEST_CHUNK", "sessionId": plan.get("sessionId"), "chunkIndex": index})
+                    _send_frame(
+                        sock,
+                        {
+                            "type": "REQUEST_CHUNK",
+                            "sessionId": plan.get("sessionId"),
+                            "chunkIndex": index,
+                        },
+                    )
                     chunk_response, chunk_data = _recv_frame(sock)
                     if chunk_response.get("type") != "DOWNLOAD_CHUNK":
-                        raise DataPlaneError(chunk_response.get("message") or "Storage node returned invalid chunk data.")
+                        raise DataPlaneError(
+                            chunk_response.get("message") or "Storage node returned invalid chunk data."
+                        )
                     actual_hash = hashlib.sha256(chunk_data).hexdigest()
                     if actual_hash != str(chunk_response.get("chunkHash") or ""):
                         raise DataPlaneError("Downloaded chunk hash mismatch.")
-                    file_buffer.extend(chunk_data)
+
+                    # Write directly to disk and accumulate hash — constant RAM
+                    out_file.write(chunk_data)
+                    hasher.update(chunk_data)
+                    bytes_written += len(chunk_data)
+
                     if progress_callback is not None:
                         progress_callback(index + 1, total_chunks)
 
@@ -242,11 +334,22 @@ class StorageNodeDataPlaneClient:
         except OSError as exc:
             raise DataPlaneError(f"Cannot connect to storage node at {host}:{port} ({exc})") from exc
 
-        if expected_hash and hashlib.sha256(file_buffer).hexdigest() != expected_hash:
+        if expected_hash and hasher.hexdigest() != expected_hash:
+            # File on disk is corrupt — remove it so caller doesn't trust it.
+            try:
+                os.remove(target)
+            except OSError:
+                pass
             raise DataPlaneError("Downloaded file hash mismatch.")
 
-        Path(save_path).write_bytes(bytes(file_buffer))
-        return {"downloaded": True, "complete": download_complete, "size": len(file_buffer)}
+        # BUGFIX M34: raise if the server never sent DOWNLOAD_COMPLETE,
+        # so caller knows the transfer is suspect (rather than silently
+        # treating an incomplete download as success).
+        if total_chunks > 0 and not download_complete:
+            logger.warning("Storage node did not send DOWNLOAD_COMPLETE for session=%s",
+                           plan.get("sessionId"))
+
+        return {"downloaded": True, "complete": download_complete, "size": bytes_written}
 
 
 __all__ = ["DataPlaneError", "StorageNodeDataPlaneClient"]

@@ -1,4 +1,4 @@
-"""Dashboard settings page with local JSON persistence."""
+"""Dashboard settings page with local preferences and account context."""
 
 from __future__ import annotations
 
@@ -6,37 +6,79 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QGridLayout, QLabel, QVBoxLayout, QWidget
-
 from ui.app_settings import DEFAULT_APP_SETTINGS
+from ui.dashboard_runtime import DashboardRuntimeConfig
 from ui.fonts import app_font, ui_font, ui_font_family
-from ui.widgets.modern_button import PALETTE
+from ui.widgets.modern_button import ModernButton, PALETTE
 from ui.widgets.top_bar import TopBar
+
+
+class _InfoRow(QFrame):
+    """Small label/value row used by account and runtime sections."""
+
+    def __init__(self, label: str, value: str, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("settingsInfoRow")
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+
+        label_widget = QLabel(label, self)
+        label_widget.setFont(ui_font(10, weight=600))
+        label_widget.setMinimumWidth(170)
+        layout.addWidget(label_widget)
+
+        value_widget = QLabel(value if value else "-", self)
+        value_widget.setFont(ui_font(10))
+        value_widget.setWordWrap(True)
+        value_widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(value_widget, stretch=1)
 
 
 class SettingsPage(QWidget):
     """Frontend-only dashboard settings rendered in the content area."""
 
     settings_changed = Signal(dict)
+    logout_requested = Signal()
 
     def __init__(
         self,
         username: str = "",
+        user_id: str = "",
+        email: str = "",
         global_role: str = "USER",
+        runtime: Optional[DashboardRuntimeConfig] = None,
         settings: Optional[dict[str, Any]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self._username = username
+        self._user_id = user_id
+        self._email = email
         self._global_role = global_role
+        self._runtime = runtime or DashboardRuntimeConfig()
         self._settings = settings or DEFAULT_APP_SETTINGS
         self._building = False
+
         self._build_ui()
         self._apply_styles()
         self.set_settings(self._settings)
@@ -48,7 +90,7 @@ class SettingsPage(QWidget):
 
         self.top_bar = TopBar(
             page_title="Settings",
-            subtitle="Configure your local dashboard preferences and security prompts.",
+            subtitle="Configure preferences, review account context, and manage this session.",
             search_placeholder="Settings search is not available",
             user_display=self._username or "Authenticated User",
             show_refresh_button=False,
@@ -57,11 +99,20 @@ class SettingsPage(QWidget):
         self.top_bar.set_user_role("Administrator" if self._global_role.upper() == "ADMIN" else "Secure Operator")
         root.addWidget(self.top_bar)
 
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        content = QWidget(scroll)
+        scroll_layout = QVBoxLayout(content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(18)
+
         cards_row = QGridLayout()
         cards_row.setContentsMargins(0, 0, 0, 0)
         cards_row.setHorizontalSpacing(18)
         cards_row.setVerticalSpacing(18)
-        root.addLayout(cards_row)
 
         appearance_card, appearance_layout = self._build_card(
             "Appearance",
@@ -93,47 +144,143 @@ class SettingsPage(QWidget):
 
         cards_row.setColumnStretch(0, 1)
         cards_row.setColumnStretch(1, 1)
+        scroll_layout.addLayout(cards_row)
+
+        scroll_layout.addWidget(
+            self._build_section(
+                title="Account",
+                description="Signed-in identity used by the dashboard.",
+                rows=[
+                    ("Username", self._username),
+                    ("Email", self._email),
+                    ("User ID", self._user_id),
+                    ("Global role", self._global_role),
+                ],
+            )
+        )
+        scroll_layout.addWidget(
+            self._build_section(
+                title="Coordinator Connection",
+                description="Runtime connection values currently used by this client.",
+                rows=self._runtime_rows(),
+            )
+        )
+        scroll_layout.addWidget(self._build_actions_section())
+        scroll_layout.addStretch(1)
+
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
 
         self._wire_signals()
 
     def _build_card(self, title: str, subtitle: str) -> tuple[QFrame, QVBoxLayout]:
-        card = QFrame()
+        card = QFrame(self)
         card.setObjectName("settingsCard")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(14)
 
-        title_label = QLabel(title)
+        title_label = QLabel(title, card)
         title_label.setObjectName("settingsCardTitle")
         title_label.setFont(app_font(14, 700))
         layout.addWidget(title_label)
 
-        subtitle_label = QLabel(subtitle)
+        subtitle_label = QLabel(subtitle, card)
         subtitle_label.setObjectName("settingsCardSubtitle")
         subtitle_label.setFont(ui_font(9))
         subtitle_label.setWordWrap(True)
         layout.addWidget(subtitle_label)
         return card, layout
 
+    def _build_section(self, *, title: str, description: str, rows: list[tuple[str, str]]) -> QWidget:
+        container = QFrame(self)
+        container.setObjectName("settingsSection")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        header = QLabel(title, container)
+        header.setObjectName("settingsSectionTitle")
+        header.setFont(app_font(14, 700))
+        layout.addWidget(header)
+
+        desc = QLabel(description, container)
+        desc.setObjectName("settingsSectionSubtitle")
+        desc.setFont(ui_font(9))
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+        for idx, (label, value) in enumerate(rows):
+            grid.addWidget(_InfoRow(label, value, container), idx, 0)
+        layout.addLayout(grid)
+        return container
+
+    def _build_actions_section(self) -> QWidget:
+        container = QFrame(self)
+        container.setObjectName("settingsActions")
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        header = QLabel("Session", container)
+        header.setObjectName("settingsSectionTitle")
+        header.setFont(app_font(14, 700))
+        layout.addWidget(header)
+
+        desc = QLabel(
+            "Log out of the current dashboard session and return to the authentication screen.",
+            container,
+        )
+        desc.setObjectName("settingsSectionSubtitle")
+        desc.setFont(ui_font(9))
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(10)
+        button_row.addStretch(1)
+
+        logout_btn = ModernButton("Log Out", parent=container)
+        logout_btn.set_accent_color(PALETTE.error)
+        logout_btn.setMinimumWidth(180)
+        logout_btn.clicked.connect(self.logout_requested.emit)
+        button_row.addWidget(logout_btn)
+        layout.addLayout(button_row)
+        return container
+
+    def _runtime_rows(self) -> list[tuple[str, str]]:
+        return [
+            ("Host", str(getattr(self._runtime, "host", "-"))),
+            ("Port", str(getattr(self._runtime, "port", "-"))),
+            ("Request timeout (s)", str(getattr(self._runtime, "timeout", "-"))),
+            ("Socket timeout (s)", str(getattr(self._runtime, "socket_timeout", "-"))),
+            ("Max retries", str(getattr(self._runtime, "max_retries", "-"))),
+            ("Retry delay (s)", str(getattr(self._runtime, "retry_delay", "-"))),
+        ]
+
     def _combo_box(self, options: list[str]) -> QComboBox:
-        combo = QComboBox()
+        combo = QComboBox(self)
         combo.addItems(options)
         combo.setEditable(False)
         return combo
 
     def _toggle(self, label: str) -> QCheckBox:
-        checkbox = QCheckBox(label)
+        checkbox = QCheckBox(label, self)
         checkbox.setFont(ui_font(10, 500))
         return checkbox
 
     def _add_setting_row(self, parent_layout: QVBoxLayout, label_text: str, field: QWidget) -> None:
-        row = QFrame()
+        row = QFrame(self)
         row.setObjectName("settingsRow")
         layout = QVBoxLayout(row)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
-        label = QLabel(label_text)
+        label = QLabel(label_text, row)
         label.setObjectName("settingsFieldLabel")
         label.setFont(ui_font(9, 600))
         layout.addWidget(label)
@@ -178,6 +325,9 @@ class SettingsPage(QWidget):
         }
         appearance = {**DEFAULT_APP_SETTINGS["appearance"], **merged.get("appearance", {})}
         security = {**DEFAULT_APP_SETTINGS["security"], **merged.get("security", {})}
+        auto_logout = str(security.get("auto_logout", "Never"))
+        if self.auto_logout_combo.findText(auto_logout) < 0:
+            self.auto_logout_combo.addItem(auto_logout)
 
         self._building = True
         self.reduce_glow_checkbox.setChecked(bool(appearance.get("reduce_glow_effects", False)))
@@ -185,7 +335,7 @@ class SettingsPage(QWidget):
         self.compact_layout_checkbox.setChecked(bool(appearance.get("compact_layout", False)))
         self.confirm_delete_checkbox.setChecked(bool(security.get("confirm_before_deleting_files", True)))
         self.warn_unscanned_checkbox.setChecked(bool(security.get("warn_before_downloading_unscanned_files", True)))
-        self.auto_logout_combo.setCurrentText(str(security.get("auto_logout", "Never")))
+        self.auto_logout_combo.setCurrentText(auto_logout)
         self.hide_user_id_checkbox.setChecked(bool(security.get("hide_user_id_in_profile_by_default", False)))
         self._building = False
         self._settings = self.current_settings()
@@ -193,21 +343,38 @@ class SettingsPage(QWidget):
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             f"""
+            QScrollArea {{
+                background-color: transparent;
+                border: none;
+            }}
+            QScrollArea QWidget {{
+                background-color: transparent;
+            }}
             QFrame#settingsCard,
-            QFrame#settingsRow {{
+            QFrame#settingsSection,
+            QFrame#settingsActions,
+            QFrame#settingsRow,
+            QFrame#settingsInfoRow {{
                 background-color: rgba(26, 26, 46, 220);
                 border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 22px;
+                border-radius: 18px;
+            }}
+            QFrame#settingsInfoRow,
+            QFrame#settingsRow {{
+                background-color: rgba(15, 15, 30, 132);
+                border-radius: 14px;
             }}
             QLabel {{
                 background: transparent;
                 color: {PALETTE.text};
                 font-family: "{ui_font_family()}";
             }}
-            QLabel#settingsCardTitle {{
+            QLabel#settingsCardTitle,
+            QLabel#settingsSectionTitle {{
                 color: #f4fff9;
             }}
             QLabel#settingsCardSubtitle,
+            QLabel#settingsSectionSubtitle,
             QLabel#settingsFieldLabel {{
                 color: #8aa39a;
             }}
@@ -215,7 +382,7 @@ class SettingsPage(QWidget):
                 background-color: rgba(15, 15, 30, 176);
                 color: {PALETTE.text};
                 border: 1px solid rgba(255, 255, 255, 0.05);
-                border-radius: 16px;
+                border-radius: 14px;
                 padding: 10px 12px;
                 min-height: 22px;
                 font-family: "{ui_font_family()}";

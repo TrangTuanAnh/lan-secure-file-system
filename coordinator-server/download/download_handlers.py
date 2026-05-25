@@ -138,10 +138,12 @@ class DownloadHandlers:
         """
         from datetime import datetime
         
+        from datetime import timezone
+
         file_id = payload.get('fileId')
         max_downloads = payload.get('maxDownloads')
         expires_at_str = payload.get('expiresAt')
-        
+
         if not all([file_id, max_downloads is not None, expires_at_str]):
             return {
                 'type': 'ERROR',
@@ -150,7 +152,28 @@ class DownloadHandlers:
                     'message': 'Missing required fields: fileId, maxDownloads, expiresAt'
                 }
             }
-        
+
+        # Validate maxDownloads range (must be a positive integer, capped to a
+        # reasonable upper bound to prevent token abuse / mistakes)
+        try:
+            max_downloads = int(max_downloads)
+        except (TypeError, ValueError):
+            return {
+                'type': 'ERROR',
+                'error': {
+                    'code': 'INVALID_INPUT',
+                    'message': 'maxDownloads must be an integer'
+                }
+            }
+        if max_downloads < 1 or max_downloads > 10000:
+            return {
+                'type': 'ERROR',
+                'error': {
+                    'code': 'INVALID_INPUT',
+                    'message': 'maxDownloads must be between 1 and 10000'
+                }
+            }
+
         # Parse expiration timestamp
         try:
             expires_at = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
@@ -162,7 +185,21 @@ class DownloadHandlers:
                     'message': 'Invalid expiresAt format (expected ISO 8601)'
                 }
             }
-        
+
+        # Reject expires_at in the past
+        now = datetime.now(timezone.utc)
+        # If naive datetime, assume UTC
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at <= now:
+            return {
+                'type': 'ERROR',
+                'error': {
+                    'code': 'INVALID_INPUT',
+                    'message': 'expiresAt must be in the future'
+                }
+            }
+
         success, token_string, error_code = self.download_service.create_share_token(
             user_id=user_id,
             global_role=global_role,
@@ -170,10 +207,13 @@ class DownloadHandlers:
             max_downloads=max_downloads,
             expires_at=expires_at
         )
-        
+
         if success:
+            # NOTE: Use CREATE_SHARE_TOKEN_RESPONSE to match MessageType enum.
+            # The outer client_socket_server overrides type anyway, but keeping
+            # this in sync prevents future drift.
             return {
-                'type': 'SHARE_TOKEN_CREATED',
+                'type': 'CREATE_SHARE_TOKEN_RESPONSE',
                 'payload': {
                     'token': token_string,
                     'fileId': file_id,

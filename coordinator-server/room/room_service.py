@@ -490,7 +490,8 @@ class RoomService:
             (room_id, user_id)
         )
         
-        return members and members[0]['role'] == 'OWNER'
+        # BUGFIX M4: always return a real bool (not [] or list-and-bool).
+        return bool(members) and members[0]['role'] == 'OWNER'
     
     def _has_room_access(self, user_id: str, global_role: str, room_id: str) -> bool:
         """

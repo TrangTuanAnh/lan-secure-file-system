@@ -329,7 +329,9 @@ class FileService:
                 e.__class__.__name__,
                 e,
             )
-            return False, f"DATABASE_ERROR:{e.__class__.__name__}: {e}"
+            # BUGFIX M2: do not leak exception detail into the error_code
+            # field — return a plain code so handlers can map it cleanly.
+            return False, "DATABASE_ERROR"
     
     def calculate_next_version(
         self,
@@ -347,12 +349,16 @@ class FileService:
             Next version number (MAX + 1, or 1 if no previous version)
         """
         try:
-            # Query MAX(version) FROM files WHERE room_id and original_name match
+            # BUGFIX M3: only count READY/UPLOADING files when computing
+            # next version. Failed/Deleted uploads shouldn't consume a
+            # version number — otherwise versions skip after a failed
+            # upload (e.g. v1 OK, v2 failed, v3 next legit upload).
             result = self.db.execute_query(
                 """
                 SELECT MAX(version) as max_version
                 FROM files
                 WHERE room_id = %s AND original_name = %s
+                  AND status IN ('READY', 'UPLOADING')
                 """,
                 (room_id, original_name)
             )
@@ -420,4 +426,5 @@ class FileService:
             (room_id, user_id)
         )
         
-        return members and members[0]['role'] == 'OWNER'
+        # BUGFIX M4: always return a real bool.
+        return bool(members) and members[0]['role'] == 'OWNER'

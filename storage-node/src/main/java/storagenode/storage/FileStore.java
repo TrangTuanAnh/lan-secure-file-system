@@ -10,6 +10,7 @@ import java.nio.file.*;
 import java.time.Instant;
 import java.util.*;
 import java.util.logging.Logger;
+import java.util.regex.Pattern;
 
 /**
  * Manages physical file storage on disk.
@@ -28,6 +29,34 @@ public class FileStore {
 
     private static final Logger LOG = Logger.getLogger(FileStore.class.getName());
     private static final Gson GSON = new Gson();
+
+    // BUGFIX C8: client-supplied identifiers must match strict patterns to
+    // prevent path traversal (e.g. sessionId = "../../etc/passwd" or sha256
+    // with leading "..").
+    private static final Pattern UUID_LIKE = Pattern.compile(
+            "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$");
+    private static final Pattern SHA256_HEX = Pattern.compile(
+            "^[0-9a-fA-F]{64}$");
+
+    /** Throws IllegalArgumentException if sessionId is unsafe to use as a path. */
+    public static void validateSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isEmpty()) {
+            throw new IllegalArgumentException("sessionId is required");
+        }
+        if (sessionId.contains("/") || sessionId.contains("\\") || sessionId.contains("..")) {
+            throw new IllegalArgumentException("sessionId contains path traversal characters");
+        }
+        if (!UUID_LIKE.matcher(sessionId).matches()) {
+            throw new IllegalArgumentException("sessionId has invalid format: " + sessionId);
+        }
+    }
+
+    /** Throws IllegalArgumentException if sha256 is not exactly 64 hex chars. */
+    public static void validateSha256(String sha256) {
+        if (sha256 == null || !SHA256_HEX.matcher(sha256).matches()) {
+            throw new IllegalArgumentException("sha256 must be 64 hex chars, got: " + sha256);
+        }
+    }
 
     private final Path dataDir;   // permanent storage
     private final Path tempDir;   // in-progress uploads
@@ -52,6 +81,7 @@ public class FileStore {
 
     /** Create a temp directory for a new upload session. */
     public Path createSessionDir(String sessionId) throws IOException {
+        validateSessionId(sessionId);
         Path dir = tempDir.resolve(sessionId);
         Files.createDirectories(dir);
         return dir;
@@ -59,6 +89,10 @@ public class FileStore {
 
     /** Write a chunk to the session's temp directory. */
     public void writeChunk(String sessionId, int chunkIndex, byte[] data) throws IOException {
+        validateSessionId(sessionId);
+        if (chunkIndex < 0) {
+            throw new IllegalArgumentException("chunkIndex must be >= 0");
+        }
         Path dir = tempDir.resolve(sessionId);
         Path chunkFile = dir.resolve("chunk_" + chunkIndex);
         Files.write(chunkFile, data);
@@ -66,12 +100,17 @@ public class FileStore {
 
     /** Read a chunk from the session's temp directory. */
     public byte[] readTempChunk(String sessionId, int chunkIndex) throws IOException {
+        validateSessionId(sessionId);
+        if (chunkIndex < 0) {
+            throw new IllegalArgumentException("chunkIndex must be >= 0");
+        }
         Path chunkFile = tempDir.resolve(sessionId).resolve("chunk_" + chunkIndex);
         return Files.readAllBytes(chunkFile);
     }
 
     /** Check which chunks exist for a session. */
     public Set<Integer> getReceivedChunks(String sessionId) throws IOException {
+        validateSessionId(sessionId);
         Path dir = tempDir.resolve(sessionId);
         Set<Integer> received = new TreeSet<>();
         if (!Files.exists(dir)) return received;
@@ -90,6 +129,7 @@ public class FileStore {
 
     /** Save session metadata to disk (for crash recovery). */
     public void saveSessionMeta(String sessionId, Properties meta) throws IOException {
+        validateSessionId(sessionId);
         Path metaFile = tempDir.resolve(sessionId).resolve("meta.properties");
         try (OutputStream os = Files.newOutputStream(metaFile)) {
             meta.store(os, "Upload session metadata");
@@ -98,6 +138,7 @@ public class FileStore {
 
     /** Load session metadata from disk. */
     public Properties loadSessionMeta(String sessionId) throws IOException {
+        validateSessionId(sessionId);
         Path metaFile = tempDir.resolve(sessionId).resolve("meta.properties");
         Properties meta = new Properties();
         if (Files.exists(metaFile)) {
@@ -112,6 +153,7 @@ public class FileStore {
 
     /** Assemble all chunks into a single temporary file for final validation. */
     public Path assembleTempFile(String sessionId, int totalChunks) throws IOException {
+        validateSessionId(sessionId);
         Path sessionDir = tempDir.resolve(sessionId);
         Path assembledFile = sessionDir.resolve("assembled");
 
@@ -130,6 +172,7 @@ public class FileStore {
     /** Verify the assembled file SHA-256 and delete it on mismatch. */
     public boolean verifyAssembledHash(Path assembledFile, String expectedSha256, String sessionId)
             throws IOException {
+        validateSha256(expectedSha256);
         String actualHash = HashUtil.sha256File(assembledFile);
         if (!actualHash.equalsIgnoreCase(expectedSha256)) {
             LOG.warning("Hash mismatch for session " + sessionId +
@@ -142,14 +185,23 @@ public class FileStore {
 
     /** Move a validated clean assembled file to permanent content-addressed storage. */
     public Path commitAssembledFile(Path assembledFile, String expectedSha256) throws IOException {
+        validateSha256(expectedSha256);
         Path storePath = getStorePath(expectedSha256);
         Files.createDirectories(storePath.getParent());
 
         if (Files.exists(storePath)) {
-            // Dedup: file already exists with same hash
+            // Dedup: file already exists with same hash — drop the just-assembled
+            // copy to avoid wasted disk.
             LOG.info("Dedup hit: file already exists at " + storePath);
+            try {
+                Files.deleteIfExists(assembledFile);
+            } catch (IOException ignored) {}
         } else {
-            Files.move(assembledFile, storePath, StandardCopyOption.ATOMIC_MOVE);
+            // BUGFIX C7: use atomic-move fallback. ATOMIC_MOVE throws
+            // AtomicMoveNotSupportedException when temp and store live on
+            // different filesystems (common on Windows D:/C: setups). The
+            // fallback does a regular move (or copy+delete if needed).
+            moveWithAtomicFallback(assembledFile, storePath);
         }
 
         LOG.info("File stored: " + storePath + " (sha256=" + expectedSha256 + ")");
@@ -213,6 +265,7 @@ public class FileStore {
 
     /** Delete a session's temp directory and all its contents. */
     public void cleanSessionDir(String sessionId) throws IOException {
+        validateSessionId(sessionId);
         Path dir = tempDir.resolve(sessionId);
         if (Files.exists(dir)) {
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
@@ -228,6 +281,7 @@ public class FileStore {
 
     /** Get the storage path for a file by its SHA-256 hash. */
     public Path getStorePath(String sha256) {
+        validateSha256(sha256);
         String prefix = sha256.substring(0, 2);
         return dataDir.resolve(prefix).resolve(sha256);
     }
@@ -251,6 +305,10 @@ public class FileStore {
      * @return chunk data (may be smaller for the last chunk)
      */
     public byte[] readStoredChunk(String sha256, int chunkIndex, int chunkSize) throws IOException {
+        validateSha256(sha256);
+        if (chunkIndex < 0) {
+            throw new IOException("chunkIndex must be >= 0");
+        }
         Path filePath = getStorePath(sha256);
         long fileSize = Files.size(filePath);
         long offset = (long) chunkIndex * chunkSize;
@@ -269,9 +327,11 @@ public class FileStore {
         return data;
     }
 
-    /** Calculate total number of chunks for a file. */
+    /** Calculate total number of chunks for a file. Integer math to avoid
+     *  double-precision loss for large files. */
     public int calculateTotalChunks(long fileSize) {
-        return (int) Math.ceil((double) fileSize / chunkSize);
+        if (fileSize <= 0) return 0;
+        return (int) ((fileSize + chunkSize - 1) / chunkSize);
     }
 
     /** List all stored file hashes. */

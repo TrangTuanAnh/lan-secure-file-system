@@ -374,6 +374,9 @@ public class ClientHandler implements Runnable {
             assembledPath = fileStore.assembleTempFile(sessionId, session.getTotalChunks());
             if (!fileStore.verifyAssembledHash(assembledPath, session.getSha256Whole(), sessionId)) {
                 session.setStatus(UploadSession.Status.FAILED);
+                // BUGFIX C6: cleanup temp + session on hash mismatch to prevent
+                // leaking chunk files and stale session state on disk/RAM.
+                safeCleanupFailedSession(sessionId, "hash mismatch");
                 Message resp = new Message(MessageType.FINALIZE_RESP)
                         .set("sessionId", sessionId)
                         .set("status", "HASH_MISMATCH")
@@ -405,6 +408,8 @@ public class ClientHandler implements Runnable {
             fileStore.cleanSessionDir(sessionId);
         } catch (IOException e) {
             session.setStatus(UploadSession.Status.FAILED);
+            // BUGFIX C6: cleanup temp + session on I/O error in finalize.
+            safeCleanupFailedSession(sessionId, "I/O error: " + e.getMessage());
             Message resp = new Message(MessageType.FINALIZE_RESP)
                     .set("sessionId", sessionId)
                     .set("status", "FINALIZE_IO_ERROR")
@@ -643,6 +648,27 @@ public class ClientHandler implements Runnable {
     }
 
     // ═══════════════════════ HELPERS ═══════════════════════
+
+    /**
+     * BUGFIX C6: best-effort cleanup of a failed upload session.
+     * Removes the temp chunks/meta files and unregisters the session from
+     * SessionManager so it does NOT get re-loaded on restart and does NOT
+     * leak memory. Safe to call from finalize failure paths (catch blocks).
+     */
+    private void safeCleanupFailedSession(String sessionId, String reason) {
+        try {
+            fileStore.cleanSessionDir(sessionId);
+        } catch (IOException e) {
+            LOG.warning("Cleanup of temp dir failed for session=" + sessionId
+                    + " reason=" + reason + " err=" + e.getMessage());
+        }
+        try {
+            sessionManager.removeUploadSession(sessionId);
+        } catch (Exception e) {
+            LOG.warning("removeUploadSession failed for session=" + sessionId
+                    + " err=" + e.getMessage());
+        }
+    }
 
     private synchronized void send(Message msg) throws IOException {
         FrameCodec.writeFrame(out, msg);

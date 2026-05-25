@@ -17,8 +17,9 @@ from enum import Enum
 from queue import Queue, Empty
 from contextlib import contextmanager
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# NOTE: Do NOT call logging.basicConfig() at module import — it would override
+# the app's own logging config. The application (or test runner) is responsible
+# for setting up handlers; we only acquire a named logger here.
 logger = logging.getLogger(__name__)
 
 
@@ -322,11 +323,18 @@ class BackendClient:
     def _listen_loop(self) -> None:
         """Background listener thread (runs continuously)."""
         logger.info("Listener thread started")
-        
+
         while self._running:
+            # BUGFIX C11/M27: snapshot socket reference so a concurrent
+            # _cleanup_socket() that sets self._socket = None doesn't
+            # trigger AttributeError on the next recv().
+            sock = self._socket
+            if sock is None:
+                logger.info("Socket is None, listener exiting")
+                break
             try:
-                data = self._socket.recv(4096)
-                
+                data = sock.recv(4096)
+
                 if not data:
                     logger.warning("Socket closed by server")
                     self._cleanup_socket()
@@ -364,20 +372,25 @@ class BackendClient:
         request_id = message.get("requestId")
         payload = message.get("payload", {})
         
+        # BUGFIX M26: snapshot pending_requests under lock to avoid race
+        # where the entry is popped between the `in` check and `[index]`.
+        future = None
+        if request_id:
+            with self._pending_lock:
+                future = self._pending_requests.get(request_id)
+
         # Handle response to pending request
-        if request_id and request_id in self._pending_requests:
-            future = self._pending_requests[request_id]
-            
+        if future is not None:
             if message_type == "ERROR":
                 error_code = payload.get("error", {}).get("code")
                 error_msg = payload.get("error", {}).get("message")
                 future["error"] = ValueError(f"{error_code}: {error_msg}")
             else:
                 future["response"] = payload
-            
+
             future["event"].set()
             logger.debug(f"Processed response for request {request_id}")
-        
+
         # Handle unsolicited message (e.g., EVENT)
         elif message_type == "EVENT":
             # Backend broadcasts events with type=EVENT and
@@ -462,15 +475,31 @@ class BackendClient:
             self._state = state
     
     def _cleanup_socket(self) -> None:
-        """Clean up socket resources."""
+        """Clean up socket resources.
+
+        BUGFIX C11: also reset ``_running`` so the next ``connect()`` call
+        re-spawns the listener thread. Without this, after a socket
+        failure the listener thread exits, ``_running`` stays True, and
+        any reconnect attempt won't start a new listener — every
+        subsequent _send_request would hang until timeout.
+        """
         with self._socket_lock:
             if self._socket:
                 try:
                     self._socket.close()
-                except:
+                except Exception:
                     pass
                 self._socket = None
         self._frame_buffer.clear()
+        # Reset _running so connect() will start a new listener thread.
+        # Note: disconnect() also sets _running=False before calling here, so
+        # this is a no-op in the explicit-disconnect path.
+        self._running = False
+        # If listener thread is still alive (the case when an outsider
+        # called _cleanup_socket from another thread while listener is
+        # still in _listen_loop), it will notice _running=False on next
+        # loop iteration and exit naturally.
+        self._listener_thread = None
     
     def __enter__(self):
         """Context manager enter."""
@@ -611,7 +640,7 @@ class BackendClient:
         self,
         room_id: str,
         file_info: Dict[str, Any],
-        storage_address: str = "localhost:9000"
+        storage_address: str = ""
     ) -> Dict[str, Any]:
         """
         Initialize file upload.

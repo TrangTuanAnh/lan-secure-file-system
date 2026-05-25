@@ -113,7 +113,10 @@ class DashboardWindow(QMainWindow):
         )
         self.settings_page = SettingsPage(
             username=self._username,
+            user_id=self._user_id,
+            email=self._email,
             global_role=self._global_role,
+            runtime=self._runtime,
             settings=self._app_settings,
         )
 
@@ -149,6 +152,7 @@ class DashboardWindow(QMainWindow):
         self.my_rooms_page.room_open_requested.connect(self._open_room_page)
         self.my_rooms_page.activity_occurred.connect(self._record_activity)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
+        self.settings_page.logout_requested.connect(self.logout_requested.emit)
         for page in (self.overview_page, self.my_rooms_page, self.settings_page):
             page.top_bar.set_user_display(self._username or "Authenticated User", user_id=self._user_id)
             page.top_bar.set_user_role(self._display_global_role())

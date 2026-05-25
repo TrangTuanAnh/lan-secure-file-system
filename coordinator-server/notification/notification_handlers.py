@@ -152,9 +152,32 @@ class NotificationHandlers:
             message: UNSUBSCRIBE_ROOM message
         """
         try:
+            # Require auth token (consistent with SUBSCRIBE_ROOM)
+            token = message.payload.get("token")
+            if not token:
+                response = Message.create_error(
+                    "AUTH_REQUIRED",
+                    "Authentication token is required",
+                    request_id=message.request_id
+                )
+                connection.send_message(response)
+                return
+
+            valid, session_data, error_code = self.auth.validate_token(token)
+            if not valid:
+                response = Message.create_error(
+                    error_code or "INVALID_TOKEN",
+                    "Access token is invalid or has expired",
+                    request_id=message.request_id
+                )
+                connection.send_message(response)
+                return
+
+            user_id = session_data.get('userId')
+
             # Extract room_id from payload
             room_id = message.payload.get("roomId")
-            
+
             if not room_id:
                 response = Message.create_error(
                     "INVALID_REQUEST",
@@ -163,10 +186,10 @@ class NotificationHandlers:
                 )
                 connection.send_message(response)
                 return
-            
+
             # Remove connection from subscriber map
             self.notification.remove_subscriber(room_id, connection)
-            
+
             # Send success response
             response = Message(
                 type=MessageType.UNSUBSCRIBE_ROOM_RESPONSE,
@@ -177,8 +200,8 @@ class NotificationHandlers:
                 }
             )
             connection.send_message(response)
-            
-            logger.info(f"Connection {connection.connection_id} unsubscribed from room {room_id}")
+
+            logger.info(f"User {user_id} (conn {connection.connection_id}) unsubscribed from room {room_id}")
         
         except Exception as e:
             logger.error(f"Error handling UNSUBSCRIBE_ROOM: {e}", exc_info=True)
