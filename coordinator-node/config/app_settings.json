@@ -1,7 +1,7 @@
 {
   "appearance": {
     "reduce_glow_effects": false,
-    "reduce_animations": false,
+    "reduce_animations": true,
     "compact_layout": false
   },
   "security": {

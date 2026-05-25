@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpacerItem,
@@ -39,6 +40,10 @@ class SidebarNav(QFrame):
         self._avatar_username = "Security Operator"
         self._avatar_user_id = ""
         self._avatar_global_role = "USER"
+        self._status_variant = "loading"
+        self._status_hide_timer = QTimer(self)
+        self._status_hide_timer.setSingleShot(True)
+        self._status_hide_timer.timeout.connect(self.clear_status)
 
         self.setObjectName("sidebarNav")
         self.setMinimumWidth(280)
@@ -102,6 +107,28 @@ class SidebarNav(QFrame):
 
         layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
+        self.status_card = QFrame()
+        self.status_card.setObjectName("sidebarStatusCard")
+        upload_layout = QVBoxLayout(self.status_card)
+        upload_layout.setContentsMargins(14, 14, 14, 14)
+        upload_layout.setSpacing(10)
+
+        self.status_label = QLabel("Scanning uploaded file...")
+        self.status_label.setObjectName("sidebarStatusLabel")
+        self.status_label.setWordWrap(True)
+        self.status_label.setFont(app_font(9, 600))
+        upload_layout.addWidget(self.status_label)
+
+        self.status_bar = QProgressBar()
+        self.status_bar.setObjectName("sidebarStatusBar")
+        self.status_bar.setTextVisible(False)
+        self.status_bar.setFixedHeight(6)
+        self.status_bar.setRange(0, 0)
+        upload_layout.addWidget(self.status_bar)
+
+        self.status_card.hide()
+        layout.addWidget(self.status_card)
+
         self._apply_styles()
 
     def _apply_styles(self) -> None:
@@ -112,10 +139,23 @@ class SidebarNav(QFrame):
                 border-right: 1px solid rgba(0, 200, 83, 32);
             }}
             QFrame#sidebarUserCard,
-            QFrame#sidebarNavSection {{
+            QFrame#sidebarNavSection,
+            QFrame#sidebarStatusCard {{
                 background-color: rgba(26, 26, 46, 214);
                 border: 1px solid rgba(255, 255, 255, 0.05);
                 border-radius: 20px;
+            }}
+            QFrame#sidebarStatusCard[statusVariant="loading"] {{
+                background-color: rgba(18, 22, 36, 236);
+                border-color: rgba(0, 200, 83, 44);
+            }}
+            QFrame#sidebarStatusCard[statusVariant="success"] {{
+                background-color: rgba(10, 44, 30, 230);
+                border-color: rgba(0, 200, 83, 82);
+            }}
+            QFrame#sidebarStatusCard[statusVariant="error"] {{
+                background-color: rgba(52, 18, 22, 232);
+                border-color: rgba(255, 82, 82, 88);
             }}
             QLabel {{
                 background: transparent;
@@ -130,16 +170,25 @@ class SidebarNav(QFrame):
                 color: #d8ebe2;
                 background-color: transparent;
                 border: 1px solid transparent;
-                border-radius: 16px;
+                border-radius: 10px;
             }}
             QPushButton#sidebarNavButton:hover {{
-                background-color: rgba(0, 200, 83, 18);
-                border-color: rgba(0, 200, 83, 48);
+                background-color: rgba(0, 200, 83, 14);
+                border-color: rgba(0, 200, 83, 42);
             }}
             QPushButton#sidebarNavButton:checked {{
                 color: #f4fff9;
-                background-color: rgba(0, 200, 83, 24);
-                border-color: rgba(0, 200, 83, 70);
+                background-color: rgba(0, 200, 83, 18);
+                border-color: rgba(0, 200, 83, 58);
+            }}
+            QProgressBar#sidebarStatusBar {{
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 1px solid rgba(255, 255, 255, 0.03);
+                border-radius: 3px;
+            }}
+            QProgressBar#sidebarStatusBar::chunk {{
+                background-color: rgba(0, 200, 83, 110);
+                border-radius: 3px;
             }}
             """
         )
@@ -155,6 +204,7 @@ class SidebarNav(QFrame):
         self.user_role_label.setStyleSheet(
             f"color: {with_alpha(PALETTE.accent_soft, 230).name()};"
         )
+        self.status_label.setStyleSheet("color: #d9eee2;")
         self.user_avatar_label.setStyleSheet(
             f"""
             color: {PALETTE.accent_bright};
@@ -212,6 +262,68 @@ class SidebarNav(QFrame):
     def _emit_navigation_requested(self, button_id: int) -> None:
         if 0 <= button_id < len(self._button_ids):
             self.navigation_requested.emit(self._button_ids[button_id])
+
+    def _apply_status_variant(self, variant: str) -> None:
+        self._status_variant = variant
+        self.status_card.setProperty("statusVariant", variant)
+        style = self.style()
+        style.unpolish(self.status_card)
+        style.polish(self.status_card)
+        if variant == "error":
+            self.status_label.setStyleSheet("color: #ffd6d6;")
+        else:
+            self.status_label.setStyleSheet("color: #d9eee2;")
+
+    def set_status(self, variant: str, message: str, auto_hide_ms: int = 0) -> None:
+        if not message.strip():
+            self.clear_status()
+            return
+        self._status_hide_timer.stop()
+        self.status_card.show()
+        self.status_label.setText(message.strip())
+        self._apply_status_variant(variant)
+        is_loading = variant == "loading"
+        self.status_bar.setVisible(is_loading)
+        if is_loading:
+            self.status_bar.setRange(0, 0)
+        if auto_hide_ms > 0 and not is_loading:
+            self._status_hide_timer.start(auto_hide_ms)
+
+    def show_loading(self, message: str = "Scanning uploaded file...") -> None:
+        self.set_status("loading", message or "Scanning uploaded file...")
+
+    def show_success(self, message: str, auto_hide_ms: int = 4200) -> None:
+        self.set_status("success", message, auto_hide_ms=auto_hide_ms)
+
+    def show_error(self, message: str, auto_hide_ms: int = 5200) -> None:
+        self.set_status("error", message, auto_hide_ms=auto_hide_ms)
+
+    def clear_status(self) -> None:
+        self._status_hide_timer.stop()
+        self.status_card.hide()
+        self.status_label.clear()
+        self.status_bar.hide()
+
+    def set_upload_status(self, active: bool, message: str = "Scanning uploaded file...") -> None:
+        if active:
+            self.show_loading(message or "Scanning uploaded file...")
+            return
+        self.clear_status()
+
+    def apply_status_payload(self, payload: dict) -> None:
+        variant = str(payload.get("variant") or "loading").strip().lower()
+        message = str(payload.get("message") or "").strip()
+        auto_hide_ms = int(payload.get("auto_hide_ms") or 0)
+        if variant == "success":
+            self.show_success(message, auto_hide_ms=auto_hide_ms or 4200)
+            return
+        if variant == "error":
+            self.show_error(message, auto_hide_ms=auto_hide_ms or 5200)
+            return
+        if variant == "clear":
+            self.clear_status()
+            return
+        self.show_loading(message or "Loading...")
 
 
 __all__ = ["SidebarNav"]
