@@ -150,7 +150,7 @@ class AccountDrawer(QFrame):
             QLabel#drawerAvatar {{
                 color: {PALETTE.accent_bright};
                 background-color: rgba(0, 200, 83, 12);
-                border: 1px solid rgba(0, 230, 118, 42);
+                border: none;
                 border-radius: 36px;
             }}
             QLabel#drawerRole {{
