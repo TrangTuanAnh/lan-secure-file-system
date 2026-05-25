@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QFrame, QGridLayout, QScrollArea, QSizePolicy, QVB
 from services.services import BackendService
 from ui.dashboard_runtime import DashboardRuntimeConfig
 from ui.fonts import app_font, ui_font, ui_font_family
+from ui.recent_rooms import RecentRoomsStore
 from ui.widgets.activity_item import ActivityItem
 from ui.widgets.dashboard_stat_card import DashboardStatCard
 from ui.widgets.empty_state import EmptyState
@@ -147,6 +148,7 @@ class OverviewPage(QWidget):
         self._stat_cards: list[DashboardStatCard] = []
         self._remote_activities: list[dict[str, Any]] = []
         self._local_activities: list[dict[str, Any]] = []
+        self._recent_rooms: list[dict[str, Any]] = RecentRoomsStore.load()
 
         self._build_ui()
         self._apply_styles()
@@ -191,7 +193,7 @@ class OverviewPage(QWidget):
         self.stats_grid.setVerticalSpacing(16)
         self.scroll_layout.addLayout(self.stats_grid)
 
-        self.rooms_section = self._build_section_frame("My Rooms", "Rooms available to your authenticated session.")
+        self.rooms_section = self._build_section_frame("Recent Rooms", "Quick access to recently opened rooms.")
         self.rooms_content = QVBoxLayout()
         self.rooms_content.setContentsMargins(0, 0, 0, 0)
         self.rooms_content.setSpacing(14)
@@ -338,7 +340,7 @@ class OverviewPage(QWidget):
 
         user_info = payload.get("user", {})
         username = user_info.get("username") or self._username or "Authenticated User"
-        self.top_bar.set_user_display(username)
+        self.top_bar.set_user_display(username, user_id=self._user_id)
         resolved_global_role = user_info.get("global_role") or self._global_role or "USER"
         self.top_bar.set_user_role("Administrator" if str(resolved_global_role).upper() == "ADMIN" else "Secure Operator")
 
@@ -353,7 +355,7 @@ class OverviewPage(QWidget):
         self.status_stat.set_value(stats.get("server_label", "Unknown"))
         self.status_stat.set_subtitle("Coordinator backend health and transport status.")
 
-        self._render_rooms(payload.get("rooms", []))
+        self._render_recent_rooms(self._recent_rooms)
         self._remote_activities = list(payload.get("activities", []))
         self._render_activities(self._current_activity_feed())
 
@@ -363,9 +365,13 @@ class OverviewPage(QWidget):
         self.top_bar.set_subtitle("Unable to load secure workspace data.")
         self.error_toast.move_to_top_center(self)
         self.error_toast.show_error(message)
-        self._render_rooms([])
+        self._render_recent_rooms(self._recent_rooms)
         self._remote_activities = []
         self._render_activities(self._current_activity_feed())
+
+    def set_recent_rooms(self, rooms: list[dict[str, Any]]) -> None:
+        self._recent_rooms = list(rooms)
+        self._render_recent_rooms(self._recent_rooms)
 
     def set_local_activities(self, activities: list[dict[str, Any]]) -> None:
         self._local_activities = list(activities)
@@ -374,7 +380,7 @@ class OverviewPage(QWidget):
     def _current_activity_feed(self) -> list[dict[str, Any]]:
         return list(self._remote_activities) if self._remote_activities else list(self._local_activities)
 
-    def _render_rooms(self, rooms: list[dict[str, Any]]) -> None:
+    def _render_recent_rooms(self, rooms: list[dict[str, Any]]) -> None:
         while self.rooms_content.count():
             item = self.rooms_content.takeAt(0)
             widget = item.widget()
@@ -383,12 +389,15 @@ class OverviewPage(QWidget):
         self._room_cards.clear()
 
         if not rooms:
+            self.rooms_content.addStretch()
             self.rooms_content.addWidget(
                 EmptyState(
-                    title="No rooms available",
-                    message="Your authenticated account does not have any rooms yet.",
+                    title="No recently opened rooms yet.",
+                    message="Open a room from My Rooms to see it here.",
+                    minimal=True,
                 )
             )
+            self.rooms_content.addStretch()
             return
 
         for room in rooms[:3]:

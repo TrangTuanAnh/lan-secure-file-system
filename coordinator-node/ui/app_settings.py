@@ -14,7 +14,6 @@ SETTINGS_FILE = SETTINGS_DIR / "app_settings.json"
 
 DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "appearance": {
-        "font_size": "Medium",
         "reduce_glow_effects": False,
         "reduce_animations": False,
         "compact_layout": False,

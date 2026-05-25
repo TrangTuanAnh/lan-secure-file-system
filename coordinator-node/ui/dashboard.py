@@ -22,6 +22,7 @@ from ui.pages.my_rooms_page import MyRoomsPage
 from ui.pages.overview_page import OverviewPage
 from ui.pages.room_page import RoomPage
 from ui.pages.settings_page import SettingsPage
+from ui.recent_rooms import RecentRoomsStore
 from ui.widgets.account_drawer import AccountDrawer
 from ui.widgets.app_shell import AppShell
 from ui.widgets.modern_button import PALETTE
@@ -51,6 +52,7 @@ class DashboardWindow(QMainWindow):
         self._global_role = global_role
         self._runtime = runtime or DashboardRuntimeConfig()
         self._app_settings = AppSettingsStore.load()
+        self._recent_rooms = RecentRoomsStore.load()
         self._pages: dict[str, QWidget] = {}
         self._room_page: Optional[RoomPage] = None
         self._local_activities: list[dict[str, Any]] = []
@@ -82,6 +84,7 @@ class DashboardWindow(QMainWindow):
             self._username or "Authenticated User",
             self._email or "No email available",
             self._display_global_role(),
+            user_id=self._user_id,
         )
 
         self.page_stack = QStackedWidget()
@@ -124,6 +127,7 @@ class DashboardWindow(QMainWindow):
         self.page_stack.addWidget(self.settings_page)
         self.page_stack.setCurrentWidget(self.overview_page)
         self.overview_page.set_local_activities(self._local_activities)
+        self.overview_page.set_recent_rooms(self._recent_rooms)
         self._apply_app_settings()
 
     def _apply_window_theme(self) -> None:
@@ -146,7 +150,7 @@ class DashboardWindow(QMainWindow):
         self.my_rooms_page.activity_occurred.connect(self._record_activity)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         for page in (self.overview_page, self.my_rooms_page, self.settings_page):
-            page.top_bar.set_user_display(self._username or "Authenticated User")
+            page.top_bar.set_user_display(self._username or "Authenticated User", user_id=self._user_id)
             page.top_bar.set_user_role(self._display_global_role())
             page.top_bar.account_requested.connect(self._show_account_dialog)
             page.top_bar.logout_requested.connect(self.logout_requested.emit)
@@ -165,6 +169,9 @@ class DashboardWindow(QMainWindow):
         self.page_stack.setCurrentWidget(page)
 
     def _open_room_page(self, room_payload: dict[str, Any]) -> None:
+        self._recent_rooms = RecentRoomsStore.record_opened(room_payload)
+        self.overview_page.set_recent_rooms(self._recent_rooms)
+
         if self._room_page is not None:
             self.page_stack.removeWidget(self._room_page)
             self._room_page.deleteLater()
@@ -190,7 +197,7 @@ class DashboardWindow(QMainWindow):
         )
         self._room_page.back_requested.connect(self._on_room_page_back_requested)
         self._room_page.activity_occurred.connect(self._record_activity)
-        self._room_page.top_bar.set_user_display(self._username or "Authenticated User")
+        self._room_page.top_bar.set_user_display(self._username or "Authenticated User", user_id=self._user_id)
         self._room_page.top_bar.set_user_role(self._display_global_role())
         self._room_page.top_bar.account_requested.connect(self._show_account_dialog)
         self._room_page.top_bar.logout_requested.connect(self.logout_requested.emit)
@@ -222,12 +229,6 @@ class DashboardWindow(QMainWindow):
 
     def _apply_app_settings(self) -> None:
         appearance = self._app_settings.get("appearance", {})
-        font_size = str(appearance.get("font_size", "Medium"))
-        font_size_map = {"Small": 9, "Medium": 10, "Large": 11}
-        app = QApplication.instance()
-        if app is not None:
-            app.setFont(app_font(font_size_map.get(font_size, 10)))
-
         compact_layout = bool(appearance.get("compact_layout", False))
         content_layout = self.app_shell.content_surface.layout()
         if content_layout is not None:
