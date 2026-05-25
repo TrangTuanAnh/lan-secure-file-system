@@ -52,6 +52,7 @@ public class NodeConfig {
     private final String antivirusHost;
     private final int antivirusPort;
     private final int antivirusTimeoutMs;
+    private final long antivirusMaxScanBytes;
     private final boolean antivirusFailClosed;
 
     public NodeConfig(String configFile) throws IOException {
@@ -99,6 +100,9 @@ public class NodeConfig {
         this.antivirusHost = getString("antivirus.host", "127.0.0.1", "ANTIVIRUS_HOST");
         this.antivirusPort = getInt("antivirus.port", 3310, "ANTIVIRUS_PORT");
         this.antivirusTimeoutMs = getInt("antivirus.timeout.ms", 30000, "ANTIVIRUS_TIMEOUT_MS");
+        this.antivirusMaxScanBytes = getLong(
+                "antivirus.max.scan.bytes", 104857600L, "ANTIVIRUS_MAX_SCAN_BYTES"
+        );
         this.antivirusFailClosed = getBoolean("antivirus.fail.closed", true, "ANTIVIRUS_FAIL_CLOSED");
     }
 
@@ -112,6 +116,10 @@ public class NodeConfig {
 
     private int getInt(String key, int defaultValue, String envKey) {
         return Integer.parseInt(getString(key, String.valueOf(defaultValue), envKey));
+    }
+
+    private long getLong(String key, long defaultValue, String envKey) {
+        return Long.parseLong(getString(key, String.valueOf(defaultValue), envKey));
     }
 
     private boolean getBoolean(String key, boolean defaultValue, String envKey) {
@@ -143,5 +151,6 @@ public class NodeConfig {
     public String getAntivirusHost() { return antivirusHost; }
     public int getAntivirusPort() { return antivirusPort; }
     public int getAntivirusTimeoutMs() { return antivirusTimeoutMs; }
+    public long getAntivirusMaxScanBytes() { return antivirusMaxScanBytes; }
     public boolean isAntivirusFailClosed() { return antivirusFailClosed; }
 }

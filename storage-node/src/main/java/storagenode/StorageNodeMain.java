@@ -65,6 +65,8 @@ public class StorageNodeMain {
                 LOG.info("Antivirus enabled: clamd at " + config.getAntivirusHost() +
                         ":" + config.getAntivirusPort() +
                         ", timeout=" + config.getAntivirusTimeoutMs() + "ms" +
+                        ", scanMode=path" +
+                        ", maxScanBytes=" + config.getAntivirusMaxScanBytes() +
                         ", failClosed=" + config.isAntivirusFailClosed());
             } else {
                 antivirusScanner = new NoOpAntivirusScanner();
@@ -86,14 +88,12 @@ public class StorageNodeMain {
             LOG.info("Generating RSA key pair (" + config.getRsaKeySize() + " bits)...");
             RSAKeyExchange rsaKeyExchange = new RSAKeyExchange(config.getRsaKeySize());
 
-            // 7. Initialize coordinator client (fileStore lets STORAGE_AUTH
-            // carry the current manifest so the Coordinator can reconcile).
+            // 7. Initialize coordinator client
             CoordinatorClient coordinator = new CoordinatorClient(
                 config.getTicketSecret(), config.getNodeId(),
                 config.getCoordinatorHost(), config.getCoordinatorPort(),
                 config.getAdvertisedHost(), config.getAdvertisedPort(),
-                config.getStorageAddress(),
-                fileStore
+                config.getStorageAddress()
             );
             
             // Connect to Coordinator control plane

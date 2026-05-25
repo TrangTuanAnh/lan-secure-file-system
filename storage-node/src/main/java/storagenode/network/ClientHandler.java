@@ -19,6 +19,7 @@ import javax.crypto.SecretKey;
 import java.io.*;
 import java.net.Socket;
 import java.net.SocketException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.logging.Level;
@@ -43,6 +44,7 @@ public class ClientHandler implements Runnable {
     private final int chunkSize;
     private final AntivirusScanner antivirusScanner;
     private final boolean antivirusFailClosed;
+    private final long antivirusMaxScanBytes;
 
     private InputStream in;
     private OutputStream out;
@@ -53,7 +55,7 @@ public class ClientHandler implements Runnable {
                          FileStore fileStore, DedupStore dedupStore,
                          CoordinatorClient coordinator, RSAKeyExchange rsaKeyExchange,
                          int chunkSize, AntivirusScanner antivirusScanner,
-                         boolean antivirusFailClosed) {
+                         boolean antivirusFailClosed, long antivirusMaxScanBytes) {
         this.socket = socket;
         this.sessionManager = sessionManager;
         this.fileStore = fileStore;
@@ -63,6 +65,7 @@ public class ClientHandler implements Runnable {
         this.chunkSize = chunkSize;
         this.antivirusScanner = antivirusScanner;
         this.antivirusFailClosed = antivirusFailClosed;
+        this.antivirusMaxScanBytes = antivirusMaxScanBytes;
     }
 
     @Override
@@ -354,7 +357,14 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        session.setStatus(UploadSession.Status.FINALIZING);
+        if (!session.tryBeginFinalizing()) {
+            Message resp = new Message(MessageType.FINALIZE_RESP)
+                    .set("sessionId", sessionId)
+                    .set("status", "FINALIZE_IN_PROGRESS")
+                    .set("message", "Upload session is already finalizing or finished");
+            send(resp);
+            return;
+        }
 
         Path assembledPath;
         Path storedPath;
@@ -373,9 +383,14 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
-            scanResult = antivirusScanner.scan(assembledPath);
+            scanResult = validateScanSize(assembledPath);
+            if (scanResult == null) {
+                scanResult = antivirusScanner.scan(assembledPath);
+            }
             if (!scanResult.isClean() &&
-                    (scanResult.getStatus() == ScanStatus.INFECTED || antivirusFailClosed)) {
+                    (scanResult.getStatus() == ScanStatus.INFECTED ||
+                            scanResult.getStatus() == ScanStatus.LIMIT_EXCEEDED ||
+                            antivirusFailClosed)) {
                 handleScanRejectedUpload(session, assembledPath, scanResult);
                 return;
             }
@@ -575,6 +590,8 @@ public class ClientHandler implements Runnable {
         switch (scanStatus) {
             case INFECTED:
                 return "VIRUS_DETECTED";
+            case LIMIT_EXCEEDED:
+                return "SCAN_LIMIT_EXCEEDED";
             case TIMEOUT:
                 return "SCAN_TIMEOUT";
             case UNAVAILABLE:
@@ -588,10 +605,29 @@ public class ClientHandler implements Runnable {
         if (scanResult.getStatus() == ScanStatus.INFECTED) {
             return "Virus detected: " + scanResult.getThreatName();
         }
+        if (scanResult.getStatus() == ScanStatus.LIMIT_EXCEEDED) {
+            return "Antivirus scan limit exceeded: " + scanResult.getMessage();
+        }
         if (scanResult.getMessage() != null && !scanResult.getMessage().isEmpty()) {
             return "Antivirus scan failed: " + scanResult.getMessage();
         }
         return "Antivirus scan failed: " + scanResult.getStatus();
+    }
+
+    private ScanResult validateScanSize(Path assembledPath) throws IOException {
+        if (!antivirusScanner.isEnabled() || antivirusMaxScanBytes <= 0) {
+            return null;
+        }
+
+        long size = Files.size(assembledPath);
+        if (size <= antivirusMaxScanBytes) {
+            return null;
+        }
+
+        String message = "file size " + size +
+                " bytes exceeds antivirus.max.scan.bytes " + antivirusMaxScanBytes;
+        LOG.warning("Rejecting upload before antivirus scan: " + message);
+        return ScanResult.failure(ScanStatus.LIMIT_EXCEEDED, "storage-node", 0L, null, message);
     }
 
     private void addScanFields(Message msg, ScanResult scanResult) {

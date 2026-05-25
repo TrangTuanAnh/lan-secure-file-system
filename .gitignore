@@ -21,6 +21,13 @@ desktop.ini
 *.ear
 dependency-reduced-pom.xml
 
+# Python cache/build outputs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 # Logs and runtime artifacts
 *.log
 *.lck

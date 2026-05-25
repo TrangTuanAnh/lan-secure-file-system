@@ -119,7 +119,7 @@ services:
     volumes:
       - storage_node_1_data:/app/data:ro
       - clamav_db_1:/var/lib/clamav
-      - ./storage-node/clamd.conf:/etc/clamav/clamd.conf:ro
+      - ./storage-node/antivirus/clamd.conf:/etc/clamav/clamd.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "clamdscan --config-file=/etc/clamav/clamd.conf --no-summary /tmp >/dev/null 2>&1"]
       interval: 30s
@@ -183,7 +183,7 @@ services:
     volumes:
       - storage_node_2_data:/app/data:ro
       - clamav_db_2:/var/lib/clamav
-      - ./storage-node/clamd.conf:/etc/clamav/clamd.conf:ro
+      - ./storage-node/antivirus/clamd.conf:/etc/clamav/clamd.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "clamdscan --config-file=/etc/clamav/clamd.conf --no-summary /tmp >/dev/null 2>&1"]
       interval: 30s
