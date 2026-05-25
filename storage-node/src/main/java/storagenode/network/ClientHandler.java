@@ -402,8 +402,17 @@ public class ClientHandler implements Runnable {
         fileStore.writeChunk(sessionId, chunkIndex, chunkData);
         session.markChunkReceived(chunkIndex, actualHash);
 
-        // Persist session state
-        fileStore.saveSessionMeta(sessionId, session.toProperties());
+        // BUGFIX M15: don't fsync session meta on every chunk — for a
+        // 1 GiB upload (~2000 chunks at 512 KiB) that was 2000 disk
+        // writes of meta.properties. Persist every 16 chunks (small
+        // enough that resume after crash loses at most ~8 MiB of
+        // progress) and ALWAYS persist on the final chunk so finalize
+        // can rely on meta being current.
+        int recvCount = session.getReceivedCount();
+        int totalCount = session.getTotalChunks();
+        if (recvCount == totalCount || (recvCount % 16) == 0) {
+            fileStore.saveSessionMeta(sessionId, session.toProperties());
+        }
 
         // Send ACK
         Message ack = Message.ok(MessageType.ACK_CHUNK)
@@ -634,11 +643,11 @@ public class ClientHandler implements Runnable {
         resp.setData(payload);
         send(resp);
 
-        boolean wasComplete = session.isComplete();
-        session.markChunkSent(chunkIndex);
-
-        // Check if download is complete
-        if (!wasComplete && session.isComplete()) {
+        // BUGFIX M16: use atomic mark+check to guarantee exactly-one
+        // DOWNLOAD_COMPLETE even if multiple threads race on the final
+        // chunks of the same session.
+        boolean justCompleted = session.markChunkSentAndCheckJustCompleted(chunkIndex);
+        if (justCompleted) {
             Message complete = Message.ok(MessageType.DOWNLOAD_COMPLETE)
                     .set("sessionId", sessionId)
                     .set("sha256Whole", session.getSha256Whole());

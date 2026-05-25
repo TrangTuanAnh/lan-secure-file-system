@@ -286,3 +286,17 @@ class TopBar(QFrame):
 
 
 __all__ = ["TopBar"]
+            self._avatar_username,
+            user_id=self._avatar_user_id,
+            global_role=self._avatar_global_role,
+        )
+        pixmap = render_svg_avatar(avatar_path, QSize(34, 34))
+        if pixmap is not None:
+            self.user_initials.setPixmap(pixmap)
+            self.user_initials.setText("")
+            return
+
+        # Fallback: render initials as text
+        self.user_initials.setPixmap(QPixmap())
+        initials = (self._avatar_username[:1] or "A").upper()
+        self.user_initials.setText(initials)
