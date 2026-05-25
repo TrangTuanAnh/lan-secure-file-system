@@ -65,6 +65,7 @@ class UploadHandlers:
             error_messages = {
                 "PERMISSION_DENIED": "You do not have permission to upload files to this room",
                 "INVALID_INPUT": "Invalid file information provided",
+                "DUPLICATE_FILE_IN_ROOM": "A file with identical content already exists in this room",
                 "STORAGE_NODE_UNAVAILABLE": "No healthy storage node is available",
                 "DATABASE_ERROR": "Database error occurred"
             }

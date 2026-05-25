@@ -244,8 +244,7 @@ class SettingsPage(QWidget):
         button_row.setSpacing(10)
         button_row.addStretch(1)
 
-        logout_btn = ModernButton("Log Out", parent=container)
-        logout_btn.set_accent_color(PALETTE.error)
+        logout_btn = ModernButton("Log Out", parent=container, variant="danger")
         logout_btn.setMinimumWidth(180)
         logout_btn.clicked.connect(self.logout_requested.emit)
         button_row.addWidget(logout_btn)

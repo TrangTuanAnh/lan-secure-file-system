@@ -141,18 +141,18 @@ class TopBar(QFrame):
                 background-color: rgba(15, 15, 30, 176);
                 color: {PALETTE.text};
                 border: 1px solid rgba(0, 200, 83, 52);
-                border-radius: 16px;
+                border-radius: 10px;
                 padding: 0;
                 font-family: "{ui_font_family()}";
                 font-size: 15px;
                 font-weight: 600;
             }}
             QPushButton#topBarRefreshButton:hover {{
-                background-color: rgba(0, 200, 83, 18);
-                border-color: rgba(0, 200, 83, 94);
+                background-color: rgba(0, 200, 83, 14);
+                border-color: rgba(0, 200, 83, 80);
             }}
             QPushButton#topBarRefreshButton:pressed {{
-                background-color: rgba(0, 178, 72, 32);
+                background-color: rgba(0, 178, 72, 24);
             }}
             QPushButton#topBarRefreshButton:disabled {{
                 color: {PALETTE.disabled_text};

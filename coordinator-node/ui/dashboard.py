@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtCore import QSize, Signal
+from PySide6.QtCore import QEvent, QSize, Signal
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
 
@@ -52,7 +52,7 @@ class DashboardWindow(QMainWindow):
         self._global_role = global_role
         self._runtime = runtime or DashboardRuntimeConfig()
         self._app_settings = AppSettingsStore.load()
-        self._recent_rooms = RecentRoomsStore.load()
+        self._recent_rooms = RecentRoomsStore.load(user_id=self._user_id, username=self._username)
         self._pages: dict[str, QWidget] = {}
         self._room_page: Optional[RoomPage] = None
         self._local_activities: list[dict[str, Any]] = []
@@ -146,11 +146,14 @@ class DashboardWindow(QMainWindow):
         self.setFont(app_font(10))
 
     def _connect_signals(self) -> None:
+        QApplication.instance().installEventFilter(self)
         sidebar = self.app_shell.sidebar_nav
         sidebar.navigation_requested.connect(self._on_navigation_requested)
         self.overview_page.room_open_requested.connect(self._open_room_page)
+        self.overview_page.rooms_loaded.connect(self._sync_recent_rooms_with_backend)
         self.my_rooms_page.room_open_requested.connect(self._open_room_page)
         self.my_rooms_page.activity_occurred.connect(self._record_activity)
+        self.my_rooms_page.rooms_loaded.connect(self._sync_recent_rooms_with_backend)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.settings_page.logout_requested.connect(self.logout_requested.emit)
         for page in (self.overview_page, self.my_rooms_page, self.settings_page):
@@ -173,8 +176,20 @@ class DashboardWindow(QMainWindow):
         self.page_stack.setCurrentWidget(page)
 
     def _open_room_page(self, room_payload: dict[str, Any]) -> None:
-        self._recent_rooms = RecentRoomsStore.record_opened(room_payload)
+        self._recent_rooms = RecentRoomsStore.record_opened(
+            room_payload,
+            user_id=self._user_id,
+            username=self._username,
+        )
         self.overview_page.set_recent_rooms(self._recent_rooms)
+        room_name = str(room_payload.get("room_name") or room_payload.get("name") or "room")
+        self._record_activity(
+            {
+                "type": "Room",
+                "message": f"Opened '{room_name}'.",
+                "timestamp": "Just now",
+            }
+        )
 
         if self._room_page is not None:
             self.page_stack.removeWidget(self._room_page)
@@ -201,6 +216,7 @@ class DashboardWindow(QMainWindow):
         )
         self._room_page.back_requested.connect(self._on_room_page_back_requested)
         self._room_page.activity_occurred.connect(self._record_activity)
+        self._room_page.sidebar_status_changed.connect(self.app_shell.sidebar_nav.apply_status_payload)
         self._room_page.top_bar.set_user_display(self._username or "Authenticated User", user_id=self._user_id)
         self._room_page.top_bar.set_user_role(self._display_global_role())
         self._room_page.top_bar.account_requested.connect(self._show_account_dialog)
@@ -253,9 +269,28 @@ class DashboardWindow(QMainWindow):
         self._local_activities = self._local_activities[:10]
         self.overview_page.set_local_activities(self._local_activities)
 
+    def _sync_recent_rooms_with_backend(self, rooms: list[dict[str, Any]]) -> None:
+        self._recent_rooms = RecentRoomsStore.sync_with_valid_rooms(
+            rooms,
+            user_id=self._user_id,
+            username=self._username,
+        )
+        self.overview_page.set_recent_rooms(self._recent_rooms)
+
     def _on_room_page_back_requested(self) -> None:
+        self.app_shell.sidebar_nav.clear_status()
         self._show_page("rooms")
         self.my_rooms_page.reload_rooms()
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if event.type() == QEvent.MouseButtonPress and self.isVisible():
+            global_pos = event.globalPosition().toPoint()
+            if hasattr(self, "account_drawer") and self.account_drawer.isVisible():
+                if not self.account_drawer.contains_global_pos(global_pos):
+                    self.account_drawer.close_drawer()
+            if self._room_page is not None:
+                self._room_page.handle_global_click(global_pos)
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -266,6 +301,12 @@ class DashboardWindow(QMainWindow):
         super().showEvent(event)
         self._show_page("overview")
         self.account_drawer.update_anchor_geometry()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        super().closeEvent(event)
 
 
 def main() -> None:
