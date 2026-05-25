@@ -54,36 +54,38 @@ def render_svg_avatar(svg_path: Optional[Path], size: QSize) -> Optional[QPixmap
     pixmap.fill(Qt.transparent)
 
     painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-    painter.setRenderHint(QPainter.HighQualityAntialiasing, True)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-    # Create circular clipping path
-    clip_path = QPainterPath()
-    clip_path.addEllipse(QRectF(0.5, 0.5, side - 1, side - 1))
-    painter.setClipPath(clip_path)
+        # Create circular clipping path
+        clip_path = QPainterPath()
+        clip_path.addEllipse(QRectF(0.5, 0.5, side - 1, side - 1))
+        painter.setClipPath(clip_path)
 
-    default_size = renderer.defaultSize()
-    if default_size.isValid() and default_size.width() > 0 and default_size.height() > 0:
-        source_ratio = default_size.width() / default_size.height()
-        target_ratio = 1.0
-        if source_ratio > target_ratio:
-            target_width = side
-            target_height = side / source_ratio
+        default_size = renderer.defaultSize()
+        if default_size.isValid() and default_size.width() > 0 and default_size.height() > 0:
+            source_ratio = default_size.width() / default_size.height()
+            target_ratio = 1.0
+            if source_ratio > target_ratio:
+                target_width = side
+                target_height = side / source_ratio
+            else:
+                target_height = side
+                target_width = side * source_ratio
+            target_rect = QRectF(
+                (side - target_width) / 2,
+                (side - target_height) / 2,
+                target_width,
+                target_height,
+            )
         else:
-            target_height = side
-            target_width = side * source_ratio
-        target_rect = QRectF(
-            (side - target_width) / 2,
-            (side - target_height) / 2,
-            target_width,
-            target_height,
-        )
-    else:
-        target_rect = QRectF(0, 0, side, side)
+            target_rect = QRectF(0, 0, side, side)
 
-    renderer.render(painter, target_rect)
-    painter.end()
+        renderer.render(painter, target_rect)
+    finally:
+        if painter.isActive():
+            painter.end()
     
     return pixmap
 

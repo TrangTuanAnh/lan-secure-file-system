@@ -130,7 +130,7 @@ class DashboardWindow(QMainWindow):
         self.page_stack.addWidget(self.settings_page)
         self.page_stack.setCurrentWidget(self.overview_page)
         self.overview_page.set_local_activities(self._local_activities)
-        self.overview_page.set_recent_rooms(self._recent_rooms)
+        self.overview_page.set_recent_rooms([])
         self._apply_app_settings()
 
     def _apply_window_theme(self) -> None:
@@ -149,8 +149,10 @@ class DashboardWindow(QMainWindow):
         sidebar = self.app_shell.sidebar_nav
         sidebar.navigation_requested.connect(self._on_navigation_requested)
         self.overview_page.room_open_requested.connect(self._open_room_page)
+        self.overview_page.rooms_loaded.connect(self._sync_recent_rooms_with_backend)
         self.my_rooms_page.room_open_requested.connect(self._open_room_page)
         self.my_rooms_page.activity_occurred.connect(self._record_activity)
+        self.my_rooms_page.rooms_loaded.connect(self._sync_recent_rooms_with_backend)
         self.settings_page.settings_changed.connect(self._on_settings_changed)
         self.settings_page.logout_requested.connect(self.logout_requested.emit)
         for page in (self.overview_page, self.my_rooms_page, self.settings_page):
@@ -252,6 +254,10 @@ class DashboardWindow(QMainWindow):
         self._local_activities.insert(0, dict(activity))
         self._local_activities = self._local_activities[:10]
         self.overview_page.set_local_activities(self._local_activities)
+
+    def _sync_recent_rooms_with_backend(self, rooms: list[dict[str, Any]]) -> None:
+        self._recent_rooms = RecentRoomsStore.sync_with_valid_rooms(rooms)
+        self.overview_page.set_recent_rooms(self._recent_rooms)
 
     def _on_room_page_back_requested(self) -> None:
         self._show_page("rooms")

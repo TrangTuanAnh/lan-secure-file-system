@@ -76,6 +76,37 @@ class RecentRoomsStore:
         cls.save(current)
         return cls.load()
 
+    @classmethod
+    def sync_with_valid_rooms(cls, valid_rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Keep only recent rooms that still exist in the latest backend room list.
+
+        Existing ordering by ``last_opened_at`` is preserved, while display
+        metadata is refreshed from the latest backend payload.
+        """
+        valid_map = {
+            _room_id(room): _normalize_recent_room(room)
+            for room in valid_rooms
+            if _room_id(room)
+        }
+        synced: list[dict[str, Any]] = []
+        for room in cls.load():
+            room_id = _room_id(room)
+            if not room_id or room_id not in valid_map:
+                continue
+            refreshed = {
+                **valid_map[room_id],
+                "last_opened_at": str(room.get("last_opened_at") or ""),
+            }
+            synced.append(refreshed)
+        cls.save(synced)
+        return cls.load()
+
+    @classmethod
+    def clear_recent_rooms_cache(cls) -> None:
+        """Clear only the recent-room cache without touching other settings."""
+        cls.save([])
+
     @staticmethod
     def _sorted_limited(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return sorted(
