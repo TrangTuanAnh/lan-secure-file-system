@@ -107,3 +107,44 @@ class DeduplicationChecker:
         except Exception as e:
             logger.error(f"Failed to list deduplication candidates: {e}")
             return []
+
+    def find_same_room_duplicate(
+        self,
+        room_id: str,
+        sha256_whole: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find a file in the same room with identical content hash.
+
+        READY files are visible duplicates; UPLOADING files are treated as
+        duplicates too so concurrent uploads of the same content are rejected.
+        """
+        try:
+            files = self.db.execute_query(
+                """
+                SELECT id, room_id, original_name, status, stored_name, size_bytes, storage_node_id
+                FROM files
+                WHERE room_id = %s
+                  AND sha256_whole = %s
+                  AND status IN ('READY', 'UPLOADING')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (room_id, sha256_whole)
+            )
+            if not files:
+                return None
+
+            file = files[0]
+            return {
+                'id': file['id'],
+                'room_id': file['room_id'],
+                'original_name': file['original_name'],
+                'status': file['status'],
+                'stored_name': file.get('stored_name'),
+                'size_bytes': file.get('size_bytes'),
+                'storage_node_id': file.get('storage_node_id')
+            }
+        except Exception as e:
+            logger.error(f"Failed to detect same-room duplicate: {e}")
+            return None
