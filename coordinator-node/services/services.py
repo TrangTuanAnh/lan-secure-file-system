@@ -44,7 +44,8 @@ class AuthService(BaseService):
             logger.info(f"Signup successful for user {result.get('username')}")
             return True
         except Exception as e:
-            logger.error(f"Signup failed: {e}")
+            # BUGFIX M33: include exc_info for diagnosable traceback
+            logger.error(f"Signup failed: {e}", exc_info=True)
             return False
     
     def login(self, username: str, password: str) -> bool:
@@ -63,7 +64,7 @@ class AuthService(BaseService):
             logger.info(f"Login successful, token expires at {result.get('expiresAt')}")
             return True
         except Exception as e:
-            logger.error(f"Login failed: {e}")
+            logger.error(f"Login failed: {e}", exc_info=True)
             return False
     
     def logout(self) -> bool:
@@ -73,7 +74,7 @@ class AuthService(BaseService):
             logger.info("Logout successful")
             return True
         except Exception as e:
-            logger.error(f"Logout failed: {e}")
+            logger.error(f"Logout failed: {e}", exc_info=True)
             return False
     
     def is_authenticated(self) -> bool:

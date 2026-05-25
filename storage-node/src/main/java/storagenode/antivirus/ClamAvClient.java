@@ -105,14 +105,22 @@ public class ClamAvClient implements AntivirusScanner {
                 "Unrecognized clamd response: " + cleaned);
     }
 
+    /** Cap to prevent OOM if clamd misbehaves and never sends a terminator. */
+    private static final int MAX_RESPONSE_BYTES = 8 * 1024;
+
     private static String readResponse(InputStream in) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         int b;
+        // BUGFIX M23: bound the response to prevent unbounded growth.
         while ((b = in.read()) != -1) {
             if (b == 0 || b == '\n') {
                 break;
             }
             buffer.write(b);
+            if (buffer.size() >= MAX_RESPONSE_BYTES) {
+                // Truncate but keep what we have; caller will treat as error.
+                break;
+            }
         }
         return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
     }

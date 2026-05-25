@@ -89,11 +89,14 @@ public class StorageNodeMain {
             RSAKeyExchange rsaKeyExchange = new RSAKeyExchange(config.getRsaKeySize());
 
             // 7. Initialize coordinator client
+            // BUGFIX M13: pass fileStore so STORAGE_AUTH carries the real
+            // file manifest. Previous 7-arg call left it null, meaning the
+            // Coordinator thought this node had zero files after a restart.
             CoordinatorClient coordinator = new CoordinatorClient(
                 config.getTicketSecret(), config.getNodeId(),
                 config.getCoordinatorHost(), config.getCoordinatorPort(),
                 config.getAdvertisedHost(), config.getAdvertisedPort(),
-                config.getStorageAddress()
+                config.getStorageAddress(), fileStore
             );
             
             // Connect to Coordinator control plane

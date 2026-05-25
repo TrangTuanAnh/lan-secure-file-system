@@ -1,6 +1,7 @@
 """Main entry point for Coordinator Server."""
 import sys
 import signal
+import threading
 from config import load_config
 from database import Database
 from redis_client import RedisClient
@@ -27,26 +28,18 @@ logger = get_logger(__name__)
 cleanup_service = None
 client_server = None
 storage_node_server = None
+shutdown_event = threading.Event()
 
 
 def shutdown_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
-    global cleanup_service, client_server, storage_node_server
+    """Handle shutdown signals gracefully.
+
+    Works cross-platform (Windows/Linux/macOS). Sets an event that the
+    main thread waits on via Event.wait() instead of signal.pause()
+    (which is Unix-only).
+    """
     logger.info(f"Received signal {signum}, shutting down...")
-    
-    if client_server:
-        logger.info("Stopping client socket server...")
-        client_server.stop()
-    
-    if storage_node_server:
-        logger.info("Stopping storage node server...")
-        storage_node_server.stop()
-    
-    if cleanup_service:
-        logger.info("Stopping cleanup service...")
-        cleanup_service.stop()
-    
-    sys.exit(0)
+    shutdown_event.set()
 
 
 def main():
@@ -205,7 +198,8 @@ def main():
             upload_service=upload_service,
             timeout_seconds=config.server.storage_node_timeout,
             registry=storage_registry,
-            reconciliation_service=reconciliation_service
+            reconciliation_service=reconciliation_service,
+            audit_service=audit_service,
         )
         storage_node_server.start()
         logger.info(f"Storage node server started on port {config.server.storage_port}")
@@ -225,9 +219,11 @@ def main():
                 f"Notification Port={config.server.notification_port}")
     logger.info("Server is ready to accept connections")
     
-    # Keep main thread alive
+    # Keep main thread alive (cross-platform: works on Windows too)
     try:
-        signal.pause()
+        # Block until shutdown_handler fires or KeyboardInterrupt
+        while not shutdown_event.is_set():
+            shutdown_event.wait(timeout=1.0)
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     

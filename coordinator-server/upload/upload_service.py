@@ -398,8 +398,24 @@ class UploadService:
             if not files:
                 logger.warning(f"UPLOAD_COMPLETE failed: file {file_id} not found")
                 self._mark_upload_finished(storage_node_id)
+                # BUGFIX M10: audit log even when file row is missing — admin
+                # needs visibility on storage-node ↔ DB drift.
+                if self.audit:
+                    self.audit.write_audit_log(
+                        actor_id=None,
+                        action='UPLOAD',
+                        target_type='file',
+                        target_id=file_id,
+                        room_id=None,
+                        detail={
+                            'reason': 'FILE_NOT_FOUND',
+                            'reporter_node_id': storage_node_id,
+                            'sha256_whole': sha256_whole,
+                        },
+                        status='FAILED'
+                    )
                 return False, "FILE_NOT_FOUND"
-            
+
             file = files[0]
             room_id = file['room_id']
             original_name = file['original_name']
@@ -414,8 +430,33 @@ class UploadService:
                     f"UPLOAD_COMPLETE node mismatch: file={file_id}, "
                     f"assigned={assigned_node_id}, reporter={storage_node_id}"
                 )
+                # BUGFIX M9: mark the file FAILED so it doesn't sit in UPLOADING
+                # until the orphan-cleanup window runs. Also audit log so the
+                # discrepancy is investigable.
+                try:
+                    self.db.execute_update(
+                        "UPDATE files SET status = %s WHERE id = %s AND status = %s",
+                        ('DELETED', file_id, 'UPLOADING')
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to mark mismatched upload DELETED: {e}")
+                if self.audit:
+                    self.audit.write_audit_log(
+                        actor_id=uploader_id,
+                        action='UPLOAD',
+                        target_type='file',
+                        target_id=file_id,
+                        room_id=room_id,
+                        detail={
+                            'original_name': original_name,
+                            'reason': 'STORAGE_NODE_MISMATCH',
+                            'assigned_node_id': assigned_node_id,
+                            'reporter_node_id': storage_node_id,
+                        },
+                        status='FAILED'
+                    )
                 return False, "STORAGE_NODE_MISMATCH"
-            
+
             # Verify hash matches (optional security check)
             if sha256_whole != expected_hash:
                 logger.error(
@@ -427,6 +468,34 @@ class UploadService:
                     "UPDATE files SET status = %s WHERE id = %s",
                     ('DELETED', file_id)
                 )
+                # BUGFIX M10: write audit log + broadcast FILE_DELETED so admin
+                # AND clients in the room are informed.
+                if self.audit:
+                    self.audit.write_audit_log(
+                        actor_id=uploader_id,
+                        action='UPLOAD',
+                        target_type='file',
+                        target_id=file_id,
+                        room_id=room_id,
+                        detail={
+                            'original_name': original_name,
+                            'reason': 'HASH_MISMATCH',
+                            'expected_sha256': expected_hash,
+                            'actual_sha256': sha256_whole,
+                            'storage_node_id': assigned_node_id,
+                        },
+                        status='FAILED'
+                    )
+                if self.notification:
+                    try:
+                        self.notification.broadcast_file_deleted(
+                            room_id=room_id,
+                            file_id=file_id,
+                            file_name=original_name,
+                            deleted_by='system'
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to broadcast FILE_DELETED: {e}")
                 return False, "HASH_MISMATCH"
             
             # Update file status to READY
@@ -467,34 +536,51 @@ class UploadService:
                 )
             
             return True, None
-            
+
         except Exception as e:
-            logger.error(f"Failed to handle upload complete: {e}")
+            logger.error(f"Failed to handle upload complete: {e}", exc_info=True)
+            # BUGFIX M10: audit log even on unexpected error so failures aren't silent.
+            if self.audit:
+                try:
+                    self.audit.write_audit_log(
+                        actor_id=None,
+                        action='UPLOAD',
+                        target_type='file',
+                        target_id=file_id,
+                        room_id=None,
+                        detail={
+                            'reason': 'DATABASE_ERROR',
+                            'error_type': e.__class__.__name__,
+                            'reporter_node_id': storage_node_id,
+                        },
+                        status='FAILED'
+                    )
+                except Exception:
+                    pass
             return False, "DATABASE_ERROR"
-    
+
     def handle_upload_failed(
         self,
         file_id: str,
         reason: str,
         storage_node_id: Optional[str] = None
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Handle UPLOAD_FAILED message from Storage Node.
-        
+        """Handle UPLOAD_FAILED message from Storage Node.
+
         Process:
-        1. Update file status to 'DELETED'
-        2. Write audit log entry
-        
+            1. Lookup file metadata
+            2. Mark the file as DELETED
+            3. Audit log + broadcast FILE_DELETED to room subscribers
+
         Args:
             file_id: File identifier
             reason: Failure reason from Storage Node
             storage_node_id: Storage Node reporting the failure
-        
+
         Returns:
-            Tuple of (success, error_code)
+            (success, error_code)
         """
         try:
-            # Get file details
             files = self.db.execute_query(
                 """
                 SELECT id, room_id, original_name, uploader_id, storage_node_id
@@ -503,12 +589,29 @@ class UploadService:
                 """,
                 (file_id,)
             )
-            
+
             if not files:
                 logger.warning(f"UPLOAD_FAILED: file {file_id} not found")
                 self._mark_upload_finished(storage_node_id)
+                if self.audit:
+                    try:
+                        self.audit.write_audit_log(
+                            actor_id=None,
+                            action='UPLOAD',
+                            target_type='file',
+                            target_id=file_id,
+                            room_id=None,
+                            detail={
+                                'reason': 'FILE_NOT_FOUND',
+                                'original_failure_reason': reason,
+                                'reporter_node_id': storage_node_id,
+                            },
+                            status='FAILED'
+                        )
+                    except Exception:
+                        pass
                 return False, "FILE_NOT_FOUND"
-            
+
             file = files[0]
             room_id = file['room_id']
             original_name = file['original_name']
@@ -522,20 +625,38 @@ class UploadService:
                     f"UPLOAD_FAILED node mismatch: file={file_id}, "
                     f"assigned={assigned_node_id}, reporter={storage_node_id}"
                 )
+                if self.audit:
+                    try:
+                        self.audit.write_audit_log(
+                            actor_id=uploader_id,
+                            action='UPLOAD',
+                            target_type='file',
+                            target_id=file_id,
+                            room_id=room_id,
+                            detail={
+                                'reason': 'STORAGE_NODE_MISMATCH',
+                                'original_failure_reason': reason,
+                                'assigned_node_id': assigned_node_id,
+                                'reporter_node_id': storage_node_id,
+                            },
+                            status='FAILED'
+                        )
+                    except Exception:
+                        pass
                 return False, "STORAGE_NODE_MISMATCH"
-            
-            # Update file status to DELETED
+
+            # Mark DELETED
             self.db.execute_update(
                 "UPDATE files SET status = %s WHERE id = %s",
                 ('DELETED', file_id)
             )
-            
+
             logger.warning(
                 f"Upload failed: file_id={file_id}, "
                 f"name={original_name}, reason={reason}"
             )
-            
-            # Write audit log entry
+
+            # Audit log
             if self.audit:
                 self.audit.write_audit_log(
                     actor_id=uploader_id,
@@ -546,13 +667,44 @@ class UploadService:
                     detail={
                         'original_name': original_name,
                         'reason': reason,
-                        'storage_node_id': assigned_node_id
+                        'storage_node_id': assigned_node_id,
                     },
                     status='FAILED'
                 )
-            
+
+            # BUGFIX M10: broadcast FILE_DELETED so clients in the room don't
+            # see a phantom UPLOADING entry forever.
+            if self.notification:
+                try:
+                    self.notification.broadcast_file_deleted(
+                        room_id=room_id,
+                        file_id=file_id,
+                        file_name=original_name,
+                        deleted_by='system'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to broadcast FILE_DELETED: {e}")
+
             return True, None
-            
+
         except Exception as e:
-            logger.error(f"Failed to handle upload failed: {e}")
+            logger.error(f"Failed to handle upload failed: {e}", exc_info=True)
+            if self.audit:
+                try:
+                    self.audit.write_audit_log(
+                        actor_id=None,
+                        action='UPLOAD',
+                        target_type='file',
+                        target_id=file_id,
+                        room_id=None,
+                        detail={
+                            'reason': 'DATABASE_ERROR_DURING_FAIL_HANDLING',
+                            'error_type': e.__class__.__name__,
+                            'original_failure_reason': reason,
+                            'reporter_node_id': storage_node_id,
+                        },
+                        status='FAILED'
+                    )
+                except Exception:
+                    pass
             return False, "DATABASE_ERROR"

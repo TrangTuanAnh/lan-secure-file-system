@@ -172,8 +172,13 @@ public class ControlPlaneClient {
                     sendPing();
                 }
             } catch (Exception e) {
-                LOG.warning("Heartbeat failed: " + e.getMessage());
-                // Don't reconnect automatically - let the application handle it
+                // BUGFIX M20: on heartbeat I/O failure, trigger cleanup so
+                // the outer reconnect loop can rebuild the connection,
+                // instead of spamming this warning every 30s forever.
+                LOG.warning("Heartbeat failed: " + e.getMessage() + " — triggering cleanup");
+                try {
+                    cleanup();
+                } catch (Exception ignored) {}
             }
         }, HEARTBEAT_INTERVAL_SECONDS, HEARTBEAT_INTERVAL_SECONDS, TimeUnit.SECONDS);
         

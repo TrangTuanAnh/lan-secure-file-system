@@ -10,6 +10,7 @@ from ticket.ticket_service import TicketService
 from upload.upload_service import UploadService
 from storage_node.registry import StorageNodeInfo, StorageNodeRegistry
 from storage_node.reconciliation_service import ReconciliationService
+from audit.audit_service import AuditService
 from logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -37,11 +38,12 @@ class StorageNodeServer(BaseSocketServer):
         upload_service: UploadService,
         timeout_seconds: int = 90,
         registry: Optional[StorageNodeRegistry] = None,
-        reconciliation_service: Optional[ReconciliationService] = None
+        reconciliation_service: Optional[ReconciliationService] = None,
+        audit_service: Optional[AuditService] = None,
     ):
         """
         Initialize Storage Node server.
-        
+
         Args:
             host: Host to bind to
             port: Port to bind to
@@ -50,15 +52,18 @@ class StorageNodeServer(BaseSocketServer):
             upload_service: Upload service for completion handling
             timeout_seconds: Timeout for marking nodes unavailable (default 90s)
             registry: Shared storage node registry used for load balancing
+            audit_service: Optional audit log writer. When provided, storage-node
+                authentication attempts and disconnects are recorded.
         """
         super().__init__(host, port, name="StorageNodeServer")
-        
+
         self.shared_secret = shared_secret
         self.ticket_service = ticket_service
         self.upload_service = upload_service
         self.timeout_seconds = timeout_seconds
         self.registry = registry or StorageNodeRegistry(timeout_seconds=timeout_seconds)
         self.reconciliation_service = reconciliation_service
+        self.audit_service = audit_service
         
         # Health check thread
         self._health_check_thread: Optional[threading.Thread] = None
@@ -118,13 +123,32 @@ class StorageNodeServer(BaseSocketServer):
     def _on_connection_closed(self, connection: SocketConnection) -> None:
         """
         Called when a connection is closed.
-        
+
         Args:
             connection: Closed connection
         """
         node_info = self.registry.remove_connection(connection)
-        
+
         if node_info:
+            # BUGFIX (audit): log storage-node disconnects so the operator can
+            # correlate "node went away" with subsequent upload failures.
+            if self.audit_service and node_info.authenticated:
+                try:
+                    self.audit_service.write_audit_log(
+                        actor_id=None,
+                        action='STORAGE_NODE_DISCONNECT',
+                        target_type='storage_node',
+                        target_id=node_info.node_id,
+                        room_id=None,
+                        detail={
+                            'storage_address': node_info.storage_address,
+                            'connection_id': connection.connection_id,
+                        },
+                        status='SUCCESS'
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to write disconnect audit log: {e}")
+
             logger.info(
                 f"Storage Node disconnected: {node_info.node_id}, "
                 f"authenticated={node_info.authenticated}"
@@ -145,9 +169,28 @@ class StorageNodeServer(BaseSocketServer):
             message: STORAGE_AUTH message with payload: {"secret": "..."}
         """
         secret = message.payload.get('secret')
-        
+        candidate_node_id = message.payload.get('nodeId') or connection.connection_id
+
         if not secret:
             logger.warning(f"STORAGE_AUTH missing secret from {connection.connection_id}")
+            # BUGFIX (audit): record failed authentication attempts so admin
+            # can spot brute-force / misconfigured nodes.
+            if self.audit_service:
+                try:
+                    self.audit_service.write_audit_log(
+                        actor_id=None,
+                        action='STORAGE_NODE_AUTH',
+                        target_type='storage_node',
+                        target_id=str(candidate_node_id),
+                        room_id=None,
+                        detail={
+                            'reason': 'MISSING_SECRET',
+                            'connection_id': connection.connection_id,
+                        },
+                        status='FAILED'
+                    )
+                except Exception:
+                    pass
             error_msg = Message.create_error(
                 "MISSING_SECRET",
                 "Authentication secret is required",
@@ -155,10 +198,26 @@ class StorageNodeServer(BaseSocketServer):
             )
             connection.send_message(error_msg)
             return
-        
+
         # Verify shared secret
         if secret != self.shared_secret:
             logger.warning(f"STORAGE_AUTH invalid secret from {connection.connection_id}")
+            if self.audit_service:
+                try:
+                    self.audit_service.write_audit_log(
+                        actor_id=None,
+                        action='STORAGE_NODE_AUTH',
+                        target_type='storage_node',
+                        target_id=str(candidate_node_id),
+                        room_id=None,
+                        detail={
+                            'reason': 'INVALID_SECRET',
+                            'connection_id': connection.connection_id,
+                        },
+                        status='FAILED'
+                    )
+                except Exception:
+                    pass
             error_msg = Message.create_error(
                 "INVALID_SECRET",
                 "Authentication failed: invalid secret",
@@ -204,6 +263,26 @@ class StorageNodeServer(BaseSocketServer):
             f"Storage Node authenticated: node_id={node_info.node_id}, "
             f"storageAddress={node_info.storage_address}"
         )
+
+        # BUGFIX (audit): record successful storage-node authentication.
+        if self.audit_service:
+            try:
+                self.audit_service.write_audit_log(
+                    actor_id=None,
+                    action='STORAGE_NODE_AUTH',
+                    target_type='storage_node',
+                    target_id=str(node_info.node_id),
+                    room_id=None,
+                    detail={
+                        'storage_address': node_info.storage_address,
+                        'data_host': data_host,
+                        'data_port': data_port,
+                        'connection_id': connection.connection_id,
+                    },
+                    status='SUCCESS'
+                )
+            except Exception as e:
+                logger.error(f"Failed to write STORAGE_NODE_AUTH audit log: {e}")
 
         manifest = message.payload.get('manifest')
         if isinstance(manifest, list):
@@ -482,102 +561,3 @@ class StorageNodeServer(BaseSocketServer):
             )
             connection.send_message(error_msg)
 
-    def _handle_manifest_delta(
-        self,
-        connection: SocketConnection,
-        message: Message
-    ) -> None:
-        """
-        Handle MANIFEST_DELTA from a node: incremental adds/removes against
-        its file inventory. No reconciliation is run on deltas (only on full
-        manifests received at auth) to avoid false MISSING from a transient
-        partial state.
-        """
-        node_info = self.registry.get_by_connection(connection)
-        if not node_info or not node_info.authenticated:
-            logger.warning(
-                f"MANIFEST_DELTA from unauthenticated node: {connection.connection_id}"
-            )
-            error_msg = Message.create_error(
-                "NOT_AUTHENTICATED",
-                "Must authenticate before sending manifest deltas",
-                request_id=message.request_id
-            )
-            connection.send_message(error_msg)
-            return
-
-        added = message.payload.get('added') or []
-        removed = message.payload.get('removed') or []
-        if not isinstance(added, list) or not isinstance(removed, list):
-            error_msg = Message.create_error(
-                "INVALID_PAYLOAD",
-                "added and removed must be lists",
-                request_id=message.request_id
-            )
-            connection.send_message(error_msg)
-            return
-
-        self.registry.apply_manifest_delta(node_info.node_id, added, removed)
-        logger.info(
-            f"MANIFEST_DELTA applied: node_id={node_info.node_id}, "
-            f"+{len(added)} -{len(removed)}"
-        )
-
-        ack = Message.create_response(
-            MessageType.ACK,
-            {"status": "success"},
-            request_id=message.request_id
-        )
-        connection.send_message(ack)
-
-    def _health_check_loop(self) -> None:
-        """
-        Periodic health check loop.
-        
-        Requirements: 10.4
-        
-        Runs every 30 seconds and marks nodes as unavailable if no PING
-        received within timeout period.
-        """
-        logger.info("Storage Node health check loop started")
-        
-        while self._health_check_running:
-            try:
-                # Sleep for 30 seconds
-                time.sleep(30)
-                
-                if not self._health_check_running:
-                    break
-                
-                unhealthy_nodes = [
-                    (node_info.connection, node_info)
-                    for node_info in self.registry.get_all_nodes()
-                    if node_info.authenticated and not node_info.is_healthy(self.timeout_seconds)
-                ]
-                
-                # Close unhealthy connections
-                for connection, node_info in unhealthy_nodes:
-                    logger.warning(
-                        f"Storage Node timeout: {node_info.node_id}, "
-                        f"last_ping={node_info.last_ping_time:.0f}, "
-                        f"timeout={self.timeout_seconds}s"
-                    )
-                    
-                    try:
-                        connection.close()
-                    except Exception as e:
-                        logger.error(f"Error closing unhealthy connection: {e}")
-            
-            except Exception as e:
-                logger.error(f"Health check loop error: {e}", exc_info=True)
-        
-        logger.info("Storage Node health check loop stopped")
-    
-    def get_connected_nodes(self) -> list:
-        """
-        Get list of connected and authenticated Storage Nodes.
-        
-        Returns:
-            List of node info dictionaries
-        """
-        return self.registry.get_connected_nodes()

@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 /**
  * Periodically logs storage node statistics and cleans expired sessions.
@@ -145,13 +146,16 @@ public class StorageMonitor {
     // ── Helpers ──
 
     private long calculateDirSize(Path dir) throws IOException {
-        return Files.walk(dir)
-                .filter(Files::isRegularFile)
-                .mapToLong(p -> {
-                    try { return Files.size(p); }
-                    catch (IOException e) { return 0; }
-                })
-                .sum();
+        // BUGFIX C9: try-with-resources to close the underlying DirectoryStream
+        // and prevent file-handle leaks each monitoring interval.
+        try (Stream<Path> stream = Files.walk(dir)) {
+            return stream.filter(Files::isRegularFile)
+                    .mapToLong(p -> {
+                        try { return Files.size(p); }
+                        catch (IOException e) { return 0; }
+                    })
+                    .sum();
+        }
     }
 
     private String formatBytes(long bytes) {

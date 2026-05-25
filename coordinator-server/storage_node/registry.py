@@ -84,6 +84,13 @@ class StorageNodeRegistry:
             old_node = self._nodes_by_id.get(node_id)
             if old_node and old_node.connection is not connection:
                 self._nodes_by_connection.pop(old_node.connection, None)
+                # BUGFIX M7: close the orphaned old socket so it doesn't leak
+                # file descriptors and doesn't keep receiving events from
+                # the now-replaced connection.
+                try:
+                    old_node.connection.close()
+                except Exception:
+                    pass
 
             node_info.node_id = node_id
             node_info.data_host = data_host

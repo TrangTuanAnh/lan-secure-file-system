@@ -74,15 +74,49 @@ public class Message {
     }
 
     public int getInt(String key) {
+        // BUGFIX M19: handle missing key (was NPE on v.toString())
         Object v = headers.get(key);
+        if (v == null) return 0;
         if (v instanceof Number) return ((Number) v).intValue();
-        return Integer.parseInt(v.toString());
+        try {
+            return Integer.parseInt(v.toString());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    public int getInt(String key, int defaultValue) {
+        Object v = headers.get(key);
+        if (v == null) return defaultValue;
+        if (v instanceof Number) return ((Number) v).intValue();
+        try {
+            return Integer.parseInt(v.toString());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 
     public long getLong(String key) {
+        // BUGFIX M19: handle missing key
         Object v = headers.get(key);
+        if (v == null) return 0L;
         if (v instanceof Number) return ((Number) v).longValue();
-        return Long.parseLong(v.toString());
+        try {
+            return Long.parseLong(v.toString());
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
+    public long getLong(String key, long defaultValue) {
+        Object v = headers.get(key);
+        if (v == null) return defaultValue;
+        if (v instanceof Number) return ((Number) v).longValue();
+        try {
+            return Long.parseLong(v.toString());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 
     public boolean getBool(String key) {
