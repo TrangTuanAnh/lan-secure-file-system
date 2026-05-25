@@ -5,6 +5,7 @@ import storagenode.antivirus.ScanResult;
 import storagenode.antivirus.ScanStatus;
 import storagenode.crypto.AESCrypto;
 import storagenode.crypto.HashUtil;
+import storagenode.crypto.ModernKeyExchange;
 import storagenode.crypto.RSAKeyExchange;
 import storagenode.protocol.FrameCodec;
 import storagenode.protocol.Message;
@@ -21,6 +22,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -49,6 +51,8 @@ public class ClientHandler implements Runnable {
     private InputStream in;
     private OutputStream out;
     private SecretKey aesSessionKey;  // null if encryption not negotiated
+    private String aesCipherMode = "NONE";  // "AES-256-CBC" (legacy) or "AES-256-GCM" (modern)
+    private ModernKeyExchange.HandshakeOffer modernOffer;  // pending hybrid/ECDH offer
     private volatile boolean running = true;
 
     public ClientHandler(Socket socket, SessionManager sessionManager,
@@ -116,8 +120,26 @@ public class ClientHandler implements Runnable {
 
     private void handleKeyExchange(Message msg) throws Exception {
         byte[] encryptedSessionKey = msg.getData();
+        String action = msg.getString("action");
+
+        // Modern hybrid / ECDH key exchange entry points
+        if ("GET_HYBRID_PUBLIC_KEY".equalsIgnoreCase(action) ||
+                "GET_MODERN_PUBLIC_KEY".equalsIgnoreCase(action) ||
+                "GET_ECDH_PUBLIC_KEY".equalsIgnoreCase(action)) {
+            handleModernKeyBootstrap();
+            return;
+        }
+        if ("HYBRID_INIT".equalsIgnoreCase(action)) {
+            handleHybridKeyInit(msg);
+            return;
+        }
+        if ("ECDH_INIT".equalsIgnoreCase(action)) {
+            handleEcdhKeyInit(msg);
+            return;
+        }
+
         boolean requestPublicKey = msg.getBool("requestPublicKey") ||
-                "GET_PUBLIC_KEY".equalsIgnoreCase(msg.getString("action"));
+                "GET_PUBLIC_KEY".equalsIgnoreCase(action);
 
         // Bootstrap step: client asks for node public key before sending AES key.
         if (encryptedSessionKey == null || encryptedSessionKey.length == 0) {
@@ -135,8 +157,9 @@ public class ClientHandler implements Runnable {
         }
 
         try {
-            // Client sent RSA-encrypted AES key
+            // Client sent RSA-encrypted AES key (legacy path)
             aesSessionKey = rsaKeyExchange.decryptSessionKey(encryptedSessionKey);
+            aesCipherMode = "AES-256-CBC";
         } catch (Exception e) {
             sendError("INVALID_SESSION_KEY", "Failed to decrypt AES session key");
             LOG.warning("Key exchange failed: " + e.getMessage());
@@ -149,7 +172,88 @@ public class ClientHandler implements Runnable {
                 .set("bootstrap", false);
         send(resp);
 
-        LOG.info("Encryption session established with " + socket.getRemoteSocketAddress());
+        LOG.info("Legacy AES-CBC session established with " + socket.getRemoteSocketAddress());
+    }
+
+    private void handleModernKeyBootstrap() throws Exception {
+        try {
+            modernOffer = ModernKeyExchange.createOffer();
+        } catch (Exception e) {
+            sendError("MODERN_KEY_EXCHANGE_UNAVAILABLE", "Modern key exchange is unavailable");
+            LOG.log(Level.WARNING, "Failed to create modern key exchange offer", e);
+            return;
+        }
+
+        Message resp = Message.ok(MessageType.KEY_EXCHANGE_RESP)
+                .set("status", "PUBLIC_KEY")
+                .set("encrypted", false)
+                .set("bootstrap", true)
+                .set("algorithm", ModernKeyExchange.HYBRID_PROTOCOL)
+                .set("ecdhCurve", "secp256r1")
+                .set("pqKem", "ML-KEM-768")
+                .set("postQuantum", true)
+                .set("cipher", ModernKeyExchange.CIPHER)
+                .set("serverNonceB64", b64(modernOffer.getServerNonce()))
+                .set("mlKemPublicKeyB64", b64(modernOffer.getMlKemPublicKeyBytes()))
+                .set("message", "Hybrid ECDH/ML-KEM public keys returned");
+        resp.setData(modernOffer.getEcdhPublicKeyBytes());
+        send(resp);
+        LOG.info("Returned hybrid ECDH/ML-KEM key material to " + socket.getRemoteSocketAddress());
+    }
+
+    private void handleHybridKeyInit(Message msg) throws Exception {
+        if (modernOffer == null) {
+            sendError("MISSING_KEY_BOOTSTRAP", "Request modern public keys before HYBRID_INIT");
+            return;
+        }
+        try {
+            byte[] clientEcdhPublicKey = msg.getData();
+            byte[] clientNonce = b64decode(msg.getString("clientNonceB64"));
+            byte[] mlKemCiphertext = b64decode(msg.getString("mlKemCiphertextB64"));
+            aesSessionKey = ModernKeyExchange.deriveHybridSessionKey(
+                    modernOffer, clientEcdhPublicKey, clientNonce, mlKemCiphertext);
+            aesCipherMode = ModernKeyExchange.CIPHER;
+        } catch (Exception e) {
+            sendError("INVALID_HYBRID_KEY", "Failed to derive hybrid session key");
+            LOG.warning("Hybrid key exchange failed: " + e.getMessage());
+            return;
+        }
+
+        Message resp = Message.ok(MessageType.KEY_EXCHANGE_RESP)
+                .set("encrypted", true)
+                .set("bootstrap", false)
+                .set("algorithm", ModernKeyExchange.HYBRID_PROTOCOL)
+                .set("postQuantum", true)
+                .set("cipher", aesCipherMode);
+        send(resp);
+        LOG.info("Hybrid post-quantum session established with " + socket.getRemoteSocketAddress());
+    }
+
+    private void handleEcdhKeyInit(Message msg) throws Exception {
+        if (modernOffer == null) {
+            sendError("MISSING_KEY_BOOTSTRAP", "Request modern public keys before ECDH_INIT");
+            return;
+        }
+        try {
+            byte[] clientEcdhPublicKey = msg.getData();
+            byte[] clientNonce = b64decode(msg.getString("clientNonceB64"));
+            aesSessionKey = ModernKeyExchange.deriveEcdhSessionKey(
+                    modernOffer, clientEcdhPublicKey, clientNonce);
+            aesCipherMode = ModernKeyExchange.CIPHER;
+        } catch (Exception e) {
+            sendError("INVALID_ECDH_KEY", "Failed to derive ECDH session key");
+            LOG.warning("ECDH key exchange failed: " + e.getMessage());
+            return;
+        }
+
+        Message resp = Message.ok(MessageType.KEY_EXCHANGE_RESP)
+                .set("encrypted", true)
+                .set("bootstrap", false)
+                .set("algorithm", ModernKeyExchange.ECDH_PROTOCOL)
+                .set("postQuantum", false)
+                .set("cipher", aesCipherMode);
+        send(resp);
+        LOG.info("ECDH AES-GCM session established with " + socket.getRemoteSocketAddress());
     }
 
     // ═══════════════════════ UPLOAD ═══════════════════════
@@ -223,10 +327,10 @@ public class ClientHandler implements Runnable {
         String chunkHash = msg.getString("chunkHash");
         byte[] chunkData = msg.getData();
 
-        // Decrypt if encrypted session
+        // Decrypt if encrypted session (auto-detect GCM vs CBC by magic prefix)
         if (aesSessionKey != null && chunkData != null) {
             try {
-                chunkData = AESCrypto.decrypt(aesSessionKey, chunkData);
+                chunkData = decryptPayload(chunkData);
             } catch (Exception e) {
                 sendError("DECRYPT_FAILED", "Failed to decrypt chunk payload");
                 return;
@@ -515,10 +619,10 @@ public class ClientHandler implements Runnable {
 
         String chunkHash = HashUtil.sha256(chunkData);
 
-        // Encrypt if encrypted session
+        // Encrypt if encrypted session (use whichever cipher was negotiated)
         byte[] payload = chunkData;
         if (aesSessionKey != null) {
-            payload = AESCrypto.encrypt(aesSessionKey, chunkData);
+            payload = encryptPayload(chunkData);
         }
 
         Message resp = new Message(MessageType.DOWNLOAD_CHUNK)
@@ -672,6 +776,31 @@ public class ClientHandler implements Runnable {
 
     private synchronized void send(Message msg) throws IOException {
         FrameCodec.writeFrame(out, msg);
+    }
+
+    /** Encrypt outgoing chunk payload using the negotiated cipher mode. */
+    private byte[] encryptPayload(byte[] plaintext) throws Exception {
+        if (ModernKeyExchange.CIPHER.equals(aesCipherMode)) {
+            return AESCrypto.encryptGcm(aesSessionKey, plaintext);
+        }
+        // Legacy or unset → CBC for backward compatibility
+        return AESCrypto.encryptCbc(aesSessionKey, plaintext);
+    }
+
+    /** Decrypt incoming chunk payload — auto-detects GCM by magic prefix. */
+    private byte[] decryptPayload(byte[] ciphertext) throws Exception {
+        return AESCrypto.decrypt(aesSessionKey, ciphertext);
+    }
+
+    private static String b64(byte[] data) {
+        return Base64.getEncoder().encodeToString(data);
+    }
+
+    private static byte[] b64decode(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return new byte[0];
+        }
+        return Base64.getDecoder().decode(value);
     }
 
     private void sendError(String code, String message) throws IOException {

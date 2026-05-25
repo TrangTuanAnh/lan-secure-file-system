@@ -39,7 +39,68 @@ Mỗi message gồm **JSON header** (metadata) + **binary data** (tùy chọn, c
 
 ### 1. KEY_EXCHANGE (Client → Node)
 
-Thiết lập encrypted session bằng RSA + AES.
+Thiết lập encrypted session. Luồng ưu tiên hiện tại là hybrid ECDH P-256 +
+ML-KEM-768 để derive AES-256-GCM session key. RSA vẫn được giữ làm legacy
+fallback cho client cũ.
+
+**Bước 1 hiện đại (bootstrap hybrid public keys):**
+
+```json
+{
+  "type": "KEY_EXCHANGE",
+  "action": "GET_HYBRID_PUBLIC_KEY",
+  "requestModern": true,
+  "clientSupports": ["HYBRID-ECDH-P256-ML-KEM-768", "ECDH-P256-HKDF-SHA256"]
+}
+```
+
+**Response: KEY_EXCHANGE_RESP**
+
+```json
+{
+  "type": "KEY_EXCHANGE_RESP",
+  "status": "PUBLIC_KEY",
+  "encrypted": false,
+  "bootstrap": true,
+  "algorithm": "HYBRID-ECDH-P256-ML-KEM-768",
+  "ecdhCurve": "secp256r1",
+  "pqKem": "ML-KEM-768",
+  "postQuantum": true,
+  "cipher": "AES-256-GCM",
+  "serverNonceB64": "...",
+  "mlKemPublicKeyB64": "..."
+}
+```
+
+**Data:** Node ECDH P-256 public key (X.509 DER)
+
+**Bước 2 hiện đại (client init):**
+
+```json
+{
+  "type": "KEY_EXCHANGE",
+  "action": "HYBRID_INIT",
+  "clientAlgorithm": "HYBRID-ECDH-P256-ML-KEM-768",
+  "clientNonceB64": "...",
+  "mlKemCiphertextB64": "...",
+  "cipher": "AES-256-GCM"
+}
+```
+
+**Data:** Client ECDH P-256 public key (X.509 DER)
+
+Nếu client chưa có thư viện ML-KEM, có thể gửi `action="ECDH_INIT"` để dùng
+ECDH P-256 + AES-GCM, không rơi về raw/plaintext.
+
+**AES-256-GCM payload format:**
+
+```
+["GCM1" 4 bytes][nonce 12 bytes][ciphertext + tag 16 bytes]
+```
+
+#### Legacy RSA fallback
+
+Thiết lập encrypted session bằng RSA + AES cho client cũ.
 
 **Bước 1 (bootstrap public key):**
 

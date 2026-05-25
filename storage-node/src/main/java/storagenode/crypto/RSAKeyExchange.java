@@ -7,19 +7,18 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 
 /**
- * RSA key exchange: the client encrypts an AES session key with the node's
- * RSA public key; the node decrypts it with its private key.
+ * Legacy RSA key exchange: the client encrypts an AES session key with the
+ * node's RSA public key; the node decrypts it with its private key.
  *
- * Flow:
- *   1. Node generates RSA key pair on startup
- *   2. Client sends KEY_EXCHANGE with the node's public key → encrypts AES key
- *   3. Node decrypts AES key → both sides now share the AES session key
- *   4. All subsequent chunk data is encrypted with AES
+ * New clients should prefer ModernKeyExchange (ECDH P-256 + ML-KEM-768 +
+ * AES-GCM). This class remains for backward compatibility and uses OAEP-SHA256
+ * for new legacy clients while still accepting the previous PKCS#1 padding.
  */
 public class RSAKeyExchange {
 
     private static final String ALGORITHM = "RSA";
-    private static final String TRANSFORMATION = "RSA/ECB/PKCS1Padding";
+    private static final String OAEP_TRANSFORMATION = "RSA/ECB/OAEPWithSHA-256AndMGF1Padding";
+    private static final String LEGACY_TRANSFORMATION = "RSA/ECB/PKCS1Padding";
 
     private final KeyPair keyPair;
 
@@ -49,10 +48,11 @@ public class RSAKeyExchange {
      * Called by the node when receiving KEY_EXCHANGE from client.
      */
     public SecretKey decryptSessionKey(byte[] encryptedKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(TRANSFORMATION);
-        cipher.init(Cipher.DECRYPT_MODE, keyPair.getPrivate());
-        byte[] aesKeyBytes = cipher.doFinal(encryptedKey);
-        return AESCrypto.keyFromBytes(aesKeyBytes);
+        try {
+            return decryptSessionKeyWithTransform(encryptedKey, OAEP_TRANSFORMATION);
+        } catch (Exception oaepFailure) {
+            return decryptSessionKeyWithTransform(encryptedKey, LEGACY_TRANSFORMATION);
+        }
     }
 
     // ── Static helpers (used by client side) ──
@@ -76,8 +76,15 @@ public class RSAKeyExchange {
      * Called by the client before sending KEY_EXCHANGE.
      */
     public static byte[] encryptSessionKey(PublicKey nodePublicKey, SecretKey aesKey) throws Exception {
-        Cipher cipher = Cipher.getInstance(TRANSFORMATION);
+        Cipher cipher = Cipher.getInstance(OAEP_TRANSFORMATION);
         cipher.init(Cipher.ENCRYPT_MODE, nodePublicKey);
         return cipher.doFinal(AESCrypto.keyToBytes(aesKey));
+    }
+
+    private SecretKey decryptSessionKeyWithTransform(byte[] encryptedKey, String transformation) throws Exception {
+        Cipher cipher = Cipher.getInstance(transformation);
+        cipher.init(Cipher.DECRYPT_MODE, keyPair.getPrivate());
+        byte[] aesKeyBytes = cipher.doFinal(encryptedKey);
+        return AESCrypto.keyFromBytes(aesKeyBytes);
     }
 }

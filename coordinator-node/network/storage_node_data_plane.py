@@ -21,10 +21,12 @@ keep working.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
 import os
+import secrets
 import socket
 import struct
 from pathlib import Path
@@ -32,11 +34,33 @@ from typing import Any, Callable, Optional
 
 from config import APP_CONFIG
 
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+except ImportError:  # pragma: no cover - exercised only on incomplete installs
+    AESGCM = None
+    HKDF = None
+    ec = None
+    hashes = None
+    serialization = None
+
+try:
+    from pqcrypto.kem import ml_kem_768 as _ml_kem_768
+except ImportError:  # pragma: no cover - optional post-quantum acceleration
+    _ml_kem_768 = None
+
 
 logger = logging.getLogger(__name__)
 
 # Block size for the streaming SHA-256 pre-pass on upload.
 _HASH_BLOCK = 64 * 1024
+_GCM_MAGIC = b"GCM1"
+_GCM_NONCE_SIZE = 12
+_TRANSCRIPT_LABEL = b"LTM-DATA-PLANE-V2"
+_HYBRID_PROTOCOL = "HYBRID-ECDH-P256-ML-KEM-768"
+_ECDH_PROTOCOL = "ECDH-P256-HKDF-SHA256"
 
 
 class DataPlaneError(RuntimeError):
@@ -139,6 +163,143 @@ def _read_chunk_at(path: Path, offset: int, chunk_size: int) -> bytes:
         return f.read(chunk_size)
 
 
+def _length_prefixed(*parts: bytes) -> bytes:
+    out = bytearray()
+    for part in parts:
+        safe_part = part or b""
+        out.extend(struct.pack(">I", len(safe_part)))
+        out.extend(safe_part)
+    return bytes(out)
+
+
+def _b64decode(value: Any) -> bytes:
+    if value is None:
+        return b""
+    text = str(value).strip()
+    return base64.b64decode(text) if text else b""
+
+
+def _b64encode(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+class _CryptoSession:
+    """AES-256-GCM session derived from hybrid key exchange."""
+
+    def __init__(self, key: bytes, *, algorithm: str, post_quantum: bool) -> None:
+        if AESGCM is None:
+            raise DataPlaneError("cryptography package is required for AES-GCM data-plane encryption.")
+        self.algorithm = algorithm
+        self.post_quantum = post_quantum
+        self._aead = AESGCM(key)
+
+    def encrypt(self, plaintext: bytes) -> bytes:
+        nonce = secrets.token_bytes(_GCM_NONCE_SIZE)
+        return _GCM_MAGIC + nonce + self._aead.encrypt(nonce, plaintext, None)
+
+    def decrypt(self, payload: bytes) -> bytes:
+        if not payload.startswith(_GCM_MAGIC) or len(payload) <= len(_GCM_MAGIC) + _GCM_NONCE_SIZE:
+            raise DataPlaneError("Storage node returned a non-AES-GCM encrypted payload.")
+        nonce_start = len(_GCM_MAGIC)
+        nonce_end = nonce_start + _GCM_NONCE_SIZE
+        nonce = payload[nonce_start:nonce_end]
+        ciphertext = payload[nonce_end:]
+        return self._aead.decrypt(nonce, ciphertext, None)
+
+
+def _negotiate_crypto(sock: socket.socket) -> _CryptoSession:
+    """Negotiate hybrid ECDH/ML-KEM key exchange and return an AES-GCM session."""
+    if AESGCM is None or HKDF is None or ec is None or serialization is None or hashes is None:
+        raise DataPlaneError(
+            "Modern data-plane encryption requires the cryptography package "
+            "(AES-GCM, ECDH P-256, HKDF-SHA256)."
+        )
+
+    _send_frame(
+        sock,
+        {
+            "type": "KEY_EXCHANGE",
+            "action": "GET_HYBRID_PUBLIC_KEY",
+            "requestModern": True,
+            "clientSupports": [_HYBRID_PROTOCOL, _ECDH_PROTOCOL],
+        },
+    )
+    offer, server_ecdh_public_bytes = _recv_frame(sock)
+    if offer.get("type") == "ERROR":
+        raise DataPlaneError(offer.get("message") or "Modern key exchange bootstrap failed.")
+
+    if offer.get("cipher") != "AES-256-GCM" or not server_ecdh_public_bytes:
+        raise DataPlaneError("Storage node does not support modern AES-GCM key exchange.")
+
+    try:
+        server_public_key = serialization.load_der_public_key(server_ecdh_public_bytes)
+        client_private_key = ec.generate_private_key(ec.SECP256R1())
+        client_public_bytes = client_private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        ecdh_secret = client_private_key.exchange(ec.ECDH(), server_public_key)
+    except Exception as exc:
+        raise DataPlaneError("Failed to process storage node ECDH public key.") from exc
+
+    server_nonce = _b64decode(offer.get("serverNonceB64"))
+    server_mlkem_public = _b64decode(offer.get("mlKemPublicKeyB64"))
+    client_nonce = secrets.token_bytes(32)
+    mlkem_ciphertext = b""
+    mlkem_secret = b""
+    protocol = _ECDH_PROTOCOL
+    action = "ECDH_INIT"
+
+    if _ml_kem_768 is not None and server_mlkem_public:
+        try:
+            mlkem_ciphertext, mlkem_secret = _ml_kem_768.encrypt(server_mlkem_public)
+            protocol = _HYBRID_PROTOCOL
+            action = "HYBRID_INIT"
+        except Exception as exc:
+            logger.warning("ML-KEM-768 negotiation failed; falling back to ECDH-only AES-GCM: %s", exc)
+
+    salt = hashlib.sha256(server_nonce + client_nonce).digest()
+    ikm = _length_prefixed(protocol.encode("utf-8"), ecdh_secret, mlkem_secret)
+    info = _length_prefixed(
+        _TRANSCRIPT_LABEL,
+        server_ecdh_public_bytes,
+        client_public_bytes,
+        server_mlkem_public,
+        mlkem_ciphertext,
+    )
+    key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=info,
+    ).derive(ikm)
+
+    init_header = {
+        "type": "KEY_EXCHANGE",
+        "action": action,
+        "clientAlgorithm": protocol,
+        "clientNonceB64": _b64encode(client_nonce),
+        "cipher": "AES-256-GCM",
+    }
+    if mlkem_ciphertext:
+        init_header["mlKemCiphertextB64"] = _b64encode(mlkem_ciphertext)
+
+    _send_frame(sock, init_header, client_public_bytes)
+    response, _ = _recv_frame(sock)
+    if response.get("type") == "ERROR":
+        raise DataPlaneError(response.get("message") or "Modern key exchange failed.")
+    if response.get("cipher") != "AES-256-GCM":
+        raise DataPlaneError("Storage node did not confirm AES-GCM encryption.")
+
+    post_quantum = bool(response.get("postQuantum")) and protocol == _HYBRID_PROTOCOL
+    logger.info(
+        "Storage data-plane encryption established: algorithm=%s cipher=AES-256-GCM postQuantum=%s",
+        protocol,
+        post_quantum,
+    )
+    return _CryptoSession(key, algorithm=protocol, post_quantum=post_quantum)
+
+
 class StorageNodeDataPlaneClient:
     """Implements supported upload/download flows over the Storage Node socket protocol.
 
@@ -197,6 +358,7 @@ class StorageNodeDataPlaneClient:
         try:
             with socket.create_connection((host, port), timeout=self._timeout) as sock:
                 sock.settimeout(self._timeout)
+                crypto = _negotiate_crypto(sock)
                 _send_frame(sock, open_payload)
                 open_response, _ = _recv_frame(sock)
                 if open_response.get("type") == "ERROR":
@@ -228,7 +390,7 @@ class StorageNodeDataPlaneClient:
                             "chunkIndex": chunk_index,
                             "chunkHash": hashlib.sha256(chunk).hexdigest(),
                         }
-                        _send_frame(sock, chunk_header, chunk)
+                        _send_frame(sock, chunk_header, crypto.encrypt(chunk))
                         ack, _ = _recv_frame(sock)
                         # BUGFIX M: accept only explicit OK status (no None) so
                         # silent server bugs surface as errors.
@@ -281,6 +443,7 @@ class StorageNodeDataPlaneClient:
             with socket.create_connection((host, port), timeout=self._timeout) as sock, \
                     open(target, "wb") as out_file:
                 sock.settimeout(self._timeout)
+                crypto = _negotiate_crypto(sock)
                 _send_frame(
                     sock,
                     {
@@ -313,6 +476,7 @@ class StorageNodeDataPlaneClient:
                         raise DataPlaneError(
                             chunk_response.get("message") or "Storage node returned invalid chunk data."
                         )
+                    chunk_data = crypto.decrypt(chunk_data)
                     actual_hash = hashlib.sha256(chunk_data).hexdigest()
                     if actual_hash != str(chunk_response.get("chunkHash") or ""):
                         raise DataPlaneError("Downloaded chunk hash mismatch.")
