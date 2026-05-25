@@ -466,6 +466,41 @@ public class StorageNodeIntegrationTest {
         }
     }
 
+    @Test
+    public void antivirusScanLimitShouldRejectBeforeCommit() throws Exception {
+        byte[] fileData = randomBytes(2 * 1024);
+        String sessionId = UUID.randomUUID().toString();
+        String fileId = UUID.randomUUID().toString();
+        String sha256Whole = HashUtil.sha256(fileData);
+
+        try (FakeClamdServer clamd = FakeClamdServer.clean()) {
+            clamd.start();
+            try (TestHarness scanHarness = new TestHarness(
+                    true, "127.0.0.1", clamd.getPort(), 1000, 1024L
+            )) {
+                scanHarness.start();
+
+                try (TestClient client = scanHarness.newClient()) {
+                    Message openResp = openUpload(scanHarness, client, sessionId, fileId, "too-large.bin", fileData);
+                    assertEquals(MessageType.OPEN_UPLOAD_RESP, openResp.getType());
+
+                    Message ack = sendUploadChunk(client, sessionId, 0, fileData);
+                    assertEquals("OK", ack.getString("status"));
+
+                    Message finalizeResp = finalizeUpload(client, sessionId);
+                    assertEquals(MessageType.FINALIZE_RESP, finalizeResp.getType());
+                    assertEquals("SCAN_LIMIT_EXCEEDED", finalizeResp.getString("status"));
+                    assertEquals("LIMIT_EXCEEDED", finalizeResp.getString("scanStatus"));
+                }
+
+                assertFalse(scanHarness.fileStore.fileExists(sha256Whole));
+                assertFalse(scanHarness.dedupStore.exists(sha256Whole));
+                assertEquals(0, countFiles(scanHarness.quarantineDir));
+                assertFalse(Files.exists(scanHarness.tempDir.resolve(sessionId)));
+            }
+        }
+    }
+
     private UploadResult uploadWholeFile(String fileName, byte[] fileData) throws Exception {
         return uploadWholeFile(harness, fileName, fileData);
     }
@@ -722,6 +757,7 @@ public class StorageNodeIntegrationTest {
         private final String antivirusHost;
         private final int antivirusPort;
         private final int antivirusTimeoutMs;
+        private final long antivirusMaxScanBytes;
 
         private TestHarness() {
             this(false, "127.0.0.1", 3310, 30000);
@@ -729,10 +765,17 @@ public class StorageNodeIntegrationTest {
 
         private TestHarness(boolean antivirusEnabled, String antivirusHost,
                             int antivirusPort, int antivirusTimeoutMs) {
+            this(antivirusEnabled, antivirusHost, antivirusPort, antivirusTimeoutMs, 104857600L);
+        }
+
+        private TestHarness(boolean antivirusEnabled, String antivirusHost,
+                            int antivirusPort, int antivirusTimeoutMs,
+                            long antivirusMaxScanBytes) {
             this.antivirusEnabled = antivirusEnabled;
             this.antivirusHost = antivirusHost;
             this.antivirusPort = antivirusPort;
             this.antivirusTimeoutMs = antivirusTimeoutMs;
+            this.antivirusMaxScanBytes = antivirusMaxScanBytes;
         }
 
         void start() throws Exception {
@@ -842,6 +885,7 @@ public class StorageNodeIntegrationTest {
             props.setProperty("antivirus.host", antivirusHost);
             props.setProperty("antivirus.port", String.valueOf(antivirusPort));
             props.setProperty("antivirus.timeout.ms", String.valueOf(antivirusTimeoutMs));
+            props.setProperty("antivirus.max.scan.bytes", String.valueOf(antivirusMaxScanBytes));
             props.setProperty("antivirus.quarantine.dir", quarantineDir.toString());
             props.setProperty("antivirus.fail.closed", "true");
 

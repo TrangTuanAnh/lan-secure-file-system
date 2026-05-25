@@ -77,6 +77,16 @@ public class UploadSession {
         return receivedChunks.cardinality() == totalChunks;
     }
 
+    /** Atomically move a complete active session into finalization. */
+    public synchronized boolean tryBeginFinalizing() {
+        if (status == Status.FINALIZING || status == Status.COMPLETED || status == Status.FAILED) {
+            return false;
+        }
+        status = Status.FINALIZING;
+        lastActivity = Instant.now();
+        return true;
+    }
+
     /** Get the list of missing chunk indices. */
     public List<Integer> getMissingChunks() {
         List<Integer> missing = new ArrayList<>();

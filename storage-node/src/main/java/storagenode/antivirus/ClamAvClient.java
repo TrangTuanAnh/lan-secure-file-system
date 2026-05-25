@@ -9,6 +9,7 @@ import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.logging.Logger;
 
 public class ClamAvClient implements AntivirusScanner {
@@ -89,6 +90,11 @@ public class ClamAvClient implements AntivirusScanner {
         if (detail.endsWith(" FOUND")) {
             String threatName = detail.substring(0, detail.length() - " FOUND".length()).trim();
             return ScanResult.infected(scanner, durationMs, raw, threatName);
+        }
+
+        String lowerDetail = detail.toLowerCase(Locale.ROOT);
+        if (lowerDetail.contains("size limit") || lowerDetail.contains("limit exceeded")) {
+            return ScanResult.failure(ScanStatus.LIMIT_EXCEEDED, scanner, durationMs, raw, detail);
         }
 
         if (detail.endsWith(" ERROR")) {
