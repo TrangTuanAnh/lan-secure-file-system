@@ -1,7 +1,7 @@
 """Storage Node socket server for persistent connections."""
 import time
 import threading
-from typing import Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime, timezone
 from protocol.socket_server import BaseSocketServer, SocketConnection
 from protocol.message import Message
@@ -108,6 +108,44 @@ class StorageNodeServer(BaseSocketServer):
             self._health_check_thread.join(timeout=5.0)
         
         super().stop()
+
+    def get_connected_nodes(self) -> List[Dict[str, Any]]:
+        """Return authenticated storage nodes with computed health metadata."""
+        return self.registry.get_connected_nodes()
+
+    def _health_check_loop(self) -> None:
+        """
+        Periodically inspect node health and log stale connections.
+
+        The registry already computes node health from last heartbeat, so this
+        loop stays read-only and avoids changing upload/download behavior.
+        """
+        check_interval = max(1, min(30, self.timeout_seconds // 3 or 1))
+        warned_unhealthy: set[str] = set()
+
+        while self._health_check_running:
+            try:
+                nodes = self.registry.get_all_nodes()
+                current_unhealthy: set[str] = set()
+
+                for node in nodes:
+                    if node.authenticated and not node.is_healthy(self.timeout_seconds):
+                        current_unhealthy.add(node.node_id)
+                        if node.node_id not in warned_unhealthy:
+                            age_seconds = max(0.0, time.time() - node.last_ping_time)
+                            logger.warning(
+                                "Storage Node heartbeat timed out: node_id=%s "
+                                "last_ping_age=%.1fs timeout=%ss",
+                                node.node_id,
+                                age_seconds,
+                                self.timeout_seconds,
+                            )
+
+                warned_unhealthy = current_unhealthy
+            except Exception as exc:
+                logger.error(f"StorageNodeServer health check loop failed: {exc}", exc_info=True)
+
+            time.sleep(check_interval)
     
     def _on_connection_established(self, connection: SocketConnection) -> None:
         """
