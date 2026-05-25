@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QComboBox, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QScrollArea, QStackedWidget, QVBoxLayout, QWidget
 
 from ui.fonts import app_font, ui_font, ui_font_family
 from ui.widgets.error_label import ErrorLabel
+from ui.widgets.member_context_menu import MemberContextMenu
 from ui.widgets.modern_button import PALETTE, ModernButton
 from ui.widgets.modern_lineedit import ModernLineEdit
 from ui.widgets.status_badge import StatusBadge
@@ -35,6 +36,8 @@ class RoomMembersDrawer(QFrame):
         self.hide()
 
         self.error_toast = ErrorLabel(parent=self)
+        self._context_menu: Optional[MemberContextMenu] = None
+        self._current_member_for_context: Optional[dict[str, Any]] = None
 
         self._build_ui()
         self._apply_styles()
@@ -185,6 +188,10 @@ class RoomMembersDrawer(QFrame):
                 border: 1px solid rgba(255, 255, 255, 0.05);
                 border-radius: 18px;
             }}
+            QFrame#memberRow:hover {{
+                background-color: rgba(28, 28, 48, 240);
+                border: 1px solid rgba(0, 200, 83, 0.25);
+            }}
             QComboBox#membersRoleCombo {{
                 min-height: 46px;
                 padding: 0 14px;
@@ -242,48 +249,62 @@ class RoomMembersDrawer(QFrame):
             return
 
         for member in members:
-            row = QFrame()
-            row.setObjectName("memberRow")
-            layout = QHBoxLayout(row)
-            layout.setContentsMargins(14, 12, 14, 12)
-            layout.setSpacing(12)
-
-            name_label = QLabel(member.get("username", "Unknown User"))
-            name_label.setFont(app_font(11, 600))
-            tooltip = str(member.get("tooltip_user_id") or "").strip()
-            if tooltip:
-                name_label.setToolTip(tooltip)
-            layout.addWidget(name_label, 1)
-
-            badge = StatusBadge(f"ROOM: {member.get('role', '--')}", member.get("role", "").lower() or "member")
-            layout.addWidget(badge, 0, Qt.AlignVCenter)
-
-            hint = str(member.get("hint") or "").strip()
-            if hint:
-                hint_label = QLabel(hint)
-                hint_label.setObjectName("memberHint")
-                hint_label.setFont(app_font(9, 600))
-                layout.addWidget(hint_label, 0, Qt.AlignVCenter)
-
-            if member.get("can_set_role"):
-                set_role_button = ModernButton("Set Role")
-                set_role_button.setMinimumWidth(106)
-                set_role_button.clicked.connect(
-                    lambda _=False, payload=dict(member): self.set_role_requested.emit(payload)
-                )
-                layout.addWidget(set_role_button, 0, Qt.AlignVCenter)
-
-            if member.get("can_remove"):
-                remove_button = ModernButton("Remove")
-                remove_button.setMinimumWidth(96)
-                remove_button.set_accent_color(PALETTE.error)
-                remove_button.clicked.connect(
-                    lambda _=False, payload=dict(member): self.remove_member_requested.emit(payload)
-                )
-                layout.addWidget(remove_button, 0, Qt.AlignVCenter)
-
+            can_manage = member.get("can_set_role") or member.get("can_remove")
+            row = self._create_member_row(member, can_manage)
             self.members_rows.addWidget(row)
         self.members_rows.addStretch()
+
+    def _create_member_row(self, member: dict[str, Any], can_manage: bool) -> QFrame:
+        """Create a display-only member row that is clickable if can_manage."""
+        row = QFrame()
+        row.setObjectName("memberRow")
+        
+        if can_manage:
+            row.setCursor(Qt.PointingHandCursor)
+        
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+
+        # Username label
+        name_label = QLabel(member.get("username", "Unknown User"))
+        name_label.setFont(app_font(11, 600))
+        tooltip = str(member.get("tooltip_user_id") or "").strip()
+        if tooltip:
+            name_label.setToolTip(tooltip)
+        layout.addWidget(name_label, 1)
+
+        # Role badge - remove "ROOM:" prefix
+        role = member.get('role', '--')
+        badge = StatusBadge(role, str(role).lower() or "member")
+        layout.addWidget(badge, 0, Qt.AlignVCenter)
+
+        # Member hint (Current user, Last owner, etc)
+        hint = str(member.get("hint") or "").strip()
+        if hint:
+            hint_label = QLabel(hint)
+            hint_label.setObjectName("memberHint")
+            hint_label.setFont(app_font(9, 600))
+            layout.addWidget(hint_label, 0, Qt.AlignVCenter)
+
+        # Store member data and setup context menu behavior
+        if can_manage:
+            row.member_data = dict(member)
+            row.mousePressEvent = lambda evt: self._on_member_row_clicked(row, evt)
+
+        return row
+
+    def _on_member_row_clicked(self, row: QFrame, event) -> None:
+        """Handle member row click to show context menu."""
+        if event.button() != Qt.LeftButton:
+            return
+        
+        member = getattr(row, "member_data", {})
+        if not member:
+            return
+        
+        self._current_member_for_context = dict(member)
+        self._show_context_menu(member, row)
 
     def show_members_view(self) -> None:
         self.title_label.setText("Room Members")
@@ -297,6 +318,39 @@ class RoomMembersDrawer(QFrame):
         self.stack.setCurrentWidget(self.add_member_page)
         self.user_id_input.setFocus()
         self.hide_error()
+
+    def _ensure_context_menu(self) -> MemberContextMenu:
+        """Lazily create context menu on first use."""
+        if self._context_menu is None:
+            self._context_menu = MemberContextMenu(self)
+            self._context_menu.set_role_clicked.connect(self._on_context_set_role)
+            self._context_menu.remove_member_clicked.connect(self._on_context_remove)
+        return self._context_menu
+
+    def _show_context_menu(self, member: dict[str, Any], row: QFrame) -> None:
+        """Show context menu for the clicked member row."""
+        menu = self._ensure_context_menu()
+        menu.set_actions_enabled(
+            can_set_role=bool(member.get("can_set_role")),
+            can_remove=bool(member.get("can_remove"))
+        )
+        
+        # Position menu near the row
+        row_global_pos = row.mapToGlobal(row.rect().topRight())
+        menu_pos = QPoint(row_global_pos.x() - menu.width() - 8, row_global_pos.y())
+        menu.show_at_position(menu_pos)
+
+    def _on_context_set_role(self) -> None:
+        """Handle Set Role action from context menu."""
+        if self._current_member_for_context:
+            self._context_menu.hide_menu()
+            self.set_role_requested.emit(self._current_member_for_context)
+
+    def _on_context_remove(self) -> None:
+        """Handle Remove Member action from context menu."""
+        if self._current_member_for_context:
+            self._context_menu.hide_menu()
+            self.remove_member_requested.emit(self._current_member_for_context)
 
     def _submit_add_member(self) -> None:
         user_id = self.user_id_input.text().strip()
