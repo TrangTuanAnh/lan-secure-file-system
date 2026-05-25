@@ -18,7 +18,14 @@ from services.services import BackendService
 from ui.dashboard_runtime import DashboardRuntimeConfig
 from ui.fonts import app_font, ui_font, ui_font_family
 from ui.recent_rooms import RecentRoomsStore
-from ui.widgets.activity_item import ActivityItem
+from ui.room_data import (
+    ROOM_FILE_COUNT_KEYS,
+    ROOM_MEMBER_COUNT_KEYS,
+    ROOM_ROLE_KEYS,
+    infer_room_role_from_members,
+    normalize_room_payload,
+)
+from ui.widgets.activity_ticker import ActivityTicker
 from ui.widgets.dashboard_stat_card import DashboardStatCard
 from ui.widgets.empty_state import EmptyState
 from ui.widgets.error_label import ErrorLabel
@@ -33,12 +40,20 @@ class OverviewDataWorker(QObject):
     success = Signal(dict)
     failure = Signal(str)
 
-    def __init__(self, runtime: DashboardRuntimeConfig, token: str = "", username: str = "", global_role: str = "") -> None:
+    def __init__(
+        self,
+        runtime: DashboardRuntimeConfig,
+        token: str = "",
+        username: str = "",
+        global_role: str = "",
+        user_id: str = "",
+    ) -> None:
         super().__init__()
         self._runtime = runtime
         self._token = token
         self._username = username
         self._global_role = global_role
+        self._user_id = user_id
 
     def run(self) -> None:
         service: Optional[BackendService] = None
@@ -63,32 +78,46 @@ class OverviewDataWorker(QObject):
             total_members = 0
 
             for room in rooms:
-                room_id = room.get("roomId") or room.get("id") or ""
-                room_name = room.get("name") or room.get("roomName") or "Untitled Room"
-                role = room.get("role") or room.get("memberRole") or room.get("myRole")
-                member_count = int(room.get("memberCount") or room.get("membersCount") or 0)
-                file_count = room.get("fileCount")
-                if file_count is None and room_id:
+                room_id = room.get("roomId") or room.get("id") or room.get("room_id") or ""
+                member_count: int | None = None
+                file_count: int | None = None
+
+                if room_id and not any(key in room and room.get(key) is not None for key in ROOM_MEMBER_COUNT_KEYS):
+                    try:
+                        room_members = service.rooms.get_room_members(room_id)
+                        member_count = len(room_members)
+                    except Exception:
+                        member_count = 0
+                        room_members = []
+                else:
+                    room_members = []
+                if room_id and not any(key in room and room.get(key) is not None for key in ROOM_FILE_COUNT_KEYS):
                     try:
                         file_count = len(service.files.get_files(room_id))
                     except Exception:
                         file_count = 0
 
-                normalized_rooms.append(
-                    {
-                        "room_id": room_id,
-                        "room_name": room_name,
-                        "role": role,
-                        "member_count": member_count,
-                        "file_count": int(file_count or 0),
-                        "summary": room.get("description")
-                        or room.get("summary")
-                        or "Secure collaborative room with encrypted document access.",
-                        "last_activity": room.get("lastActivity") or room.get("updatedAt") or "No recent activity recorded.",
-                    }
+                room_payload = dict(room)
+                if room_id and not any(key in room and room.get(key) is not None for key in ROOM_ROLE_KEYS):
+                    if not room_members:
+                        try:
+                            room_members = service.rooms.get_room_members(room_id)
+                        except Exception:
+                            room_members = []
+                    room_payload["current_user_role"] = infer_room_role_from_members(
+                        room_members,
+                        user_id=self._user_id,
+                        username=self._username,
+                    )
+
+                normalized_room = normalize_room_payload(
+                    room_payload,
+                    fallback_member_count=member_count,
+                    fallback_file_count=file_count,
                 )
-                total_files += int(file_count or 0)
-                total_members += member_count
+                normalized_rooms.append(normalized_room)
+                total_files += int(normalized_room.get("file_count") or 0)
+                total_members += int(normalized_room.get("member_count") or 0)
 
             payload = {
                 "server_online": server_online,
@@ -123,6 +152,7 @@ class OverviewPage(QWidget):
     """Dashboard overview content displayed inside the shared shell."""
 
     room_open_requested = Signal(dict)
+    rooms_loaded = Signal(list)
 
     def __init__(
         self,
@@ -144,11 +174,10 @@ class OverviewPage(QWidget):
         self._data_thread: Optional[QThread] = None
         self._data_worker: Optional[OverviewDataWorker] = None
         self._room_cards: list[RoomCard] = []
-        self._activity_widgets: list[QWidget] = []
         self._stat_cards: list[DashboardStatCard] = []
         self._remote_activities: list[dict[str, Any]] = []
         self._local_activities: list[dict[str, Any]] = []
-        self._recent_rooms: list[dict[str, Any]] = RecentRoomsStore.load()
+        self._recent_rooms: list[dict[str, Any]] = RecentRoomsStore.load(user_id=self._user_id, username=self._username)
 
         self._build_ui()
         self._apply_styles()
@@ -171,6 +200,7 @@ class OverviewPage(QWidget):
         self.top_bar.set_server_status("Loading", "warning")
         self.top_bar.set_user_role(self._display_global_role())
         self.top_bar.refresh_requested.connect(self.reload)
+        self.top_bar.search_input.hide()
         root.addWidget(self.top_bar)
 
         self.scroll_area = QScrollArea()
@@ -193,7 +223,7 @@ class OverviewPage(QWidget):
         self.stats_grid.setVerticalSpacing(16)
         self.scroll_layout.addLayout(self.stats_grid)
 
-        self.rooms_section = self._build_section_frame("Recent Rooms", "Quick access to recently opened rooms.")
+        self.rooms_section = self._build_section_frame("Recent Room", "Quick access to the last room you opened.")
         self.rooms_content = QVBoxLayout()
         self.rooms_content.setContentsMargins(0, 0, 0, 0)
         self.rooms_content.setSpacing(14)
@@ -201,10 +231,9 @@ class OverviewPage(QWidget):
         self.scroll_layout.addWidget(self.rooms_section["frame"])
 
         self.activity_section = self._build_section_frame("Recent Activity", "Realtime activity stream from monitored rooms.")
-        self.activity_content = QVBoxLayout()
-        self.activity_content.setContentsMargins(0, 0, 0, 0)
-        self.activity_content.setSpacing(10)
-        self.activity_section["body"].addLayout(self.activity_content)
+        self.activity_section["subtitle"].hide()
+        self.activity_ticker = ActivityTicker()
+        self.activity_section["body"].addWidget(self.activity_ticker)
         self.scroll_layout.addWidget(self.activity_section["frame"])
 
         self._build_stat_cards()
@@ -236,7 +265,7 @@ class OverviewPage(QWidget):
         body.setContentsMargins(0, 8, 0, 0)
         body.setSpacing(14)
         layout.addLayout(body)
-        return {"frame": frame, "body": body}
+        return {"frame": frame, "body": body, "subtitle": subtitle_label}
 
     def _build_stat_cards(self) -> None:
         self.rooms_stat = DashboardStatCard("Rooms", "--", "Accessible encrypted rooms", "RM", PALETTE.accent_alt)
@@ -304,7 +333,6 @@ class OverviewPage(QWidget):
 
     def _set_loading_state(self, loading: bool) -> None:
         self.top_bar.set_refresh_enabled(not loading)
-        self.top_bar.search_input.setEnabled(not loading)
 
     def _display_global_role(self) -> str:
         return "Administrator" if self._global_role.upper() == "ADMIN" else "Secure Operator"
@@ -324,6 +352,7 @@ class OverviewPage(QWidget):
             token=self._token,
             username=self._username,
             global_role=self._global_role,
+            user_id=self._user_id,
         )
         self._data_worker.moveToThread(self._data_thread)
         self._data_thread.started.connect(self._data_worker.run)
@@ -355,6 +384,13 @@ class OverviewPage(QWidget):
         self.status_stat.set_value(stats.get("server_label", "Unknown"))
         self.status_stat.set_subtitle("Coordinator backend health and transport status.")
 
+        backend_rooms = list(payload.get("rooms", []))
+        self._recent_rooms = RecentRoomsStore.sync_with_valid_rooms(
+            backend_rooms,
+            user_id=self._user_id,
+            username=self._username,
+        )
+        self.rooms_loaded.emit(backend_rooms)
         self._render_recent_rooms(self._recent_rooms)
         self._remote_activities = list(payload.get("activities", []))
         self._render_activities(self._current_activity_feed())
@@ -392,58 +428,35 @@ class OverviewPage(QWidget):
             self.rooms_content.addStretch()
             self.rooms_content.addWidget(
                 EmptyState(
-                    title="No recently opened rooms yet.",
-                    message="Open a room from My Rooms to see it here.",
+                    title="No recent room yet",
+                    message="No recent room yet",
                     minimal=True,
                 )
             )
             self.rooms_content.addStretch()
             return
 
-        for room in rooms[:3]:
-            card = RoomCard()
-            card.set_room_data(room)
-            card.open_requested.connect(
-                lambda _room_id, room_payload=room: self.room_open_requested.emit(
-                    {
-                        **room_payload,
-                        "username": self._username,
-                        "email": self._email,
-                        "global_role": self._global_role,
-                        "current_username": self._username,
-                        "current_user_id": self._user_id,
-                    }
-                )
+        room = rooms[0]
+        card = RoomCard()
+        card.set_room_data(room)
+        card.open_requested.connect(
+            lambda _room_id, room_payload=room: self.room_open_requested.emit(
+                {
+                    **room_payload,
+                    "username": self._username,
+                    "email": self._email,
+                    "global_role": self._global_role,
+                    "current_username": self._username,
+                    "current_user_id": self._user_id,
+                }
             )
-            self.rooms_content.addWidget(card)
-            self._room_cards.append(card)
+        )
+        self.rooms_content.addWidget(card)
+        self._room_cards.append(card)
 
     def _render_activities(self, activities: list[dict[str, Any]]) -> None:
-        while self.activity_content.count():
-            item = self.activity_content.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._activity_widgets.clear()
-
-        if not activities:
-            self.activity_content.addWidget(
-                EmptyState(
-                    title="No recent activity yet.",
-                    message="No recent activity yet.",
-                    minimal=True,
-                )
-            )
-            return
-
-        for activity in activities:
-            item = ActivityItem(
-                activity_type=activity.get("type", "Activity"),
-                message=activity.get("message", ""),
-                timestamp=activity.get("timestamp", ""),
-            )
-            self.activity_content.addWidget(item)
-            self._activity_widgets.append(item)
+        messages = [str(activity.get("message") or "").strip() for activity in activities if str(activity.get("message") or "").strip()]
+        self.activity_ticker.set_messages(messages)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if self._data_thread and self._data_thread.isRunning():

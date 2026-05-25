@@ -183,8 +183,6 @@ class LoginCard(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setMinimumWidth(420)
         self.setMaximumWidth(480)
-        self.login_error = ErrorLabel(parent=self)
-        self._error_host: Optional[QWidget] = self
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(46, 44, 46, 44)
@@ -276,10 +274,6 @@ class LoginCard(QFrame):
             self.password_input.text(),
         )
 
-    def set_error_host(self, host: QWidget) -> None:
-        self._error_host = host
-        self.login_error.move_to_top_center(host)
-
     def set_server_status(self, online: bool, message: str) -> None:
         self.status_indicator.setStyleSheet(
             f"color: {PALETTE.accent_alt if online else PALETTE.error}; font-size: 14px;"
@@ -295,13 +289,6 @@ class LoginCard(QFrame):
         self.remember_checkbox.setEnabled(not loading)
         self.signup_link.setEnabled(not loading)
         self.login_button.set_loading(loading, "Authenticating")
-
-    def show_login_error(self, message: str) -> None:
-        self.login_error.move_to_top_center(self._error_host)
-        self.login_error.show_error(message)
-
-    def hide_login_error(self) -> None:
-        self.login_error.hide_error()
 
 
 class LoginWindow(QMainWindow):
@@ -358,6 +345,7 @@ class LoginWindow(QMainWindow):
         right_layout.addWidget(self.login_card, alignment=Qt.AlignCenter)
         main_layout.addWidget(right_panel, 11)
         self._toast_host = self
+        self.error_toast = ErrorLabel(parent=self)
 
     def _apply_window_theme(self) -> None:
         palette = QPalette()
@@ -481,11 +469,11 @@ class LoginWindow(QMainWindow):
         self._fade_in.setStartValue(0.0)
         self._fade_in.setEndValue(1.0)
         self._fade_in.setEasingCurve(QEasingCurve.OutCubic)
-        self.login_card.set_error_host(self)
+        self.error_toast.move_to_top_center(self._toast_host)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self.login_card.login_error.move_to_top_center(self._toast_host)
+        self.error_toast.move_to_top_center(self._toast_host)
 
     def _connect_signals(self) -> None:
         self.login_card.login_requested.connect(self._on_login_requested)
@@ -512,10 +500,10 @@ class LoginWindow(QMainWindow):
     def _on_login_requested(self, username: str, password: str) -> None:
         validation_error = self._validate_login_inputs(username, password)
         if validation_error:
-            self.login_card.show_login_error(validation_error)
+            self.error_toast.show_error(validation_error)
             return
 
-        self.login_card.hide_login_error()
+        self.error_toast.hide_error()
         self.login_card.set_login_loading(True)
         self._start_login_worker(username, password)
 
@@ -561,7 +549,7 @@ class LoginWindow(QMainWindow):
 
     def _on_login_failed(self, message: str) -> None:
         self.login_card.set_login_loading(False)
-        self.login_card.show_login_error(message)
+        self.error_toast.show_error(message)
 
     def _on_signup_requested(self) -> None:
         # Navigation is handled by main.AppController.
