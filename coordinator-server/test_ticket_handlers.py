@@ -52,12 +52,14 @@ class TestTicketHandlers:
         # Act
         response = ticket_handlers.handle_verify_ticket(request)
         
-        # Assert
+        # Assert — BUGFIX C4: TICKET_VALID now returns the flat
+        # ticket_metadata directly (matching production
+        # storage_node_server.py format) instead of wrapping in
+        # {ticketId, metadata}.
         assert response.type == MessageType.TICKET_VALID
         assert response.request_id == request_id
-        assert response.payload['ticketId'] == ticket_id
-        assert response.payload['metadata'] == ticket_metadata
-        
+        assert response.payload == ticket_metadata
+
         mock_ticket_service.verify_ticket.assert_called_once_with(ticket_id)
     
     def test_handle_verify_ticket_valid_download(self, ticket_handlers, mock_ticket_service):
@@ -87,12 +89,11 @@ class TestTicketHandlers:
         # Act
         response = ticket_handlers.handle_verify_ticket(request)
         
-        # Assert
+        # Assert — BUGFIX C4: flat payload, matching storage_node_server.py
         assert response.type == MessageType.TICKET_VALID
         assert response.request_id == request_id
-        assert response.payload['ticketId'] == ticket_id
-        assert response.payload['metadata'] == ticket_metadata
-    
+        assert response.payload == ticket_metadata
+
     def test_handle_verify_ticket_not_found(self, ticket_handlers, mock_ticket_service):
         """Test VERIFY_TICKET with non-existent ticket."""
         # Arrange
@@ -111,11 +112,11 @@ class TestTicketHandlers:
         response = ticket_handlers.handle_verify_ticket(request)
         
         # Assert
+        # BUGFIX C4: TICKET_INVALID payload aligned with production
+        # storage_node_server.py — just {"error": error_code_string}.
         assert response.type == MessageType.TICKET_INVALID
         assert response.request_id == request_id
-        assert response.payload['ticketId'] == ticket_id
-        assert response.payload['error']['code'] == 'TICKET_NOT_FOUND'
-        assert 'message' in response.payload['error']
+        assert response.payload['error'] == 'TICKET_NOT_FOUND'
     
     def test_handle_verify_ticket_expired(self, ticket_handlers, mock_ticket_service):
         """Test VERIFY_TICKET with expired ticket."""
@@ -135,11 +136,10 @@ class TestTicketHandlers:
         response = ticket_handlers.handle_verify_ticket(request)
         
         # Assert
+        # BUGFIX C4: flat error string, matching production format.
         assert response.type == MessageType.TICKET_INVALID
         assert response.request_id == request_id
-        assert response.payload['ticketId'] == ticket_id
-        assert response.payload['error']['code'] == 'TICKET_EXPIRED'
-        assert 'message' in response.payload['error']
+        assert response.payload['error'] == 'TICKET_EXPIRED'
     
     def test_handle_verify_ticket_missing_ticket_id(self, ticket_handlers, mock_ticket_service):
         """Test VERIFY_TICKET with missing ticketId field."""
@@ -155,12 +155,14 @@ class TestTicketHandlers:
         # Act
         response = ticket_handlers.handle_verify_ticket(request)
         
-        # Assert
+        # Assert — handler accepts both 'ticket' and 'ticketId', and the
+        # error message now mentions the canonical name 'ticket'.
         assert response.type == MessageType.ERROR
         assert response.request_id == request_id
         assert response.payload['error']['code'] == 'INVALID_REQUEST'
-        assert 'ticketId' in response.payload['error']['message']
-        
+        msg = response.payload['error']['message']
+        assert 'ticket' in msg.lower()
+
         # Verify service was not called
         mock_ticket_service.verify_ticket.assert_not_called()
     
@@ -181,11 +183,10 @@ class TestTicketHandlers:
         # Act
         response = ticket_handlers.handle_verify_ticket(request)
         
-        # Assert
+        # Assert — flat error code string, matching production format.
         assert response.type == MessageType.TICKET_INVALID
         assert response.request_id == request_id
-        assert response.payload['ticketId'] == ticket_id
-        assert response.payload['error']['code'] == 'INTERNAL_ERROR'
+        assert response.payload['error'] == 'INTERNAL_ERROR'
     
     def test_handle_verify_ticket_preserves_request_id(self, ticket_handlers, mock_ticket_service):
         """Test that VERIFY_TICKET response preserves request ID."""
@@ -206,9 +207,9 @@ class TestTicketHandlers:
             payload={'ticketId': ticket_id},
             request_id=request_id
         )
-        
+
         # Act
         response = ticket_handlers.handle_verify_ticket(request)
-        
+
         # Assert
         assert response.request_id == request_id

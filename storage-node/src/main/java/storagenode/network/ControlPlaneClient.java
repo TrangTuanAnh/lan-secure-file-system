@@ -337,17 +337,24 @@ public class ControlPlaneClient {
     private void receiveLoop() {
         LOG.info("Control plane receiver thread started");
         
+        // BUGFIX M21: bound consecutive soft errors so a corrupt-frame
+        // storm can't spin this thread forever. After N non-IO failures
+        // in a row we break out and let the cleanup/reconnect logic try
+        // a fresh socket.
+        int consecutiveSoftErrors = 0;
+        final int maxSoftErrors = 10;
         while (running) {
             try {
                 Message msg = ControlPlaneFrameCodec.readFrame(in);
-                
+
                 if (msg == null) {
                     LOG.info("Connection closed by Coordinator");
                     break;
                 }
-                
+
                 handleMessage(msg);
-                
+                consecutiveSoftErrors = 0;
+
             } catch (IOException e) {
                 if (running) {
                     LOG.warning("Connection lost: " + e.getMessage());
@@ -355,6 +362,12 @@ public class ControlPlaneClient {
                 break;
             } catch (Exception e) {
                 LOG.severe("Error in receive loop: " + e.getMessage());
+                consecutiveSoftErrors++;
+                if (consecutiveSoftErrors >= maxSoftErrors) {
+                    LOG.severe("Too many consecutive frame errors (" +
+                               consecutiveSoftErrors + "); aborting receive loop");
+                    break;
+                }
             }
         }
         
