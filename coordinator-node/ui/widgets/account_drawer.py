@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from PySide6.QtCore import QEasingCurve, Property, QPropertyAnimation, QRect, Qt
-from PySide6.QtGui import QColor, QGuiApplication
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, QSize, Qt
+from PySide6.QtGui import QColor, QGuiApplication, QPixmap
 from PySide6.QtWidgets import QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ui.fonts import app_font, ui_font, ui_font_family
+from ui.utils.avatar_resolver import render_svg_avatar, resolve_avatar_path
 from ui.widgets.modern_button import PALETTE, ModernButton
 
 
@@ -179,8 +180,7 @@ class AccountDrawer(QFrame):
         self._user_id = user_id or ""
         self._global_role = global_role_label or "Secure Operator"
 
-        initials = (self._username[:1] or "A").upper()
-        self.avatar_label.setText(initials)
+        self._update_avatar()
         self.name_label.setText(self._username)
         self.role_label.setText(self._global_role)
         self.email_value.setText(self._email or "Not available")
@@ -190,6 +190,21 @@ class AccountDrawer(QFrame):
             self.user_id_value.setText(self._user_id or "Not available")
         self.global_role_value.setText(self._global_role or "Not available")
         self.copy_user_id_button.setEnabled(bool(self._user_id) and not hide_user_id)
+
+    def _update_avatar(self) -> None:
+        avatar_path = resolve_avatar_path(
+            self._username,
+            user_id=self._user_id,
+            global_role=self._global_role,
+        )
+        pixmap = render_svg_avatar(avatar_path, QSize(72, 72))
+        if pixmap is not None:
+            self.avatar_label.setPixmap(pixmap)
+            self.avatar_label.setText("")
+            return
+
+        self.avatar_label.setPixmap(QPixmap())
+        self.avatar_label.setText((self._username[:1] or "A").upper())
 
     def update_anchor_geometry(self) -> None:
         parent = self.parentWidget()

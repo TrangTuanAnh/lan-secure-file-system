@@ -43,6 +43,7 @@ from ui.widgets.top_bar import TopBar
 
 
 ROLE_OPTIONS = ("OWNER", "MEMBER", "VIEWER")
+MAX_UPLOAD_FILE_SIZE_BYTES = 1024 * 1024 * 1024
 logger = logging.getLogger(__name__)
 
 
@@ -1665,6 +1666,13 @@ class RoomPage(QWidget):
             return
         file_path, _ = QFileDialog.getOpenFileName(self, "Choose file to upload")
         if not file_path:
+            return
+        try:
+            if Path(file_path).stat().st_size > MAX_UPLOAD_FILE_SIZE_BYTES:
+                self.error_toast.show_error("File is too large. Please upload a file smaller than 1 GB.")
+                return
+        except OSError as exc:
+            self.error_toast.show_error(f"Cannot read selected file: {exc}")
             return
         if self._upload_thread and self._upload_thread.isRunning():
             return

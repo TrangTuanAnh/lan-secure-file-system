@@ -67,11 +67,9 @@ class SettingsPage(QWidget):
             "Appearance",
             "Tune visual density and motion preferences for this desktop client.",
         )
-        self.font_size_combo = self._combo_box(["Small", "Medium", "Large"])
         self.reduce_glow_checkbox = self._toggle("Reduce glow effects")
         self.reduce_animations_checkbox = self._toggle("Reduce animations")
         self.compact_layout_checkbox = self._toggle("Compact layout")
-        self._add_setting_row(appearance_layout, "Font size", self.font_size_combo)
         appearance_layout.addWidget(self.reduce_glow_checkbox)
         appearance_layout.addWidget(self.reduce_animations_checkbox)
         appearance_layout.addWidget(self.compact_layout_checkbox)
@@ -143,7 +141,6 @@ class SettingsPage(QWidget):
         parent_layout.addWidget(row)
 
     def _wire_signals(self) -> None:
-        self.font_size_combo.currentTextChanged.connect(self._emit_settings_changed)
         self.reduce_glow_checkbox.toggled.connect(self._emit_settings_changed)
         self.reduce_animations_checkbox.toggled.connect(self._emit_settings_changed)
         self.compact_layout_checkbox.toggled.connect(self._emit_settings_changed)
@@ -162,7 +159,6 @@ class SettingsPage(QWidget):
     def current_settings(self) -> dict[str, Any]:
         return {
             "appearance": {
-                "font_size": self.font_size_combo.currentText(),
                 "reduce_glow_effects": self.reduce_glow_checkbox.isChecked(),
                 "reduce_animations": self.reduce_animations_checkbox.isChecked(),
                 "compact_layout": self.compact_layout_checkbox.isChecked(),
@@ -184,7 +180,6 @@ class SettingsPage(QWidget):
         security = {**DEFAULT_APP_SETTINGS["security"], **merged.get("security", {})}
 
         self._building = True
-        self.font_size_combo.setCurrentText(str(appearance.get("font_size", "Medium")))
         self.reduce_glow_checkbox.setChecked(bool(appearance.get("reduce_glow_effects", False)))
         self.reduce_animations_checkbox.setChecked(bool(appearance.get("reduce_animations", False)))
         self.compact_layout_checkbox.setChecked(bool(appearance.get("compact_layout", False)))
