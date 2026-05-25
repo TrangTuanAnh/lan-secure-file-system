@@ -116,6 +116,7 @@ class MyRoomsPage(QWidget):
 
     room_open_requested = Signal(dict)
     activity_occurred = Signal(dict)
+    rooms_loaded = Signal(list)
 
     def __init__(
         self,
@@ -276,6 +277,7 @@ class MyRoomsPage(QWidget):
         self._set_loading_state(False)
         self.top_bar.set_server_status("Online", "online")
         self.top_bar.set_subtitle(f"{len(rooms)} room(s) available to your authenticated session.")
+        self.rooms_loaded.emit(list(rooms))
         self._render_rooms(rooms)
 
     def _on_rooms_failed(self, message: str) -> None:

@@ -43,8 +43,9 @@ from ui.widgets.top_bar import TopBar
 
 
 ROLE_OPTIONS = ("OWNER", "MEMBER", "VIEWER")
-MAX_UPLOAD_FILE_SIZE_BYTES = 1024 * 1024 * 1024
+MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 logger = logging.getLogger(__name__)
+_HASH_BLOCK_SIZE = 64 * 1024
 
 
 def _format_timestamp(value: Any) -> str:
@@ -68,6 +69,17 @@ def _format_size(size_value: Any) -> str:
     if unit_index == 0:
         return f"{int(display)} {units[unit_index]}"
     return f"{display:.1f} {units[unit_index]}"
+
+
+def _stream_file_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while True:
+            block = handle.read(_HASH_BLOCK_SIZE)
+            if not block:
+                break
+            hasher.update(block)
+    return hasher.hexdigest()
 
 
 def _normalize_member(member: dict[str, Any]) -> dict[str, Any]:
@@ -660,8 +672,8 @@ class FileUploadWorker(QObject):
         service: Optional[BackendService] = None
         try:
             source_path = Path(self._file_path)
-            file_bytes = source_path.read_bytes()
-            whole_hash = hashlib.sha256(file_bytes).hexdigest()
+            file_size = source_path.stat().st_size
+            whole_hash = _stream_file_sha256(source_path)
 
             service = BackendService(self._runtime.to_backend_config())
             if not service.connect():
@@ -673,7 +685,7 @@ class FileUploadWorker(QObject):
             plan = service.upload.init_upload(
                 self._room_id,
                 source_path.name,
-                len(file_bytes),
+                file_size,
                 whole_hash,
             )
             if not plan:
@@ -1668,8 +1680,8 @@ class RoomPage(QWidget):
         if not file_path:
             return
         try:
-            if Path(file_path).stat().st_size > MAX_UPLOAD_FILE_SIZE_BYTES:
-                self.error_toast.show_error("File is too large. Please upload a file smaller than 1 GB.")
+            if Path(file_path).stat().st_size > MAX_UPLOAD_SIZE_BYTES:
+                self.error_toast.show_error("File is larger than 100 MB. Please choose a smaller file.")
                 return
         except OSError as exc:
             self.error_toast.show_error(f"Cannot read selected file: {exc}")
@@ -1709,7 +1721,6 @@ class RoomPage(QWidget):
         )
         self.top_bar.set_subtitle(message)
         self.reload_room_data()
-        self._pending_uploaded_file_name = ""
 
     def _on_upload_failed(self, message: str) -> None:
         self._pending_uploaded_file_name = ""
