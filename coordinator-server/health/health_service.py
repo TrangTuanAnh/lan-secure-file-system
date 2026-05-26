@@ -1,5 +1,6 @@
 """Health check service for monitoring system status."""
 import time
+import threading
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from database import Database
@@ -77,7 +78,21 @@ class HealthService:
             "postgres": postgres_status,
             "redis": redis_status,
             "storageNodes": storage_node_status,
+            "threads": self._thread_snapshot(),
             "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+    def _thread_snapshot(self) -> Dict[str, Any]:
+        """Snapshot active threads grouped by prefix (acceptor/worker/other)."""
+        names = [t.name for t in threading.enumerate() if t.is_alive()]
+        groups: Dict[str, int] = {}
+        for name in names:
+            prefix = name.split('-')[0] if '-' in name else name
+            groups[prefix] = groups.get(prefix, 0) + 1
+        return {
+            "total": len(names),
+            "byPrefix": groups,
+            "names": sorted(names),
         }
     
     def _check_postgres(self) -> Dict[str, Any]:

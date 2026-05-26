@@ -176,7 +176,8 @@ def main():
             upload_service=upload_service,
             download_service=download_service,
             notification_service=notification_service,
-            health_service=health_service
+            health_service=health_service,
+            max_workers=config.server.client_max_workers,
         )
         client_server.start()
         logger.info(f"Client socket server started on port {config.server.client_port}")
@@ -200,6 +201,7 @@ def main():
             registry=storage_registry,
             reconciliation_service=reconciliation_service,
             audit_service=audit_service,
+            max_workers=config.server.storage_max_workers,
         )
         storage_node_server.start()
         logger.info(f"Storage node server started on port {config.server.storage_port}")

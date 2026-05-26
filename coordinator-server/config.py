@@ -41,6 +41,8 @@ class ServerConfig:
     storage_node_heartbeat_interval: int
     storage_node_timeout: int
     storage_node_secret: str
+    client_max_workers: int
+    storage_max_workers: int
 
 
 @dataclass
@@ -83,7 +85,9 @@ def load_config() -> Config:
         upload_chunk_size=int(os.getenv('UPLOAD_CHUNK_SIZE', '524288')),
         storage_node_heartbeat_interval=int(os.getenv('STORAGE_NODE_HEARTBEAT_INTERVAL', '30')),
         storage_node_timeout=int(os.getenv('STORAGE_NODE_TIMEOUT', '90')),
-        storage_node_secret=os.getenv('STORAGE_NODE_SECRET', 'change-this-secret-in-production')
+        storage_node_secret=os.getenv('STORAGE_NODE_SECRET', 'change-this-secret-in-production'),
+        client_max_workers=int(os.getenv('CLIENT_MAX_WORKERS', '8')),
+        storage_max_workers=int(os.getenv('STORAGE_MAX_WORKERS', '4')),
     )
     
     return Config(database=database, redis=redis, server=server)
