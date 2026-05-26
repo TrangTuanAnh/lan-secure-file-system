@@ -8,11 +8,12 @@ from upload.upload_service import UploadService
 
 
 class FakeStorageNode:
-    def __init__(self, node_id, storage_address, active_uploads=0, healthy=True):
+    def __init__(self, node_id, storage_address, active_uploads=0, healthy=True, files=None):
         self.node_id = node_id
         self.storage_address = storage_address
         self.active_uploads = active_uploads
         self.healthy = healthy
+        self.files = None if files is None else {f.lower() for f in files}
 
 
 class FakeStorageRegistry:
@@ -46,6 +47,14 @@ class FakeStorageRegistry:
         if node and node.healthy:
             return node.storage_address
         return None
+
+    def node_has_file(self, node_id, sha):
+        node = self.nodes.get(node_id)
+        if not node or not node.healthy:
+            return False
+        if node.files is None:
+            return True
+        return sha.lower() in node.files
 
 
 class TestScanValidator(unittest.TestCase):
@@ -557,6 +566,46 @@ class TestUploadService(unittest.TestCase):
         self.assertTrue(success)
         self.assertIsNone(error_code)
         self.assertTrue(upload_plan['deduplicated'])
+
+    def test_init_upload_manifest_missing_dedup_source_uploads_new_copy(self):
+        """Test dedup does not reuse a healthy node that no longer reports the hash."""
+        registry = FakeStorageRegistry([
+            FakeStorageNode("node-1", "node-1:9001", active_uploads=1, healthy=True, files=[]),
+            FakeStorageNode("node-2", "node-2:9002", healthy=True, files=[]),
+        ])
+        service = UploadService(
+            database=self.mock_db,
+            redis_client=self.mock_redis,
+            authorization_service=self.mock_authz,
+            storage_registry=registry,
+            ticket_secret="test-secret"
+        )
+        self.mock_authz.check_permission.return_value = True
+        self.mock_db.execute_query.side_effect = [
+            [{
+                'id': 'existing-file',
+                'stored_name': 'room-1/existing-file',
+                'room_id': 'room-1',
+                'original_name': 'test.txt',
+                'size_bytes': 1048576,
+                'storage_node_id': 'node-1'
+            }],
+            [{'max_version': 1}]
+        ]
+        self.mock_db.execute_update.return_value = 1
+
+        success, upload_plan, error_code = service.handle_init_upload(
+            user_id=self.user_id,
+            global_role='USER',
+            room_id=self.room_id,
+            file_info=self.file_info
+        )
+
+        self.assertTrue(success)
+        self.assertIsNone(error_code)
+        self.assertFalse(upload_plan['deduplicated'])
+        self.assertEqual(upload_plan['storageNodeId'], 'node-2')
+        self.assertIn('ticket', upload_plan)
     
     def test_handle_upload_complete_success(self):
         """Test UPLOAD_COMPLETE handler."""
