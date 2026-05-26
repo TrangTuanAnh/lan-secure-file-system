@@ -29,7 +29,8 @@ class UploadService:
         storage_registry: Optional[Any] = None,
         storage_address: str = "localhost:9000",
         ticket_secret: str = "default_secret",
-        default_storage_node_id: str = "node-1"
+        default_storage_node_id: str = "node-1",
+        slot_reservation_ttl_seconds: int = 60,
     ):
         """
         Initialize upload service.
@@ -58,7 +59,8 @@ class UploadService:
         self.storage_address = storage_address
         self.ticket_secret = ticket_secret
         self.default_storage_node_id = default_storage_node_id
-        
+        self.slot_reservation_ttl_seconds = slot_reservation_ttl_seconds
+
         # Initialize validators and checkers
         self.dedup_checker = DeduplicationChecker(database)
 
@@ -69,11 +71,18 @@ class UploadService:
             'storage_address': address
         }
 
-    def _select_storage_node(self, storage_address: Optional[str]) -> Optional[Dict[str, Any]]:
+    def _select_storage_node(
+        self,
+        storage_address: Optional[str],
+        reservation_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         if not self.storage_registry:
             return self._legacy_node(storage_address)
 
-        node = self.storage_registry.select_for_upload()
+        node = self.storage_registry.select_for_upload(
+            reservation_id=reservation_id,
+            ttl_seconds=self.slot_reservation_ttl_seconds,
+        )
         if not node:
             return None
 
@@ -105,6 +114,11 @@ class UploadService:
         candidates: list[Dict[str, Any]],
         storage_address: Optional[str]
     ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Pick the first dedup candidate whose storage node is still healthy.
+
+        Returns (candidate, resolved_storage_address) or (None, None) when no
+        candidate node is reachable — caller falls back to a fresh upload.
+        """
         for candidate in candidates:
             node_id = candidate.get('storage_node_id')
             if not self._is_reusable_dedup_node(node_id, candidate.get('sha256_whole') or ''):
@@ -129,6 +143,21 @@ class UploadService:
     def _mark_upload_finished(self, node_id: Optional[str]) -> None:
         if self.storage_registry and node_id:
             self.storage_registry.mark_upload_finished(node_id)
+
+    def _release_slot(self, reservation_id: Optional[str]) -> None:
+        """Release the upload slot reservation held against a storage node.
+
+        The reservation was created atomically when the upload plan was
+        issued; this is its release counterpart. Safe to call even if the
+        slot has already TTL-expired — release_reservation is idempotent.
+        """
+        if self.storage_registry and reservation_id:
+            try:
+                self.storage_registry.release_reservation(reservation_id)
+            except AttributeError:
+                # Older test fakes may not have release_reservation; fall
+                # back to the legacy counter path so they keep working.
+                pass
     
     def handle_init_upload(
         self,
@@ -267,38 +296,50 @@ class UploadService:
                 }, None
             
             else:
-                # Step 5: New upload - create file record with status UPLOADING
-                selected_node = self._select_storage_node(storage_address)
+                # Step 5: New upload - create file record with status UPLOADING.
+                # file_id is generated up-front so it can double as the
+                # reservation_id passed to the load balancer: that way, when
+                # UPLOAD_COMPLETE/UPLOAD_FAILED arrives later carrying just
+                # the file_id, the same id releases the slot — no separate
+                # token needs to round-trip through the storage node.
+                file_id = str(uuid.uuid4())
+                selected_node = self._select_storage_node(storage_address, reservation_id=file_id)
                 if not selected_node:
                     logger.warning("INIT_UPLOAD failed: no healthy storage node available")
                     return False, None, "STORAGE_NODE_UNAVAILABLE"
 
                 storage_node_id = selected_node['node_id']
                 selected_storage_address = selected_node['storage_address']
-                file_id = str(uuid.uuid4())
                 stored_name = f"{room_id}/{file_id}"
-                
-                # Insert file record with UPLOADING status
-                self.db.execute_update(
-                    """
-                    INSERT INTO files (
-                        id, room_id, original_name, stored_name, version,
-                        uploader_id, size_bytes, mime_type, sha256_whole,
-                        total_chunks, chunk_size, status, storage_node_id, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        file_id, room_id, original_name, stored_name, version,
-                        user_id, size_bytes, mime_type, sha256_whole,
-                        total_chunks, self.chunk_size, 'UPLOADING', storage_node_id,
-                        datetime.now(timezone.utc)
+
+                try:
+                    # Insert file record with UPLOADING status
+                    self.db.execute_update(
+                        """
+                        INSERT INTO files (
+                            id, room_id, original_name, stored_name, version,
+                            uploader_id, size_bytes, mime_type, sha256_whole,
+                            total_chunks, chunk_size, status, storage_node_id, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            file_id, room_id, original_name, stored_name, version,
+                            user_id, size_bytes, mime_type, sha256_whole,
+                            total_chunks, self.chunk_size, 'UPLOADING', storage_node_id,
+                            datetime.now(timezone.utc)
+                        )
                     )
-                )
-                
+                except Exception:
+                    # DB insert failed: free the slot we just reserved so the
+                    # load counter doesn't drift. (TTL would also reap it,
+                    # but explicit release is immediate.)
+                    self._release_slot(file_id)
+                    raise
+
                 # Generate upload ticket
                 ticket = str(uuid.uuid4())
                 expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ticket_ttl_seconds)
-                
+
                 # Store ticket metadata in Redis
                 data_plane_ticket = self._ticket_fields(file_id, storage_node_id)
                 ticket_data = {
@@ -315,9 +356,11 @@ class UploadService:
                     **data_plane_ticket,
                     'expiresAt': expires_at.isoformat()
                 }
-                
+
                 self.redis.set_ticket(ticket, ticket_data, self.ticket_ttl_seconds)
-                self._mark_upload_started(storage_node_id)
+                # Note: slot was already reserved atomically inside
+                # _select_storage_node(reservation_id=file_id); no separate
+                # mark_upload_started call is needed.
                 
                 logger.info(
                     f"New upload initialized: file_id={file_id}, "
@@ -409,7 +452,9 @@ class UploadService:
             
             if not files:
                 logger.warning(f"UPLOAD_COMPLETE failed: file {file_id} not found")
-                self._mark_upload_finished(storage_node_id)
+                # Release the slot keyed by file_id even though we couldn't
+                # find the DB row — the reservation was created with this id.
+                self._release_slot(file_id)
                 # BUGFIX M10: audit log even when file row is missing — admin
                 # needs visibility on storage-node ↔ DB drift.
                 if self.audit:
@@ -435,7 +480,10 @@ class UploadService:
             expected_hash = file['sha256_whole']
             assigned_node_id = file.get('storage_node_id')
 
-            self._mark_upload_finished(assigned_node_id or storage_node_id)
+            # Slot was reserved at INIT_UPLOAD under reservation_id == file_id
+            # and against the assigned node; releasing by file_id closes out
+            # the right slot regardless of which node reported the result.
+            self._release_slot(file_id)
 
             if assigned_node_id and storage_node_id and assigned_node_id != storage_node_id:
                 logger.warning(
@@ -604,7 +652,7 @@ class UploadService:
 
             if not files:
                 logger.warning(f"UPLOAD_FAILED: file {file_id} not found")
-                self._mark_upload_finished(storage_node_id)
+                self._release_slot(file_id)
                 if self.audit:
                     try:
                         self.audit.write_audit_log(
@@ -630,7 +678,7 @@ class UploadService:
             uploader_id = file['uploader_id']
             assigned_node_id = file.get('storage_node_id')
 
-            self._mark_upload_finished(assigned_node_id or storage_node_id)
+            self._release_slot(file_id)
 
             if assigned_node_id and storage_node_id and assigned_node_id != storage_node_id:
                 logger.warning(

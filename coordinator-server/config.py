@@ -43,6 +43,8 @@ class ServerConfig:
     storage_node_secret: str
     client_max_workers: int
     storage_max_workers: int
+    upload_slot_ttl_seconds: int
+    storage_min_free_bytes: int
 
 
 @dataclass
@@ -88,6 +90,8 @@ def load_config() -> Config:
         storage_node_secret=os.getenv('STORAGE_NODE_SECRET', 'change-this-secret-in-production'),
         client_max_workers=int(os.getenv('CLIENT_MAX_WORKERS', '8')),
         storage_max_workers=int(os.getenv('STORAGE_MAX_WORKERS', '4')),
+        upload_slot_ttl_seconds=int(os.getenv('UPLOAD_SLOT_TTL_SECONDS', '60')),
+        storage_min_free_bytes=int(os.getenv('STORAGE_MIN_FREE_BYTES', '0')),
     )
     
     return Config(database=database, redis=redis, server=server)
