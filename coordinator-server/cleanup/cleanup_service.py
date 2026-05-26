@@ -36,7 +36,9 @@ class CleanupService:
         
         self._running = True
         self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run_cleanup_loop, daemon=True)
+        self._thread = threading.Thread(
+            target=self._run_cleanup_loop, name="CleanupService", daemon=True
+        )
         self._thread.start()
         logger.info(f"Cleanup service started (interval: {self.interval_seconds}s)")
     

@@ -15,6 +15,7 @@ class StructuredFormatter(logging.Formatter):
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'level': record.levelname,
             'logger': record.name,
+            'thread': record.threadName,
             'message': record.getMessage(),
         }
         
