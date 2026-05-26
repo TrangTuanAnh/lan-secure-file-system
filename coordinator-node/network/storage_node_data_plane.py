@@ -1,22 +1,13 @@
-"""Thin data-plane client for Storage Node upload and download workflows.
+"""Client truyền dữ liệu trực tiếp tới Storage Node qua data-plane.
 
-BUGFIX C12: this module previously called ``Path.read_bytes()`` and built a
-``bytearray()`` for the entire file before transmitting / writing. That
-strategy peaks RAM at the file size — uploading a 5 GB file required 5 GB
-free RAM and crashed on smaller machines.
+File này thể hiện rõ phần nhập/xuất ở phía client:
+  * Khi tải lên: mở file nguồn bằng ``open(..., 'rb')``, đọc từng khối nhỏ,
+    mã hóa rồi gửi qua TCP socket.
+  * Khi tải xuống: nhận từng khối từ TCP socket, giải mã rồi ghi ngay xuống
+    file đích bằng ``open(..., 'wb')``.
 
-The streaming implementation below:
-  * Upload: opens the source with ``open(..., 'rb')`` and reads one chunk
-    at a time. Whole-file SHA-256 is computed in a single pre-pass that
-    also streams (64 KiB blocks) so RAM stays at constant ~64 KiB.
-  * Download: opens the target with ``open(..., 'wb')`` and writes each
-    chunk as it arrives. The whole-file hash is verified incrementally
-    using a SHA-256 accumulator that consumes each chunk and is discarded
-    afterwards.
-
-The public surface (``StorageNodeDataPlaneClient.upload_file`` and
-``StorageNodeDataPlaneClient.download_file``) is unchanged so all callers
-keep working.
+Cách làm này không đọc toàn bộ file vào RAM, nên bộ nhớ dùng gần như chỉ phụ
+thuộc vào kích thước mỗi khối dữ liệu.
 """
 
 from __future__ import annotations
@@ -39,7 +30,7 @@ try:
     from cryptography.hazmat.primitives.asymmetric import ec
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-except ImportError:  # pragma: no cover - exercised only on incomplete installs
+except ImportError:
     AESGCM = None
     HKDF = None
     ec = None
@@ -48,13 +39,13 @@ except ImportError:  # pragma: no cover - exercised only on incomplete installs
 
 try:
     from pqcrypto.kem import ml_kem_768 as _ml_kem_768
-except ImportError:  # pragma: no cover - optional post-quantum acceleration
+except ImportError:
     _ml_kem_768 = None
 
 
 logger = logging.getLogger(__name__)
 
-# Block size for the streaming SHA-256 pre-pass on upload.
+# Kích thước khối khi tính SHA-256 toàn file theo kiểu đọc tuần tự.
 _HASH_BLOCK = 64 * 1024
 _GCM_MAGIC = b"GCM1"
 _GCM_NONCE_SIZE = 12
@@ -64,7 +55,7 @@ _ECDH_PROTOCOL = "ECDH-P256-HKDF-SHA256"
 
 
 class DataPlaneError(RuntimeError):
-    """Raised when the Storage Node data plane rejects a request."""
+    """Lỗi khi data-plane của Storage Node từ chối yêu cầu."""
 
 
 def _parse_storage_address(storage_address: str) -> tuple[str, int]:
@@ -115,6 +106,7 @@ def _resolve_effective_storage_target(storage_address: str) -> tuple[str, int, s
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    # TCP có thể trả về ít byte hơn yêu cầu, nên phải lặp đến khi nhận đủ size byte.
     chunks = bytearray()
     while len(chunks) < size:
         data = sock.recv(size - len(chunks))
@@ -125,6 +117,7 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
 
 
 def _send_frame(sock: socket.socket, header: dict[str, Any], data: bytes = b"") -> None:
+    # Đóng gói khung giống phía Java: độ dài phần đầu, phần đầu JSON, độ dài dữ liệu, dữ liệu nhị phân.
     encoded_header = json.dumps(header, separators=(",", ":")).encode("utf-8")
     sock.sendall(
         struct.pack(">I", len(encoded_header))
@@ -135,6 +128,7 @@ def _send_frame(sock: socket.socket, header: dict[str, Any], data: bytes = b"") 
 
 
 def _recv_frame(sock: socket.socket) -> tuple[dict[str, Any], bytes]:
+    # Đọc một khung hoàn chỉnh từ socket, tách thành phần đầu JSON và dữ liệu nhị phân.
     header_len = struct.unpack(">I", _recv_exact(sock, 4))[0]
     header = json.loads(_recv_exact(sock, header_len).decode("utf-8"))
     data_len = struct.unpack(">I", _recv_exact(sock, 4))[0]
@@ -143,7 +137,7 @@ def _recv_frame(sock: socket.socket) -> tuple[dict[str, Any], bytes]:
 
 
 def _stream_file_sha256(path: Path) -> tuple[str, int]:
-    """Compute SHA-256 + total size of *path* without loading it into RAM."""
+    """Tính SHA-256 và kích thước file mà không đọc toàn bộ file vào RAM."""
     hasher = hashlib.sha256()
     size = 0
     with open(path, "rb") as f:
@@ -157,7 +151,7 @@ def _stream_file_sha256(path: Path) -> tuple[str, int]:
 
 
 def _read_chunk_at(path: Path, offset: int, chunk_size: int) -> bytes:
-    """Read exactly one chunk at *offset* (or fewer bytes if at EOF)."""
+    """Đọc một khối tại vị trí offset; khối cuối có thể nhỏ hơn chunk_size."""
     with open(path, "rb") as f:
         f.seek(offset)
         return f.read(chunk_size)
@@ -184,7 +178,7 @@ def _b64encode(data: bytes) -> str:
 
 
 class _CryptoSession:
-    """AES-256-GCM session derived from hybrid key exchange."""
+    """Phiên AES-256-GCM được sinh từ bước bắt tay khóa."""
 
     def __init__(self, key: bytes, *, algorithm: str, post_quantum: bool) -> None:
         if AESGCM is None:
@@ -208,7 +202,7 @@ class _CryptoSession:
 
 
 def _negotiate_crypto(sock: socket.socket) -> _CryptoSession:
-    """Negotiate hybrid ECDH/ML-KEM key exchange and return an AES-GCM session."""
+    """Bắt tay ECDH/ML-KEM với storage node rồi trả về phiên AES-GCM."""
     if AESGCM is None or HKDF is None or ec is None or serialization is None or hashes is None:
         raise DataPlaneError(
             "Modern data-plane encryption requires the cryptography package "
@@ -301,16 +295,16 @@ def _negotiate_crypto(sock: socket.socket) -> _CryptoSession:
 
 
 class StorageNodeDataPlaneClient:
-    """Implements supported upload/download flows over the Storage Node socket protocol.
+    """Cài đặt luồng tải lên/tải xuống qua socket protocol của Storage Node.
 
-    All file I/O is streamed: peak RAM is O(chunk_size) regardless of file size.
+    Toàn bộ nhập/xuất file đều theo kiểu đọc/ghi tuần tự: RAM không tăng theo kích thước file.
     """
 
     def __init__(self, storage_address: str, timeout: float = 15.0) -> None:
         self._storage_address = storage_address
         self._timeout = timeout
 
-    # ------------------------------------------------------------------ Upload
+    # ------------------------------------------------------------------ Tải lên
     def upload_file(
         self,
         *,
@@ -330,7 +324,7 @@ class StorageNodeDataPlaneClient:
         if chunk_size <= 0:
             raise DataPlaneError("chunkSize must be > 0")
 
-        # Stream SHA-256 + size (constant RAM)
+        # Tính SHA-256 và kích thước file theo kiểu đọc từng khối, không tải cả file vào RAM.
         whole_hash, file_size = _stream_file_sha256(source_path)
         plan_total = int(plan.get("totalChunks") or 0)
         expected_total_chunks = max(1, (file_size + chunk_size - 1) // chunk_size) if file_size > 0 else 0
@@ -358,7 +352,9 @@ class StorageNodeDataPlaneClient:
         try:
             with socket.create_connection((host, port), timeout=self._timeout) as sock:
                 sock.settimeout(self._timeout)
+                # Bắt tay mã hóa trước khi truyền dữ liệu file.
                 crypto = _negotiate_crypto(sock)
+                # Gửi yêu cầu mở phiên tải lên tới nút lưu trữ.
                 _send_frame(sock, open_payload)
                 open_response, _ = _recv_frame(sock)
                 if open_response.get("type") == "ERROR":
@@ -372,11 +368,11 @@ class StorageNodeDataPlaneClient:
                 else:
                     chunk_indexes = list(range(total_chunks))
 
-                # Open the file ONCE and seek for each chunk — avoids the
-                # cost of repeated open() and lets the kernel page-cache
-                # neighbouring chunks.
+                # Mở file một lần, sau đó seek tới từng vị trí khối để đọc.
+                # Cách này tránh mở/đóng file lặp lại và vẫn giữ RAM ổn định.
                 with open(source_path, "rb") as f:
                     for uploaded_count, chunk_index in enumerate(chunk_indexes, start=1):
+                        # Tính vị trí bắt đầu của khối rồi đọc tối đa chunk_size byte.
                         offset = chunk_index * chunk_size
                         f.seek(offset)
                         chunk = f.read(chunk_size)
@@ -390,10 +386,10 @@ class StorageNodeDataPlaneClient:
                             "chunkIndex": chunk_index,
                             "chunkHash": hashlib.sha256(chunk).hexdigest(),
                         }
+                        # Mã hóa khối rồi gửi qua TCP socket tới nút lưu trữ.
                         _send_frame(sock, chunk_header, crypto.encrypt(chunk))
                         ack, _ = _recv_frame(sock)
-                        # BUGFIX M: accept only explicit OK status (no None) so
-                        # silent server bugs surface as errors.
+                        # Chỉ chấp nhận ACK có trạng thái OK rõ ràng.
                         if ack.get("type") != "ACK_CHUNK" or ack.get("status") not in {"OK"}:
                             raise DataPlaneError(
                                 ack.get("message")
@@ -403,6 +399,7 @@ class StorageNodeDataPlaneClient:
                         if progress_callback is not None:
                             progress_callback(uploaded_count, len(chunk_indexes))
 
+                # Sau khi gửi đủ khối, yêu cầu nút lưu trữ ghép file và hoàn tất tải lên.
                 _send_frame(sock, {"type": "FINALIZE_UPLOAD", "sessionId": plan.get("sessionId")})
                 finalize_response, _ = _recv_frame(sock)
                 if finalize_response.get("status") != "COMPLETED":
@@ -417,7 +414,7 @@ class StorageNodeDataPlaneClient:
         except OSError as exc:
             raise DataPlaneError(f"Cannot connect to storage node at {host}:{port} ({exc})") from exc
 
-    # ------------------------------------------------------------------ Download
+    # ------------------------------------------------------------------ Tải xuống
     def download_file(
         self,
         *,
@@ -432,7 +429,7 @@ class StorageNodeDataPlaneClient:
         expected_hash = str(plan.get("sha256Whole") or "")
         download_complete = False
 
-        # Ensure target directory exists, then open for streaming write.
+        # Tạo thư mục đích nếu chưa có, sau đó mở file để ghi tuần tự.
         target = Path(save_path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
@@ -443,7 +440,9 @@ class StorageNodeDataPlaneClient:
             with socket.create_connection((host, port), timeout=self._timeout) as sock, \
                     open(target, "wb") as out_file:
                 sock.settimeout(self._timeout)
+                # Bắt tay mã hóa trước khi nhận dữ liệu file.
                 crypto = _negotiate_crypto(sock)
+                # Gửi yêu cầu mở phiên tải xuống.
                 _send_frame(
                     sock,
                     {
@@ -463,6 +462,7 @@ class StorageNodeDataPlaneClient:
                 total_chunks = int(open_response.get("totalChunks") or total_chunks or 0)
 
                 for index in range(total_chunks):
+                    # Yêu cầu nút lưu trữ gửi đúng khối theo chỉ số index.
                     _send_frame(
                         sock,
                         {
@@ -476,12 +476,13 @@ class StorageNodeDataPlaneClient:
                         raise DataPlaneError(
                             chunk_response.get("message") or "Storage node returned invalid chunk data."
                         )
+                    # Giải mã khối nhận về rồi kiểm tra hash khối.
                     chunk_data = crypto.decrypt(chunk_data)
                     actual_hash = hashlib.sha256(chunk_data).hexdigest()
                     if actual_hash != str(chunk_response.get("chunkHash") or ""):
                         raise DataPlaneError("Downloaded chunk hash mismatch.")
 
-                    # Write directly to disk and accumulate hash — constant RAM
+                    # Ghi trực tiếp khối xuống file đích và cập nhật hash toàn file.
                     out_file.write(chunk_data)
                     hasher.update(chunk_data)
                     bytes_written += len(chunk_data)
@@ -499,16 +500,14 @@ class StorageNodeDataPlaneClient:
             raise DataPlaneError(f"Cannot connect to storage node at {host}:{port} ({exc})") from exc
 
         if expected_hash and hasher.hexdigest() != expected_hash:
-            # File on disk is corrupt — remove it so caller doesn't trust it.
+            # Nếu hash toàn file sai thì xóa file đích để tránh dùng nhầm file lỗi.
             try:
                 os.remove(target)
             except OSError:
                 pass
             raise DataPlaneError("Downloaded file hash mismatch.")
 
-        # BUGFIX M34: raise if the server never sent DOWNLOAD_COMPLETE,
-        # so caller knows the transfer is suspect (rather than silently
-        # treating an incomplete download as success).
+        # Cảnh báo nếu nút lưu trữ không gửi DOWNLOAD_COMPLETE sau khi tải xong.
         if total_chunks > 0 and not download_complete:
             logger.warning("Storage node did not send DOWNLOAD_COMPLETE for session=%s",
                            plan.get("sessionId"))

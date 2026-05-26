@@ -13,32 +13,31 @@ import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 /**
- * Manages physical file storage on disk.
+ * Quản lý nhập/xuất file thật trên ổ đĩa của nút lưu trữ.
  *
- * Directory layout:
- *   data/temp/{sessionId}/         – chunks being uploaded
- *   data/temp/{sessionId}/meta.properties  – session metadata on disk
+ * Cấu trúc thư mục:
+ *   data/temp/{sessionId}/         - nơi lưu tạm các khối đang tải lên
+ *   data/temp/{sessionId}/meta.properties  - siêu dữ liệu để phục hồi phiên tải lên
  *   data/temp/{sessionId}/chunk_0
  *   data/temp/{sessionId}/chunk_1
  *   ...
- *   data/store/{sha256[0:2]}/{sha256}  – completed files (content-addressed)
+ *   data/store/{sha256[0:2]}/{sha256}  - nơi lưu file đã hoàn tất theo hash
  *
- * The 2-char prefix subdirectory avoids too many entries in one directory.
+ * Thư mục con 2 ký tự đầu của hash giúp tránh quá nhiều file trong một thư mục.
  */
 public class FileStore {
 
     private static final Logger LOG = Logger.getLogger(FileStore.class.getName());
     private static final Gson GSON = new Gson();
 
-    // BUGFIX C8: client-supplied identifiers must match strict patterns to
-    // prevent path traversal (e.g. sessionId = "../../etc/passwd" or sha256
-    // with leading "..").
+    // Chỉ chấp nhận định danh an toàn để tránh tấn công đi ngược đường dẫn.
+    // Ví dụ không cho sessionId chứa "../" để ghi file ra ngoài thư mục dự kiến.
     private static final Pattern UUID_LIKE = Pattern.compile(
             "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$");
     private static final Pattern SHA256_HEX = Pattern.compile(
             "^[0-9a-fA-F]{64}$");
 
-    /** Throws IllegalArgumentException if sessionId is unsafe to use as a path. */
+    /** Kiểm tra sessionId có an toàn để dùng làm tên thư mục không. */
     public static void validateSessionId(String sessionId) {
         if (sessionId == null || sessionId.isEmpty()) {
             throw new IllegalArgumentException("sessionId is required");
@@ -51,16 +50,19 @@ public class FileStore {
         }
     }
 
-    /** Throws IllegalArgumentException if sha256 is not exactly 64 hex chars. */
+    /** Kiểm tra sha256 có đúng 64 ký tự hệ hex không. */
     public static void validateSha256(String sha256) {
         if (sha256 == null || !SHA256_HEX.matcher(sha256).matches()) {
             throw new IllegalArgumentException("sha256 must be 64 hex chars, got: " + sha256);
         }
     }
 
-    private final Path dataDir;   // permanent storage
-    private final Path tempDir;   // in-progress uploads
-    private final Path quarantineDir; // blocked infected uploads
+    // Thư mục lưu file đã hoàn tất.
+    private final Path dataDir;
+    // Thư mục lưu các khối đang tải lên.
+    private final Path tempDir;
+    // Thư mục cách ly file bị antivirus từ chối.
+    private final Path quarantineDir;
     private final int chunkSize;
 
     public FileStore(Path dataDir, Path tempDir, int chunkSize) throws IOException {
@@ -72,14 +74,15 @@ public class FileStore {
         this.tempDir = tempDir;
         this.quarantineDir = quarantineDir;
         this.chunkSize = chunkSize;
+        // Tạo sẵn các thư mục nhập/xuất nếu chưa tồn tại.
         Files.createDirectories(dataDir);
         Files.createDirectories(tempDir);
         Files.createDirectories(quarantineDir);
     }
 
-    // ═══════════════════════ TEMP (upload in-progress) ═══════════════════════
+    // ═══════════════════════ VÙNG TẠM CHO FILE ĐANG TẢI LÊN ═══════════════════════
 
-    /** Create a temp directory for a new upload session. */
+    /** Tạo thư mục tạm cho một phiên tải lên mới. */
     public Path createSessionDir(String sessionId) throws IOException {
         validateSessionId(sessionId);
         Path dir = tempDir.resolve(sessionId);
@@ -87,18 +90,19 @@ public class FileStore {
         return dir;
     }
 
-    /** Write a chunk to the session's temp directory. */
+    /** Ghi một khối dữ liệu vào thư mục tạm của phiên tải lên. */
     public void writeChunk(String sessionId, int chunkIndex, byte[] data) throws IOException {
         validateSessionId(sessionId);
         if (chunkIndex < 0) {
             throw new IllegalArgumentException("chunkIndex must be >= 0");
         }
         Path dir = tempDir.resolve(sessionId);
+        // Mỗi khối được lưu thành một file riêng: chunk_0, chunk_1, ...
         Path chunkFile = dir.resolve("chunk_" + chunkIndex);
         Files.write(chunkFile, data);
     }
 
-    /** Read a chunk from the session's temp directory. */
+    /** Đọc một khối từ thư mục tạm của phiên tải lên. */
     public byte[] readTempChunk(String sessionId, int chunkIndex) throws IOException {
         validateSessionId(sessionId);
         if (chunkIndex < 0) {
@@ -108,7 +112,7 @@ public class FileStore {
         return Files.readAllBytes(chunkFile);
     }
 
-    /** Check which chunks exist for a session. */
+    /** Kiểm tra phiên này đã nhận được những khối nào. */
     public Set<Integer> getReceivedChunks(String sessionId) throws IOException {
         validateSessionId(sessionId);
         Path dir = tempDir.resolve(sessionId);
@@ -127,16 +131,17 @@ public class FileStore {
         return received;
     }
 
-    /** Save session metadata to disk (for crash recovery). */
+    /** Lưu siêu dữ liệu phiên xuống đĩa để phục hồi nếu nút bị dừng giữa chừng. */
     public void saveSessionMeta(String sessionId, Properties meta) throws IOException {
         validateSessionId(sessionId);
         Path metaFile = tempDir.resolve(sessionId).resolve("meta.properties");
+        // Ghi siêu dữ liệu vào meta.properties trong thư mục tạm của phiên.
         try (OutputStream os = Files.newOutputStream(metaFile)) {
             meta.store(os, "Upload session metadata");
         }
     }
 
-    /** Load session metadata from disk. */
+    /** Đọc lại siêu dữ liệu phiên từ ổ đĩa khi cần phục hồi tải lên. */
     public Properties loadSessionMeta(String sessionId) throws IOException {
         validateSessionId(sessionId);
         Path metaFile = tempDir.resolve(sessionId).resolve("meta.properties");
@@ -149,9 +154,9 @@ public class FileStore {
         return meta;
     }
 
-    // ═══════════════════════ ASSEMBLE & FINALIZE ═══════════════════════
+    // ═══════════════════════ GHÉP KHỐI VÀ HOÀN TẤT FILE ═══════════════════════
 
-    /** Assemble all chunks into a single temporary file for final validation. */
+    /** Ghép toàn bộ khối thành một file tạm hoàn chỉnh để kiểm tra lần cuối. */
     public Path assembleTempFile(String sessionId, int totalChunks) throws IOException {
         validateSessionId(sessionId);
         Path sessionDir = tempDir.resolve(sessionId);
@@ -159,17 +164,19 @@ public class FileStore {
 
         try (OutputStream out = new BufferedOutputStream(Files.newOutputStream(assembledFile))) {
             for (int i = 0; i < totalChunks; i++) {
+                // Ghép theo đúng thứ tự chunk_0, chunk_1, ... để khôi phục file gốc.
                 Path chunkFile = sessionDir.resolve("chunk_" + i);
                 if (!Files.exists(chunkFile)) {
                     throw new IOException("Missing chunk " + i + " for session " + sessionId);
                 }
+                // Sao chép từng khối vào luồng ghi của file đã ghép.
                 Files.copy(chunkFile, out);
             }
         }
         return assembledFile;
     }
 
-    /** Verify the assembled file SHA-256 and delete it on mismatch. */
+    /** Kiểm tra SHA-256 của file đã ghép; nếu sai thì xóa file tạm. */
     public boolean verifyAssembledHash(Path assembledFile, String expectedSha256, String sessionId)
             throws IOException {
         validateSha256(expectedSha256);
@@ -183,24 +190,20 @@ public class FileStore {
         return true;
     }
 
-    /** Move a validated clean assembled file to permanent content-addressed storage. */
+    /** Chuyển file đã kiểm tra hợp lệ vào kho lưu trữ chính theo hash. */
     public Path commitAssembledFile(Path assembledFile, String expectedSha256) throws IOException {
         validateSha256(expectedSha256);
         Path storePath = getStorePath(expectedSha256);
         Files.createDirectories(storePath.getParent());
 
         if (Files.exists(storePath)) {
-            // Dedup: file already exists with same hash — drop the just-assembled
-            // copy to avoid wasted disk.
+            // Nếu file cùng hash đã tồn tại thì xóa bản vừa ghép để tránh tốn dung lượng.
             LOG.info("Dedup hit: file already exists at " + storePath);
             try {
                 Files.deleteIfExists(assembledFile);
             } catch (IOException ignored) {}
         } else {
-            // BUGFIX C7: use atomic-move fallback. ATOMIC_MOVE throws
-            // AtomicMoveNotSupportedException when temp and store live on
-            // different filesystems (common on Windows D:/C: setups). The
-            // fallback does a regular move (or copy+delete if needed).
+            // Ưu tiên di chuyển nguyên tử; nếu hệ điều hành không hỗ trợ thì dùng di chuyển thường.
             moveWithAtomicFallback(assembledFile, storePath);
         }
 
@@ -209,10 +212,9 @@ public class FileStore {
     }
 
     /**
-     * Assemble all chunks into a single file, verify SHA-256, and move
-     * to permanent storage.
+     * Ghép các khối thành một file, kiểm tra SHA-256 rồi chuyển vào kho lưu trữ chính.
      *
-     * @return the final storage path if hash matches, null if mismatch
+     * @return đường dẫn lưu trữ cuối cùng nếu hash khớp; null nếu hash sai
      */
     public Path assembleAndStore(String sessionId, int totalChunks, String expectedSha256)
             throws IOException {
@@ -227,7 +229,7 @@ public class FileStore {
         return storePath;
     }
 
-    /** Move an infected assembled file into quarantine and write audit metadata beside it. */
+    /** Chuyển file nhiễm virus vào khu cách ly và ghi siêu dữ liệu kiểm tra đi kèm. */
     public Path quarantineFile(UploadSession session, Path assembledFile, ScanResult scanResult)
             throws IOException {
         Files.createDirectories(quarantineDir);
@@ -238,6 +240,7 @@ public class FileStore {
         Path quarantinePath = quarantineDir.resolve(baseName + ".blocked");
         Path metadataPath = quarantineDir.resolve(baseName + ".metadata.json");
 
+        // Di chuyển file bị chặn vào khu cách ly thay vì lưu vào kho chính.
         moveWithAtomicFallback(assembledFile, quarantinePath);
 
         Map<String, Object> metadata = new LinkedHashMap<>();
@@ -255,6 +258,7 @@ public class FileStore {
         metadata.put("rawResponse", scanResult.getRawResponse());
         metadata.put("quarantinePath", quarantinePath.toString());
 
+        // Ghi thêm file siêu dữ liệu JSON để biết file bị chặn vì lý do gì.
         try (Writer writer = Files.newBufferedWriter(metadataPath)) {
             GSON.toJson(metadata, writer);
         }
@@ -263,7 +267,7 @@ public class FileStore {
         return quarantinePath;
     }
 
-    /** Delete a session's temp directory and all its contents. */
+    /** Xóa thư mục tạm của phiên và toàn bộ khối bên trong. */
     public void cleanSessionDir(String sessionId) throws IOException {
         validateSessionId(sessionId);
         Path dir = tempDir.resolve(sessionId);
@@ -277,32 +281,32 @@ public class FileStore {
         }
     }
 
-    // ═══════════════════════ PERMANENT STORAGE (download) ═══════════════════════
+    // ═══════════════════════ KHO LƯU TRỮ CHÍNH CHO TẢI XUỐNG ═══════════════════════
 
-    /** Get the storage path for a file by its SHA-256 hash. */
+    /** Lấy đường dẫn lưu trữ của file theo SHA-256. */
     public Path getStorePath(String sha256) {
         validateSha256(sha256);
         String prefix = sha256.substring(0, 2);
         return dataDir.resolve(prefix).resolve(sha256);
     }
 
-    /** Check if a file exists in permanent storage. */
+    /** Kiểm tra file có tồn tại trong kho lưu trữ chính không. */
     public boolean fileExists(String sha256) {
         return Files.exists(getStorePath(sha256));
     }
 
-    /** Get the size of a stored file. */
+    /** Lấy kích thước file đã lưu. */
     public long getFileSize(String sha256) throws IOException {
         return Files.size(getStorePath(sha256));
     }
 
     /**
-     * Read a chunk from a stored file for download.
+     * Đọc một khối từ file đã lưu để phục vụ tải xuống.
      *
-     * @param sha256     file hash
-     * @param chunkIndex 0-based index
-     * @param chunkSize  chunk size in bytes
-     * @return chunk data (may be smaller for the last chunk)
+     * @param sha256     hash của file
+     * @param chunkIndex chỉ số khối, bắt đầu từ 0
+     * @param chunkSize  kích thước mỗi khối tính bằng byte
+     * @return dữ liệu khối; khối cuối có thể nhỏ hơn chunkSize
      */
     public byte[] readStoredChunk(String sha256, int chunkIndex, int chunkSize) throws IOException {
         validateSha256(sha256);
@@ -311,6 +315,7 @@ public class FileStore {
         }
         Path filePath = getStorePath(sha256);
         long fileSize = Files.size(filePath);
+        // Tính vị trí bắt đầu đọc trong file: chunkIndex * chunkSize.
         long offset = (long) chunkIndex * chunkSize;
 
         if (offset >= fileSize) {
@@ -321,20 +326,20 @@ public class FileStore {
         byte[] data = new byte[readLen];
 
         try (RandomAccessFile raf = new RandomAccessFile(filePath.toFile(), "r")) {
+            // Nhảy thẳng tới vị trí cần đọc, không cần đọc từ đầu file.
             raf.seek(offset);
             raf.readFully(data);
         }
         return data;
     }
 
-    /** Calculate total number of chunks for a file. Integer math to avoid
-     *  double-precision loss for large files. */
+    /** Tính tổng số khối của file bằng số nguyên để tránh sai số với file lớn. */
     public int calculateTotalChunks(long fileSize) {
         if (fileSize <= 0) return 0;
         return (int) ((fileSize + chunkSize - 1) / chunkSize);
     }
 
-    /** List all stored file hashes. */
+    /** Liệt kê toàn bộ hash file đang được lưu trong kho chính. */
     public List<String> listStoredFiles() throws IOException {
         List<String> hashes = new ArrayList<>();
         if (!Files.exists(dataDir)) return hashes;
