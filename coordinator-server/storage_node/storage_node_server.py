@@ -40,6 +40,7 @@ class StorageNodeServer(BaseSocketServer):
         registry: Optional[StorageNodeRegistry] = None,
         reconciliation_service: Optional[ReconciliationService] = None,
         audit_service: Optional[AuditService] = None,
+        max_workers: int = 4,
     ):
         """
         Initialize Storage Node server.
@@ -55,7 +56,7 @@ class StorageNodeServer(BaseSocketServer):
             audit_service: Optional audit log writer. When provided, storage-node
                 authentication attempts and disconnects are recorded.
         """
-        super().__init__(host, port, name="StorageNodeServer")
+        super().__init__(host, port, name="StorageNodeServer", max_workers=max_workers)
 
         self.shared_secret = shared_secret
         self.ticket_service = ticket_service
@@ -94,7 +95,8 @@ class StorageNodeServer(BaseSocketServer):
         self._health_check_running = True
         self._health_check_thread = threading.Thread(
             target=self._health_check_loop,
-            daemon=True
+            name="StorageHealthCheck",
+            daemon=True,
         )
         self._health_check_thread.start()
         

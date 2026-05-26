@@ -2,6 +2,7 @@
 import socket
 import threading
 import selectors
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Callable, Any
 from protocol.frame_codec import FrameCodec, FrameBuffer
 from protocol.message import Message
@@ -15,11 +16,11 @@ class SocketConnection:
     """
     Represents a single socket connection with frame buffering.
     """
-    
+
     def __init__(self, sock: socket.socket, address: tuple):
         """
         Initialize connection.
-        
+
         Args:
             sock: Connected socket
             address: Remote address (host, port)
@@ -28,30 +29,38 @@ class SocketConnection:
         self.address = address
         self.buffer = FrameBuffer()
         self.connection_id = f"{address[0]}:{address[1]}"
-        
+
         # Request-response tracking
         self.pending_requests: Dict[str, Any] = {}
-        
+
+        # Protects socket.sendall — multiple worker threads can call
+        # send_message on the same connection concurrently.
+        self._send_lock = threading.Lock()
+        self._closed = False
+
         logger.info(f"New connection: {self.connection_id}")
-    
+
     def send_message(self, message: Message) -> None:
         """
         Send a message over this connection.
-        
+
         Args:
             message: Message to send
-        
+
         Raises:
             OSError: If socket send fails
         """
         # Serialize message to bytes
         message_bytes = message.to_bytes()
-        
+
         # Encode with length prefix
         frame = FrameCodec.encode(message_bytes)
-        
-        # Send frame
-        self.socket.sendall(frame)
+
+        with self._send_lock:
+            if self._closed:
+                logger.debug(f"Skip send to closed connection {self.connection_id}")
+                return
+            self.socket.sendall(frame)
         logger.debug(f"Sent message to {self.connection_id}: type={message.type.value}, size={len(message_bytes)}")
     
     def receive_data(self, chunk_size: int = 4096) -> Optional[bytes]:
@@ -79,11 +88,15 @@ class SocketConnection:
     
     def close(self) -> None:
         """Close the connection."""
-        try:
-            self.socket.close()
-            logger.info(f"Connection closed: {self.connection_id}")
-        except Exception as e:
-            logger.error(f"Error closing connection {self.connection_id}: {e}")
+        with self._send_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self.socket.close()
+                logger.info(f"Connection closed: {self.connection_id}")
+            except Exception as e:
+                logger.error(f"Error closing connection {self.connection_id}: {e}")
 
 
 class BaseSocketServer:
@@ -98,29 +111,39 @@ class BaseSocketServer:
     - Request-response matching using requestId
     """
     
-    def __init__(self, host: str, port: int, name: str = "SocketServer"):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        name: str = "SocketServer",
+        max_workers: int = 8,
+    ):
         """
         Initialize socket server.
-        
+
         Args:
             host: Host to bind to
             port: Port to bind to
             name: Server name for logging
+            max_workers: Worker pool size for handler dispatch
         """
         self.host = host
         self.port = port
         self.name = name
-        
+        self.max_workers = max_workers
+
         self._server_socket: Optional[socket.socket] = None
         self._selector = selectors.DefaultSelector()
         self._connections: Dict[socket.socket, SocketConnection] = {}
+        self._connections_lock = threading.Lock()
         self._running = False
         self._server_thread: Optional[threading.Thread] = None
-        
+        self._executor: Optional[ThreadPoolExecutor] = None
+
         # Message handlers: MessageType -> handler function
         self._handlers: Dict[MessageType, Callable[[SocketConnection, Message], None]] = {}
-        
-        logger.info(f"{self.name} initialized on {host}:{port}")
+
+        logger.info(f"{self.name} initialized on {host}:{port} (max_workers={max_workers})")
     
     def register_handler(
         self,
@@ -142,48 +165,64 @@ class BaseSocketServer:
         if self._running:
             logger.warning(f"{self.name} already running")
             return
-        
+
         # Create server socket
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server_socket.bind((self.host, self.port))
         self._server_socket.listen(100)
         self._server_socket.setblocking(False)
-        
+
         # Register server socket for accept events
         self._selector.register(self._server_socket, selectors.EVENT_READ, data=None)
-        
+
+        # Worker pool for handler dispatch (producer-consumer pattern)
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.max_workers,
+            thread_name_prefix=f"{self.name}-Worker",
+        )
+
         self._running = True
-        self._server_thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._server_thread = threading.Thread(
+            target=self._run_loop, name=f"{self.name}-Acceptor", daemon=True
+        )
         self._server_thread.start()
-        
+
         logger.info(f"{self.name} started on {self.host}:{self.port}")
     
     def stop(self) -> None:
         """Stop the server and close all connections."""
         if not self._running:
             return
-        
+
         logger.info(f"Stopping {self.name}...")
         self._running = False
-        
+
         # Close all client connections
-        for conn in list(self._connections.values()):
-            conn.close()
-        self._connections.clear()
-        
+        with self._connections_lock:
+            for conn in list(self._connections.values()):
+                conn.close()
+            self._connections.clear()
+
         # Close server socket
         if self._server_socket:
-            self._selector.unregister(self._server_socket)
+            try:
+                self._selector.unregister(self._server_socket)
+            except Exception:
+                pass
             self._server_socket.close()
-        
+
         # Close selector
         self._selector.close()
-        
+
         # Wait for server thread
         if self._server_thread:
             self._server_thread.join(timeout=5.0)
-        
+
+        # Drain worker pool (wait for in-flight handlers)
+        if self._executor:
+            self._executor.shutdown(wait=True)
+
         logger.info(f"{self.name} stopped")
     
     def _run_loop(self) -> None:
@@ -212,30 +251,32 @@ class BaseSocketServer:
         try:
             client_socket, address = self._server_socket.accept()
             client_socket.setblocking(False)
-            
+
             # Create connection object
             connection = SocketConnection(client_socket, address)
-            self._connections[client_socket] = connection
-            
+            with self._connections_lock:
+                self._connections[client_socket] = connection
+
             # Register for read events
             self._selector.register(client_socket, selectors.EVENT_READ, data=connection)
-            
+
             logger.info(f"{self.name} accepted connection from {connection.connection_id}")
-            
+
             # Call connection callback if implemented
             self._on_connection_established(connection)
-            
+
         except Exception as e:
             logger.error(f"{self.name} error accepting connection: {e}")
     
     def _handle_client_data(self, sock: socket.socket) -> None:
         """
         Handle data from a client socket.
-        
+
         Args:
             sock: Client socket with data ready
         """
-        connection = self._connections.get(sock)
+        with self._connections_lock:
+            connection = self._connections.get(sock)
         if not connection:
             logger.warning(f"Received data from unknown socket")
             return
@@ -278,64 +319,81 @@ class BaseSocketServer:
     def _dispatch_message(self, connection: SocketConnection, message: Message) -> None:
         """
         Dispatch message to appropriate handler.
-        
+
+        The acceptor thread only enqueues; the actual handler runs on a
+        worker thread from the pool. This is the producer-consumer split
+        that keeps slow handlers from blocking other clients' I/O.
+
         Args:
             connection: Connection that received the message
             message: Parsed message
         """
         logger.debug(f"Received message from {connection.connection_id}: type={message.type.value}")
-        
-        # Look up handler
+
         handler = self._handlers.get(message.type)
-        
-        if handler:
-            try:
-                handler(connection, message)
-            except Exception as e:
-                logger.error(
-                    f"Handler error for {message.type.value} from {connection.connection_id}: {e}",
-                    exc_info=True
-                )
-                # Send error response
-                error_msg = Message.create_error(
-                    "INTERNAL_ERROR",
-                    "An internal error occurred while processing your request",
-                    request_id=message.request_id
-                )
-                connection.send_message(error_msg)
-        else:
+
+        if handler is None:
             logger.warning(f"No handler for message type: {message.type.value}")
-            # Send error response
             error_msg = Message.create_error(
                 "UNKNOWN_MESSAGE_TYPE",
                 f"Unknown message type: {message.type.value}",
                 request_id=message.request_id
             )
             connection.send_message(error_msg)
+            return
+
+        if self._executor is None:
+            # Fallback: run synchronously (e.g. server not started via start())
+            self._run_handler(handler, connection, message)
+            return
+
+        self._executor.submit(self._run_handler, handler, connection, message)
+
+    def _run_handler(
+        self,
+        handler: Callable[[SocketConnection, Message], None],
+        connection: SocketConnection,
+        message: Message,
+    ) -> None:
+        """Execute a handler on a worker thread with error isolation."""
+        try:
+            handler(connection, message)
+        except Exception as e:
+            logger.error(
+                f"Handler error for {message.type.value} from {connection.connection_id}: {e}",
+                exc_info=True
+            )
+            try:
+                error_msg = Message.create_error(
+                    "INTERNAL_ERROR",
+                    "An internal error occurred while processing your request",
+                    request_id=message.request_id
+                )
+                connection.send_message(error_msg)
+            except Exception as send_err:
+                logger.error(f"Failed to send error response: {send_err}")
     
     def _close_connection(self, sock: socket.socket) -> None:
         """
         Close a client connection.
-        
+
         Args:
             sock: Client socket to close
         """
-        connection = self._connections.get(sock)
+        with self._connections_lock:
+            connection = self._connections.pop(sock, None)
         if not connection:
             return
-        
+
         try:
             # Unregister from selector
             self._selector.unregister(sock)
         except Exception:
             pass
-        
+
         # Close connection
         connection.close()
-        
-        # Remove from connections map
-        del self._connections[sock]
-        
+
         # Call disconnection callback if implemented
         self._on_connection_closed(connection)
     
@@ -362,8 +420,9 @@ class BaseSocketServer:
     def get_connection_count(self) -> int:
         """
         Get number of active connections.
-        
+
         Returns:
             Number of connections
         """
-        return len(self._connections)
+        with self._connections_lock:
+            return len(self._connections)
