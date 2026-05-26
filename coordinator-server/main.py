@@ -112,7 +112,8 @@ def main():
             config.server.download_ticket_ttl_seconds
         )
         storage_registry = StorageNodeRegistry(
-            timeout_seconds=config.server.storage_node_timeout
+            timeout_seconds=config.server.storage_node_timeout,
+            min_free_bytes=config.server.storage_min_free_bytes,
         )
         reconciliation_service = ReconciliationService(db)
         
@@ -129,7 +130,8 @@ def main():
             chunk_size=config.server.upload_chunk_size,
             ticket_ttl_seconds=config.server.upload_ticket_ttl_seconds,
             storage_registry=storage_registry,
-            ticket_secret=config.server.storage_node_secret
+            ticket_secret=config.server.storage_node_secret,
+            slot_reservation_ttl_seconds=config.server.upload_slot_ttl_seconds,
         )
         download_service = DownloadService(
             database=db,

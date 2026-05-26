@@ -19,8 +19,9 @@ class FakeStorageNode:
 class FakeStorageRegistry:
     def __init__(self, nodes):
         self.nodes = {node.node_id: node for node in nodes}
+        self.reservations = {}
 
-    def select_for_upload(self):
+    def select_for_upload(self, reservation_id=None, ttl_seconds=60):
         healthy = [
             node for node in self.nodes.values()
             if node.healthy and node.storage_address
@@ -28,7 +29,18 @@ class FakeStorageRegistry:
         if not healthy:
             return None
         healthy.sort(key=lambda node: (node.active_uploads, node.node_id))
-        return healthy[0]
+        pick = healthy[0]
+        if reservation_id:
+            self.reservations[reservation_id] = pick.node_id
+            pick.active_uploads += 1
+        return pick
+
+    def release_reservation(self, reservation_id):
+        node_id = self.reservations.pop(reservation_id, None)
+        if node_id and self.nodes[node_id].active_uploads > 0:
+            self.nodes[node_id].active_uploads -= 1
+            return True
+        return False
 
     def mark_upload_started(self, node_id):
         if node_id in self.nodes:
@@ -668,8 +680,11 @@ class TestUploadService(unittest.TestCase):
     def test_handle_upload_complete_decrements_assigned_node(self):
         """Test UPLOAD_COMPLETE decrements the assigned node active count."""
         registry = FakeStorageRegistry([
-            FakeStorageNode("node-1", "node-1:9001", active_uploads=1)
+            FakeStorageNode("node-1", "node-1:9001")
         ])
+        # Reserve a slot the same way INIT_UPLOAD would have, keyed by file_id.
+        registry.select_for_upload(reservation_id='file-123')
+        self.assertEqual(registry.nodes['node-1'].active_uploads, 1)
         service = UploadService(
             database=self.mock_db,
             redis_client=self.mock_redis,
@@ -701,9 +716,13 @@ class TestUploadService(unittest.TestCase):
     def test_handle_upload_complete_rejects_reporting_node_mismatch(self):
         """Test UPLOAD_COMPLETE rejects a node other than the assigned owner."""
         registry = FakeStorageRegistry([
-            FakeStorageNode("node-1", "node-1:9001", active_uploads=1),
-            FakeStorageNode("node-2", "node-2:9002", active_uploads=1)
+            FakeStorageNode("node-1", "node-1:9001"),
+            FakeStorageNode("node-2", "node-2:9002")
         ])
+        # The slot was reserved against node-1 (the assigned owner) at
+        # INIT_UPLOAD time. node-2 has no reservation.
+        registry.select_for_upload(reservation_id='file-123')
+        self.assertEqual(registry.nodes['node-1'].active_uploads, 1)
         service = UploadService(
             database=self.mock_db,
             redis_client=self.mock_redis,
@@ -729,8 +748,15 @@ class TestUploadService(unittest.TestCase):
 
         self.assertFalse(success)
         self.assertEqual(error_code, "STORAGE_NODE_MISMATCH")
+        # node-1's slot is released regardless of which node reported (the
+        # release is keyed by file_id, not by reporter).
         self.assertEqual(registry.nodes['node-1'].active_uploads, 0)
-        self.mock_db.execute_update.assert_not_called()
+        # M9 bugfix: mismatch path marks the row DELETED so it doesn't sit
+        # in UPLOADING until the 35-min orphan cleanup runs.
+        self.mock_db.execute_update.assert_called_once_with(
+            "UPDATE files SET status = %s WHERE id = %s AND status = %s",
+            ('DELETED', 'file-123', 'UPLOADING')
+        )
     
     def test_handle_upload_failed(self):
         """Test UPLOAD_FAILED handler."""

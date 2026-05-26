@@ -95,10 +95,22 @@ class CleanupService:
                 file_ids = [str(record['id']) for record in cleaned_records]
                 logger.debug(f"Cleaned file IDs: {file_ids}")
                 if self.storage_registry:
+                    # Slot reservations are keyed by file_id and almost
+                    # always already TTL-expired by the time this 35-min
+                    # window runs; release_reservation is idempotent so
+                    # this is safe belt-and-suspenders cleanup. The
+                    # legacy mark_upload_finished branch only runs against
+                    # older registries that don't expose the new API.
+                    has_reservation_api = hasattr(self.storage_registry, "release_reservation")
                     for record in cleaned_records:
-                        node_id = record.get('storage_node_id')
-                        if node_id:
-                            self.storage_registry.mark_upload_finished(node_id)
+                        if has_reservation_api:
+                            record_id = record.get('id')
+                            if record_id:
+                                self.storage_registry.release_reservation(str(record_id))
+                        else:
+                            node_id = record.get('storage_node_id')
+                            if node_id:
+                                self.storage_registry.mark_upload_finished(node_id)
             else:
                 logger.debug("No orphaned uploads found")
             

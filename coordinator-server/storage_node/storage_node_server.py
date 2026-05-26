@@ -299,9 +299,23 @@ class StorageNodeServer(BaseSocketServer):
             storage_address=storage_address
         )
 
+        # Optional capacity report at auth — lets the load balancer make
+        # informed choices from the very first INIT_UPLOAD instead of
+        # waiting for the first heartbeat.
+        free_bytes = message.payload.get("freeBytes") if message.payload else None
+        if free_bytes is not None:
+            try:
+                self.registry.update_capacity(connection, int(free_bytes))
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"STORAGE_AUTH invalid freeBytes from {connection.connection_id}: "
+                    f"{free_bytes!r} (ignored)"
+                )
+
         logger.info(
             f"Storage Node authenticated: node_id={node_info.node_id}, "
-            f"storageAddress={node_info.storage_address}"
+            f"storageAddress={node_info.storage_address}, "
+            f"freeBytes={node_info.free_bytes}"
         )
 
         # BUGFIX (audit): record successful storage-node authentication.
@@ -373,9 +387,24 @@ class StorageNodeServer(BaseSocketServer):
             connection.send_message(error_msg)
             return
 
-        self.registry.heartbeat(connection)
-        
-        logger.debug(f"PING received from {connection.connection_id}")
+        # Per-heartbeat capacity refresh is the primary load-balancer
+        # input: if the node skips this field on some pings, we just keep
+        # the previously-known value (heartbeat() preserves it).
+        free_bytes = message.payload.get("freeBytes") if message.payload else None
+        parsed_free_bytes: Optional[int] = None
+        if free_bytes is not None:
+            try:
+                parsed_free_bytes = int(free_bytes)
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"PING freeBytes from {connection.connection_id} not an int: "
+                    f"{free_bytes!r} (ignored)"
+                )
+        self.registry.heartbeat(connection, free_bytes=parsed_free_bytes)
+
+        logger.debug(
+            f"PING received from {connection.connection_id} freeBytes={parsed_free_bytes}"
+        )
         
         # Respond with PONG
         pong = Message.create_response(
