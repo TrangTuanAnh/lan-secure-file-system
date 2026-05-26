@@ -82,11 +82,13 @@ class UploadService:
             'storage_address': node.storage_address
         }
 
-    def _is_reusable_dedup_node(self, node_id: Optional[str]) -> bool:
+    def _is_reusable_dedup_node(self, node_id: Optional[str], sha256_whole: str) -> bool:
         if not node_id:
             return True
         if not self.storage_registry:
             return True
+        if hasattr(self.storage_registry, 'node_has_file'):
+            return self.storage_registry.node_has_file(node_id, sha256_whole)
         return self.storage_registry.is_node_healthy(node_id)
 
     def _dedup_storage_address(
@@ -105,7 +107,7 @@ class UploadService:
     ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         for candidate in candidates:
             node_id = candidate.get('storage_node_id')
-            if not self._is_reusable_dedup_node(node_id):
+            if not self._is_reusable_dedup_node(node_id, candidate.get('sha256_whole') or ''):
                 continue
             address = self._dedup_storage_address(node_id, storage_address)
             if address:

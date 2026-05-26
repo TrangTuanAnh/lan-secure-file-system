@@ -60,6 +60,7 @@ class DeduplicationChecker:
                     'room_id': file['room_id'],
                     'original_name': file['original_name'],
                     'size_bytes': file['size_bytes'],
+                    'sha256_whole': sha256_whole,
                     'storage_node_id': file.get('storage_node_id')
                 }
             
@@ -100,6 +101,7 @@ class DeduplicationChecker:
                     'room_id': file['room_id'],
                     'original_name': file['original_name'],
                     'size_bytes': file['size_bytes'],
+                    'sha256_whole': sha256_whole,
                     'storage_node_id': file.get('storage_node_id')
                 }
                 for file in files
