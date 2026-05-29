@@ -1,0 +1,9 @@
+# Force LF for files executed inside Linux containers / bash.
+# Prevents 'exec entrypoint.sh: no such file or directory' and
+# clamd 'Incorrect argument format' caused by CRLF on Windows checkouts.
+*.sh            text eol=lf
+*.conf          text eol=lf
+entrypoint.sh   text eol=lf
+clamd.conf      text eol=lf
+Dockerfile      text eol=lf
+*.properties    text eol=lf
