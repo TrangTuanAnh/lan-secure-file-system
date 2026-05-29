@@ -311,7 +311,7 @@ class StorageNodeDataPlaneClient:
         plan: dict[str, Any],
         file_path: str,
         uploader_id: str,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Optional[Callable[[int, int, int, int], None]] = None,
     ) -> dict[str, Any]:
         backend_target = str(plan.get("storageAddress") or self._storage_address)
         _, _, host, port = _resolve_effective_storage_target(backend_target)
@@ -368,6 +368,11 @@ class StorageNodeDataPlaneClient:
                 else:
                     chunk_indexes = list(range(total_chunks))
 
+                # Khi resume, một số khối đã có sẵn trên node. Tính sẵn để phần
+                # trăm phản ánh tiến độ của CẢ file chứ không chỉ phần còn lại.
+                already_done_chunks = max(0, total_chunks - len(chunk_indexes))
+                bytes_sent = min(already_done_chunks * chunk_size, file_size)
+
                 # Mở file một lần, sau đó seek tới từng vị trí khối để đọc.
                 # Cách này tránh mở/đóng file lặp lại và vẫn giữ RAM ổn định.
                 with open(source_path, "rb") as f:
@@ -396,8 +401,15 @@ class StorageNodeDataPlaneClient:
                                 or ack.get("status")
                                 or "Storage node rejected a chunk upload."
                             )
+                        bytes_sent = min(bytes_sent + len(chunk), file_size)
                         if progress_callback is not None:
-                            progress_callback(uploaded_count, len(chunk_indexes))
+                            # (khối đã xong của cả file, tổng khối, byte đã gửi, tổng byte)
+                            progress_callback(
+                                already_done_chunks + uploaded_count,
+                                total_chunks,
+                                bytes_sent,
+                                file_size,
+                            )
 
                 # Sau khi gửi đủ khối, yêu cầu nút lưu trữ ghép file và hoàn tất tải lên.
                 _send_frame(sock, {"type": "FINALIZE_UPLOAD", "sessionId": plan.get("sessionId")})
@@ -421,7 +433,7 @@ class StorageNodeDataPlaneClient:
         plan: dict[str, Any],
         save_path: str,
         downloader_id: str,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Optional[Callable[[int, int, int, int], None]] = None,
     ) -> dict[str, Any]:
         backend_target = str(plan.get("storageAddress") or self._storage_address)
         _, _, host, port = _resolve_effective_storage_target(backend_target)
@@ -460,6 +472,14 @@ class StorageNodeDataPlaneClient:
                 if open_response.get("type") == "ERROR":
                     raise DataPlaneError(open_response.get("message") or "OPEN_DOWNLOAD failed.")
                 total_chunks = int(open_response.get("totalChunks") or total_chunks or 0)
+                # Tổng dung lượng file (nếu node/plan cung cấp) để tính tốc độ & ETA.
+                total_bytes = int(
+                    open_response.get("fileSize")
+                    or open_response.get("sizeBytes")
+                    or plan.get("sizeBytes")
+                    or plan.get("fileSize")
+                    or 0
+                )
 
                 for index in range(total_chunks):
                     # Yêu cầu nút lưu trữ gửi đúng khối theo chỉ số index.
@@ -488,7 +508,8 @@ class StorageNodeDataPlaneClient:
                     bytes_written += len(chunk_data)
 
                     if progress_callback is not None:
-                        progress_callback(index + 1, total_chunks)
+                        # (khối đã nhận, tổng khối, byte đã ghi, tổng byte)
+                        progress_callback(index + 1, total_chunks, bytes_written, total_bytes)
 
                     if index == total_chunks - 1:
                         complete_header, _ = _recv_frame(sock)
