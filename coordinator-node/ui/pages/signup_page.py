@@ -56,16 +56,19 @@ class SignupWorker(QObject):
             if not service.connect():
                 self.failure.emit("Cannot reach server. Please check if it is running.")
                 return
-            if service.auth.signup(self._username, self._email, self._password):
+            result = service._client.signup(self._username, self._email, self._password)
+            if result:
                 self.success.emit({"username": self._username, "email": self._email})
             else:
-                self.failure.emit("Signup failed. Username or email may already exist.")
+                self.failure.emit("Signup failed.")
         except TimeoutError:
             self.failure.emit("Connection timed out. Please try again.")
         except ConnectionRefusedError:
             self.failure.emit(
                 f"Connection refused. Is the server running on {self._config.host}:{self._config.port}?"
             )
+        except ValueError as exc:
+            self.failure.emit(str(exc))
         except Exception as exc:
             self.failure.emit(f"Signup failed: {exc}")
         finally:
@@ -168,6 +171,10 @@ class SignupCard(QFrame):
         self.email_input.returnPressed.connect(self.password_input.setFocus)
         self.password_input.returnPressed.connect(self.confirm_password_input.setFocus)
         self.back_to_login_link.clicked.connect(self.back_requested.emit)
+        self.username_input.textChanged.connect(self.username_input.clear_invalid)
+        self.email_input.textChanged.connect(self.email_input.clear_invalid)
+        self.password_input.textChanged.connect(self.password_input.clear_invalid)
+        self.confirm_password_input.textChanged.connect(self.confirm_password_input.clear_invalid)
 
     @staticmethod
     def _build_field_label(text: str) -> QLabel:
@@ -200,6 +207,16 @@ class SignupCard(QFrame):
         self.confirm_password_input.setEnabled(not loading)
         self.back_to_login_link.setEnabled(not loading)
         self.create_account_button.set_loading(loading, "Creating Account")
+
+    def clear_validation_state(self) -> None:
+        self.username_input.clear_invalid()
+        self.email_input.clear_invalid()
+        self.password_input.clear_invalid()
+        self.confirm_password_input.clear_invalid()
+
+    def mark_invalid_inputs(self, *inputs: ModernLineEdit) -> None:
+        for input_widget in inputs:
+            input_widget.set_invalid(True)
 
 
 class SignupWindow(QMainWindow):
@@ -249,8 +266,8 @@ class SignupWindow(QMainWindow):
         self.signup_card = SignupCard()
         right_layout.addWidget(self.signup_card, alignment=Qt.AlignCenter)
         main_layout.addWidget(right_panel, 11)
-        self._toast_host = self
-        self.error_toast = ErrorLabel(parent=self)
+        self._toast_host = right_panel
+        self.error_toast = ErrorLabel(parent=right_panel)
 
     def _apply_window_theme(self) -> None:
         palette = QPalette()
@@ -383,9 +400,10 @@ class SignupWindow(QMainWindow):
         self.signup_card.set_server_status(online, message)
 
     def _on_signup_requested(self, username: str, email: str, password: str, confirm_password: str) -> None:
-        validation_error = self._validate_signup_inputs(username, email, password, confirm_password)
+        self.signup_card.clear_validation_state()
+        validation_error, invalid_fields = self._validate_signup_inputs(username, email, password, confirm_password)
         if validation_error:
-            self.error_toast.show_error(validation_error)
+            self._show_signup_error(validation_error, invalid_fields)
             return
 
         self.error_toast.hide_error()
@@ -398,32 +416,40 @@ class SignupWindow(QMainWindow):
         email: str,
         password: str,
         confirm_password: str,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], list[ModernLineEdit]]:
         if not username:
             self.signup_card.username_input.setFocus()
-            return "Please enter a username."
+            return "Please enter a username.", [self.signup_card.username_input]
         if len(username) < 3:
             self.signup_card.username_input.setFocus()
-            return "Username must be at least 3 characters."
+            return "Username must be at least 3 characters.", [self.signup_card.username_input]
+        if not re.match(r"^[a-zA-Z0-9._-]+$", username):
+            self.signup_card.username_input.setFocus()
+            return "Username may only contain letters, numbers, dots, underscores, and hyphens.", [self.signup_card.username_input]
         if not email:
             self.signup_card.email_input.setFocus()
-            return "Please enter an email address."
+            return "Please enter an email address.", [self.signup_card.email_input]
         if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", email):
             self.signup_card.email_input.setFocus()
-            return "Please enter a valid email address."
+            return "Please enter a valid email address.", [self.signup_card.email_input]
         if not password:
             self.signup_card.password_input.setFocus()
-            return "Please enter a password."
+            return "Please enter a password.", [self.signup_card.password_input]
         if len(password) < 6:
             self.signup_card.password_input.setFocus()
-            return "Password must be at least 6 characters."
+            return "Password must be at least 6 characters.", [self.signup_card.password_input]
         if not confirm_password:
             self.signup_card.confirm_password_input.setFocus()
-            return "Please confirm your password."
+            return "Please confirm your password.", [self.signup_card.confirm_password_input]
         if password != confirm_password:
             self.signup_card.confirm_password_input.setFocus()
-            return "Passwords do not match."
-        return None
+            return "Passwords do not match.", [self.signup_card.password_input, self.signup_card.confirm_password_input]
+        return None, []
+
+    def _show_signup_error(self, message: str, invalid_fields: list[ModernLineEdit]) -> None:
+        if invalid_fields:
+            self.signup_card.mark_invalid_inputs(*invalid_fields)
+        self.error_toast.show_error(message)
 
     def _start_signup_worker(self, username: str, email: str, password: str) -> None:
         if self._signup_thread and self._signup_thread.isRunning():
@@ -444,12 +470,32 @@ class SignupWindow(QMainWindow):
 
     def _on_signup_success(self, payload: Dict[str, Any]) -> None:
         self.signup_card.set_signup_loading(False)
+        self.signup_card.clear_validation_state()
         print(f"Signup successful for user: {payload.get('username', 'unknown')}")
         self._on_back_requested()
 
     def _on_signup_failed(self, message: str) -> None:
         self.signup_card.set_signup_loading(False)
-        self.error_toast.show_error(message)
+        self._show_signup_error(*self._map_signup_failure(message))
+
+    def _map_signup_failure(self, message: str) -> tuple[str, list[ModernLineEdit]]:
+        error_text = str(message)
+        if "DUPLICATE_USERNAME" in error_text:
+            self.signup_card.username_input.setFocus()
+            return "Username already exists.", [self.signup_card.username_input]
+        if "DUPLICATE_EMAIL" in error_text:
+            self.signup_card.email_input.setFocus()
+            return "Email address already exists.", [self.signup_card.email_input]
+        if "INVALID_INPUT" in error_text:
+            return (
+                "Username, email, and password are required.",
+                [
+                    self.signup_card.username_input,
+                    self.signup_card.email_input,
+                    self.signup_card.password_input,
+                ],
+            )
+        return error_text, []
 
     def _on_back_requested(self) -> None:
         self.back_to_login_requested.emit()
