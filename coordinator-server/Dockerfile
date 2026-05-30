@@ -35,7 +35,8 @@ ENV PYTHONUNBUFFERED=1
 
 # Copy entrypoint script
 COPY entrypoint.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# Strip CR so a Windows (CRLF) checkout still runs in Linux
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Run the application
 ENTRYPOINT ["/app/entrypoint.sh"]

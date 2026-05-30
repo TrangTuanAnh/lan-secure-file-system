@@ -34,6 +34,8 @@ public class ClamAvClient implements AntivirusScanner {
 
     @Override
     public ScanResult scan(Path filePath) {
+        // Send "zSCAN <path>\0" to clamd over TCP and parse the single-line response.
+        // Maps socket errors to UNAVAILABLE/TIMEOUT so the fail-closed policy can react.
         long started = System.nanoTime();
         String absolutePath = filePath.toAbsolutePath().normalize().toString();
         String command = "zSCAN " + absolutePath + '\0';
@@ -70,6 +72,8 @@ public class ClamAvClient implements AntivirusScanner {
     }
 
     public static ScanResult parseResponse(String response, long durationMs, String scanner) {
+        // Classify a clamd reply into CLEAN / INFECTED / LIMIT_EXCEEDED / ERROR.
+        // Accepts trailing markers "OK", "<threat> FOUND", "<...> ERROR", or size-limit text.
         String raw = response;
         String cleaned = response == null ? "" : response.replace("\0", "").trim();
 

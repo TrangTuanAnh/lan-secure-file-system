@@ -17,10 +17,10 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * TCP server that listens for data-plane connections from clients.
+ * Máy chủ TCP của nút lưu trữ.
  *
- * Each incoming connection is handed off to a ClientHandler running
- * in a thread pool.
+ * File này là điểm bắt đầu của luồng nhập/xuất qua mạng:
+ * mở cổng TCP, chờ máy khách kết nối, rồi giao socket cho ClientHandler xử lý.
  */
 public class StorageServer {
 
@@ -34,7 +34,9 @@ public class StorageServer {
     private final RSAKeyExchange rsaKeyExchange;
     private final AntivirusScanner antivirusScanner;
 
+    // ServerSocket là cổng TCP mà nút lưu trữ mở ra để máy khách kết nối tải lên/tải xuống.
     private ServerSocket serverSocket;
+    // Nhóm luồng giúp nhiều máy khách có thể gửi/nhận dữ liệu cùng lúc.
     private ExecutorService threadPool;
     private volatile boolean running = false;
 
@@ -51,9 +53,11 @@ public class StorageServer {
         this.antivirusScanner = antivirusScanner;
     }
 
-    /** Start listening for connections. Blocks the calling thread. */
+    /** Bắt đầu lắng nghe kết nối TCP từ máy khách. */
     public void start() throws IOException {
+        // Tạo số luồng xử lý cố định để xử lý nhiều kết nối máy khách song song.
         threadPool = Executors.newFixedThreadPool(config.getThreadPoolSize());
+        // Mở cổng TCP của nút lưu trữ; đây là nơi máy khách kết nối vào để truyền dữ liệu file.
         serverSocket = new ServerSocket(config.getPort());
         running = true;
 
@@ -66,16 +70,21 @@ public class StorageServer {
 
         while (running) {
             try {
+                // Chặn tại đây cho đến khi có máy khách mới kết nối vào nút lưu trữ.
                 Socket clientSocket = serverSocket.accept();
+                // Tắt Nagle để dữ liệu yêu cầu/ACK nhỏ được gửi ngay, giảm độ trễ.
                 clientSocket.setTcpNoDelay(true);
-                clientSocket.setSoTimeout(0); // no read timeout for long uploads
+                // Không đặt timeout đọc vì tải lên file lớn có thể mất nhiều thời gian.
+                clientSocket.setSoTimeout(0);
 
+                // Mỗi kết nối máy khách được bọc thành một ClientHandler.
                 ClientHandler handler = new ClientHandler(
                     clientSocket, sessionManager, fileStore, dedupStore,
                     coordinator, rsaKeyExchange, config.getChunkSize(),
                     antivirusScanner, config.isAntivirusFailClosed(),
                     config.getAntivirusMaxScanBytes()
                 );
+                // Đưa ClientHandler vào nhóm luồng để xử lý nhập/xuất socket ở luồng riêng.
                 threadPool.execute(handler);
             } catch (IOException e) {
                 if (running) {
@@ -85,13 +94,14 @@ public class StorageServer {
         }
     }
 
-    /** Stop the server and clean up resources. */
+    /** Dừng máy chủ và giải phóng tài nguyên mạng/luồng. */
     public void stop() {
         running = false;
         LOG.info("Shutting down Storage Node...");
 
         try {
             if (serverSocket != null && !serverSocket.isClosed()) {
+                // Đóng cổng TCP để không nhận thêm máy khách mới.
                 serverSocket.close();
             }
         } catch (IOException e) {
@@ -99,9 +109,11 @@ public class StorageServer {
         }
 
         if (threadPool != null) {
+            // Dừng nhận tác vụ mới và chờ các ClientHandler đang chạy kết thúc.
             threadPool.shutdown();
             try {
                 if (!threadPool.awaitTermination(10, TimeUnit.SECONDS)) {
+                    // Nếu chờ quá lâu thì ép dừng các luồng xử lý còn lại.
                     threadPool.shutdownNow();
                 }
             } catch (InterruptedException e) {

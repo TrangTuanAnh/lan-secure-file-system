@@ -28,31 +28,42 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Handles a single client TCP connection on the data plane.
+ * Xử lý một kết nối TCP từ máy khách tới nút lưu trữ.
  *
- * Each connection can perform one or more upload/download operations.
- * Optionally encrypted with AES after RSA key exchange.
+ * Mỗi kết nối có thể thực hiện một hoặc nhiều thao tác tải lên/tải xuống.
+ * Dữ liệu có thể được mã hóa bằng AES sau bước bắt tay khóa.
  */
 public class ClientHandler implements Runnable {
 
     private static final Logger LOG = Logger.getLogger(ClientHandler.class.getName());
 
+    // Socket TCP đại diện cho 1 máy khách đang kết nối tới nút lưu trữ.
     private final Socket socket;
+    // Quản lý trạng thái các phiên tải lên/tải xuống đang diễn ra.
     private final SessionManager sessionManager;
+    // Lớp thao tác nhập/xuất file thật trên ổ đĩa: ghi khối, đọc khối, ghép file.
     private final FileStore fileStore;
+    // Kiểm tra file đã tồn tại theo hash hay chưa để tránh lưu trùng nội dung.
     private final DedupStore dedupStore;
+    // Thành phần dùng để báo kết quả tải lên thành công/thất bại về bộ điều phối.
     private final CoordinatorClient coordinator;
+    // Đường mã hóa cũ: máy khách gửi khóa phiên AES đã mã hóa bằng RSA.
     private final RSAKeyExchange rsaKeyExchange;
+    // Kích thước mỗi khối dữ liệu, mặc định thường là 512KB.
     private final int chunkSize;
+    // Bộ quét virus được truyền vào từ lúc khởi động nút lưu trữ.
     private final AntivirusScanner antivirusScanner;
     private final boolean antivirusFailClosed;
     private final long antivirusMaxScanBytes;
 
+    // Luồng đọc/ghi byte trực tiếp từ TCP socket.
     private InputStream in;
     private OutputStream out;
-    private SecretKey aesSessionKey;  // null if encryption not negotiated
-    private String aesCipherMode = "NONE";  // "AES-256-CBC" (legacy) or "AES-256-GCM" (modern)
-    private ModernKeyExchange.HandshakeOffer modernOffer;  // pending hybrid/ECDH offer
+    // Khóa phiên AES sau khi bắt tay mã hóa; null nghĩa là chưa bật mã hóa.
+    private SecretKey aesSessionKey;
+    private String aesCipherMode = "NONE";
+    // Gói thông tin tạm thời cho bắt tay ECDH/ML-KEM trước khi sinh khóa phiên AES.
+    private ModernKeyExchange.HandshakeOffer modernOffer;
     private volatile boolean running = true;
 
     public ClientHandler(Socket socket, SessionManager sessionManager,
@@ -78,16 +89,19 @@ public class ClientHandler implements Runnable {
         LOG.info("Client connected: " + clientAddr);
 
         try {
+            // Lấy luồng nhập/xuất từ TCP socket để đọc yêu cầu và gửi phản hồi.
             in = new BufferedInputStream(socket.getInputStream());
             out = new BufferedOutputStream(socket.getOutputStream());
 
             while (running && !socket.isClosed()) {
+                // Mỗi lần đọc 1 khung dữ liệu hoàn chỉnh từ TCP rồi chuyển thành Message.
                 Message msg = FrameCodec.readFrame(in);
                 if (msg == null) {
-                    break; // client disconnected
+                    break; // Máy khách đã ngắt kết nối.
                 }
 
                 LOG.fine("Received: " + msg);
+                // Phân loại message để gọi đúng logic: mã hóa, tải lên, tải xuống, chống trùng lặp.
                 dispatch(msg);
             }
         } catch (SocketException e) {
@@ -103,6 +117,7 @@ public class ClientHandler implements Runnable {
     }
 
     private void dispatch(Message msg) throws Exception {
+        // Bộ điều phối chính: máy khách gửi type nào thì gọi hàm xử lý tương ứng.
         switch (msg.getType()) {
             case KEY_EXCHANGE:     handleKeyExchange(msg); break;
             case OPEN_UPLOAD:      handleOpenUpload(msg); break;
@@ -116,13 +131,13 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    // ═══════════════════════ KEY EXCHANGE ═══════════════════════
+    // ═══════════════════════ BẮT TAY MÃ HÓA ═══════════════════════
 
     private void handleKeyExchange(Message msg) throws Exception {
         byte[] encryptedSessionKey = msg.getData();
         String action = msg.getString("action");
 
-        // Modern hybrid / ECDH key exchange entry points
+        // Nhánh mã hóa hiện đại: máy khách xin public key ECDH + ML-KEM từ máy chủ.
         if ("GET_HYBRID_PUBLIC_KEY".equalsIgnoreCase(action) ||
                 "GET_MODERN_PUBLIC_KEY".equalsIgnoreCase(action) ||
                 "GET_ECDH_PUBLIC_KEY".equalsIgnoreCase(action)) {
@@ -141,7 +156,7 @@ public class ClientHandler implements Runnable {
         boolean requestPublicKey = msg.getBool("requestPublicKey") ||
                 "GET_PUBLIC_KEY".equalsIgnoreCase(action);
 
-        // Bootstrap step: client asks for node public key before sending AES key.
+        // Nhánh cũ: máy khách xin public key RSA trước, sau đó gửi khóa AES đã mã hóa.
         if (encryptedSessionKey == null || encryptedSessionKey.length == 0) {
             Message resp = Message.ok(MessageType.KEY_EXCHANGE_RESP)
                     .set("status", "PUBLIC_KEY")
@@ -157,7 +172,7 @@ public class ClientHandler implements Runnable {
         }
 
         try {
-            // Client sent RSA-encrypted AES key (legacy path)
+            // Giải mã khóa phiên AES do máy khách gửi lên bằng private key RSA của nút.
             aesSessionKey = rsaKeyExchange.decryptSessionKey(encryptedSessionKey);
             aesCipherMode = "AES-256-CBC";
         } catch (Exception e) {
@@ -166,7 +181,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Backward-compatible confirmation
+        // Gửi phản hồi xác nhận cho nhánh mã hóa cũ.
         Message resp = Message.ok(MessageType.KEY_EXCHANGE_RESP)
                 .set("encrypted", true)
                 .set("bootstrap", false);
@@ -177,6 +192,7 @@ public class ClientHandler implements Runnable {
 
     private void handleModernKeyBootstrap() throws Exception {
         try {
+            // Sinh khóa tạm thời cho phiên hiện tại, không dùng khóa cố định.
             modernOffer = ModernKeyExchange.createOffer();
         } catch (Exception e) {
             sendError("MODERN_KEY_EXCHANGE_UNAVAILABLE", "Modern key exchange is unavailable");
@@ -207,6 +223,7 @@ public class ClientHandler implements Runnable {
             return;
         }
         try {
+            // Máy khách gửi public key ECDH, nonce và ciphertext ML-KEM để hai bên sinh cùng khóa AES.
             byte[] clientEcdhPublicKey = msg.getData();
             byte[] clientNonce = b64decode(msg.getString("clientNonceB64"));
             byte[] mlKemCiphertext = b64decode(msg.getString("mlKemCiphertextB64"));
@@ -235,6 +252,7 @@ public class ClientHandler implements Runnable {
             return;
         }
         try {
+            // Dự phòng khi không dùng được ML-KEM: chỉ dùng ECDH + HKDF để sinh khóa AES-GCM.
             byte[] clientEcdhPublicKey = msg.getData();
             byte[] clientNonce = b64decode(msg.getString("clientNonceB64"));
             aesSessionKey = ModernKeyExchange.deriveEcdhSessionKey(
@@ -256,9 +274,10 @@ public class ClientHandler implements Runnable {
         LOG.info("ECDH AES-GCM session established with " + socket.getRemoteSocketAddress());
     }
 
-    // ═══════════════════════ UPLOAD ═══════════════════════
+    // ═══════════════════════ TẢI LÊN ═══════════════════════
 
     private void handleOpenUpload(Message msg) throws Exception {
+        // Bước 1 của tải lên: máy khách mở phiên tải lên và gửi siêu dữ liệu của file.
         String sessionId  = msg.getString("sessionId");
         String fileId     = msg.getString("fileId");
         String fileName   = msg.getString("fileName");
@@ -267,17 +286,18 @@ public class ClientHandler implements Runnable {
         int    totalChunks = msg.getInt("totalChunks");
         String uploaderId = msg.getString("uploaderId");
 
-        // Ticket verification
+        // Lấy thông tin vé để xác thực quyền tải lên.
         String ticketNodeId = msg.getString("ticketNodeId");
         long   ticketExpiry = msg.getLong("ticketExpiry");
         String ticketSig    = msg.getString("ticketSignature");
 
+        // Nút lưu trữ không tin trực tiếp yêu cầu từ máy khách; phải xác thực vé do bộ điều phối cấp.
         if (!coordinator.verifyTicket(sessionId, fileId, ticketNodeId, ticketExpiry, ticketSig)) {
             sendError("INVALID_TICKET", "Upload ticket verification failed");
             return;
         }
 
-        // Check dedup: file might already exist
+        // Nếu hash file đã có trong kho thì bỏ qua truyền dữ liệu, báo chống trùng lặp thành công.
         if (dedupStore.exists(sha256Whole)) {
             Message resp = Message.ok(MessageType.OPEN_UPLOAD_RESP)
                     .set("sessionId", sessionId)
@@ -289,10 +309,10 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Check if this is a resumed session
+        // Nếu phiên đã tồn tại, đây là tải lên tiếp sau khi mất kết nối.
         UploadSession existing = sessionManager.getUploadSession(sessionId);
         if (existing != null) {
-            // Resume: return current state
+            // Trả cho máy khách danh sách khối còn thiếu để chỉ gửi lại phần thiếu.
             List<Integer> missing = existing.getMissingChunks();
             Message resp = Message.ok(MessageType.OPEN_UPLOAD_RESP)
                     .set("sessionId", sessionId)
@@ -307,7 +327,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Create new session
+        // Tạo phiên tải lên mới, lưu thông tin tổng file và số lượng khối cần nhận.
         UploadSession session = sessionManager.createUploadSession(
             sessionId, fileId, fileName, sha256Whole,
             fileSize, totalChunks, chunkSize, uploaderId
@@ -322,12 +342,13 @@ public class ClientHandler implements Runnable {
     }
 
     private void handleUploadChunk(Message msg) throws Exception {
+        // Bước 2 của tải lên: máy khách gửi từng phần nhỏ của file theo chỉ số khối.
         String sessionId = msg.getString("sessionId");
         int chunkIndex   = msg.getInt("chunkIndex");
         String chunkHash = msg.getString("chunkHash");
         byte[] chunkData = msg.getData();
 
-        // Decrypt if encrypted session (auto-detect GCM vs CBC by magic prefix)
+        // Nếu đã bắt tay mã hóa, khối từ máy khách đang là bản mã nên phải giải mã trước.
         if (aesSessionKey != null && chunkData != null) {
             try {
                 chunkData = decryptPayload(chunkData);
@@ -337,6 +358,7 @@ public class ClientHandler implements Runnable {
             }
         }
 
+        // Kiểm tra phiên tải lên còn tồn tại trong bộ quản lý phiên không.
         UploadSession session = sessionManager.getUploadSession(sessionId);
         if (session == null) {
             sendError("INVALID_SESSION", "Upload session not found: " + sessionId);
@@ -348,6 +370,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
+        // Chặn index âm hoặc index vượt quá tổng số khối của file.
         if (!session.isValidChunkIndex(chunkIndex)) {
             Message nack = new Message(MessageType.ACK_CHUNK)
                     .set("sessionId", sessionId)
@@ -359,6 +382,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
+        // Khối thường phải đúng kích thước cấu hình; riêng khối cuối có thể nhỏ hơn.
         int expectedSize = session.expectedChunkSize(chunkIndex);
         if (chunkData.length != expectedSize) {
             Message nack = new Message(MessageType.ACK_CHUNK)
@@ -372,7 +396,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Skip if already received (idempotent for retransmission)
+        // Nếu máy khách gửi lại khối đã nhận rồi thì trả ACK trùng lặp, không ghi đè lại.
         if (session.hasChunk(chunkIndex)) {
             Message ack = Message.ok(MessageType.ACK_CHUNK)
                     .set("sessionId", sessionId)
@@ -382,7 +406,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Verify chunk hash
+        // Tính SHA-256 của dữ liệu khối để kiểm tra khối có bị lỗi khi truyền không.
         String actualHash = HashUtil.sha256(chunkData);
         if (!actualHash.equalsIgnoreCase(chunkHash)) {
             LOG.warning("Chunk hash mismatch: session=" + sessionId +
@@ -398,14 +422,21 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Write chunk to disk
+        // Ghi khối xuống thư mục tạm theo dạng data/temp/{sessionId}/chunk_{index}.
         fileStore.writeChunk(sessionId, chunkIndex, chunkData);
+        // Đánh dấu khối đã nhận để tính tiến độ và hỗ trợ tiếp tục tải lên.
         session.markChunkReceived(chunkIndex, actualHash);
 
-        // Persist session state
-        fileStore.saveSessionMeta(sessionId, session.toProperties());
+        // Không lưu siêu dữ liệu sau từng khối để tránh ghi đĩa quá nhiều.
+        // Cứ mỗi 16 khối mới lưu một lần, và luôn lưu ở khối cuối để bước hoàn tất có siêu dữ liệu mới nhất.
+        int recvCount = session.getReceivedCount();
+        int totalCount = session.getTotalChunks();
+        if (recvCount == totalCount || (recvCount % 16) == 0) {
+            // Lưu siêu dữ liệu định kỳ để nếu nút lưu trữ khởi động lại vẫn có thể phục hồi tải lên.
+            fileStore.saveSessionMeta(sessionId, session.toProperties());
+        }
 
-        // Send ACK
+        // Trả ACK cho máy khách để biết khối này đã được nhận hợp lệ.
         Message ack = Message.ok(MessageType.ACK_CHUNK)
                 .set("sessionId", sessionId)
                 .set("chunkIndex", chunkIndex)
@@ -419,6 +450,7 @@ public class ClientHandler implements Runnable {
     }
 
     private void handleQueryMissing(Message msg) throws Exception {
+        // Máy khách gọi hàm này khi muốn biết còn thiếu khối nào để tiếp tục tải lên.
         String sessionId = msg.getString("sessionId");
 
         UploadSession session = sessionManager.getUploadSession(sessionId);
@@ -441,6 +473,7 @@ public class ClientHandler implements Runnable {
     }
 
     private void handleFinalizeUpload(Message msg) throws Exception {
+        // Bước 3 của tải lên: máy khách báo đã gửi xong tất cả khối và yêu cầu ghép file.
         String sessionId = msg.getString("sessionId");
 
         UploadSession session = sessionManager.getUploadSession(sessionId);
@@ -449,7 +482,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Check all chunks received
+        // Chỉ cho hoàn tất khi đã nhận đủ toàn bộ khối.
         if (!session.isComplete()) {
             List<Integer> missing = session.getMissingChunks();
             Message resp = new Message(MessageType.FINALIZE_RESP)
@@ -461,6 +494,7 @@ public class ClientHandler implements Runnable {
             return;
         }
 
+        // Chặn trường hợp nhiều yêu cầu hoàn tất chạy song song cho cùng một phiên.
         if (!session.tryBeginFinalizing()) {
             Message resp = new Message(MessageType.FINALIZE_RESP)
                     .set("sessionId", sessionId)
@@ -474,12 +508,12 @@ public class ClientHandler implements Runnable {
         Path storedPath;
         ScanResult scanResult = null;
         try {
-            // Assemble file, verify hash, scan, then commit to permanent storage.
+            // Ghép chunk_0, chunk_1, ... thành một file tạm hoàn chỉnh.
             assembledPath = fileStore.assembleTempFile(sessionId, session.getTotalChunks());
+            // Kiểm tra hash toàn file sau khi ghép để đảm bảo không sai thứ tự hoặc thiếu dữ liệu.
             if (!fileStore.verifyAssembledHash(assembledPath, session.getSha256Whole(), sessionId)) {
                 session.setStatus(UploadSession.Status.FAILED);
-                // BUGFIX C6: cleanup temp + session on hash mismatch to prevent
-                // leaking chunk files and stale session state on disk/RAM.
+                // Dọn thư mục tạm và xóa phiên nếu hash toàn file không khớp.
                 safeCleanupFailedSession(sessionId, "hash mismatch");
                 Message resp = new Message(MessageType.FINALIZE_RESP)
                         .set("sessionId", sessionId)
@@ -490,14 +524,17 @@ public class ClientHandler implements Runnable {
                 return;
             }
 
+            // Kiểm tra giới hạn kích thước trước khi gửi sang antivirus.
             scanResult = validateScanSize(assembledPath);
             if (scanResult == null) {
+                // Quét virus trên file đã ghép hoàn chỉnh, không quét từng khối riêng lẻ.
                 scanResult = antivirusScanner.scan(assembledPath);
             }
             if (!scanResult.isClean() &&
                     (scanResult.getStatus() == ScanStatus.INFECTED ||
                             scanResult.getStatus() == ScanStatus.LIMIT_EXCEEDED ||
                             antivirusFailClosed)) {
+                // Nếu phát hiện virus hoặc cấu hình đóng khi lỗi thì từ chối lưu file.
                 handleScanRejectedUpload(session, assembledPath, scanResult);
                 return;
             }
@@ -508,11 +545,13 @@ public class ClientHandler implements Runnable {
                         " message=" + scanResult.getMessage());
             }
 
+            // File hợp lệ và sạch: chuyển từ vùng tạm sang kho lưu trữ chính theo hash.
             storedPath = fileStore.commitAssembledFile(assembledPath, session.getSha256Whole());
+            // Xóa thư mục tạm chứa các khối sau khi lưu chính thức thành công.
             fileStore.cleanSessionDir(sessionId);
         } catch (IOException e) {
             session.setStatus(UploadSession.Status.FAILED);
-            // BUGFIX C6: cleanup temp + session on I/O error in finalize.
+            // Dọn thư mục tạm và xóa phiên nếu có lỗi nhập/xuất khi hoàn tất.
             safeCleanupFailedSession(sessionId, "I/O error: " + e.getMessage());
             Message resp = new Message(MessageType.FINALIZE_RESP)
                     .set("sessionId", sessionId)
@@ -524,13 +563,13 @@ public class ClientHandler implements Runnable {
             return;
         }
 
-        // Register in dedup store
+        // Ghi nhận hash file vào kho chống trùng lặp để lần sau gặp file giống hệt thì không tải lên lại.
         dedupStore.register(session.getSha256Whole(), storedPath);
 
         session.setStatus(UploadSession.Status.COMPLETED);
         sessionManager.removeUploadSession(sessionId);
 
-        // Notify coordinator
+        // Báo cho bộ điều phối cập nhật cơ sở dữ liệu: file tải lên đã hoàn tất.
         coordinator.notifyUploadComplete(
             session.getFileId(), session.getSha256Whole(), session.getFileSize()
         );
@@ -548,33 +587,37 @@ public class ClientHandler implements Runnable {
                  " file=" + session.getFileName() + " sha256=" + session.getSha256Whole());
     }
 
-    // ═══════════════════════ DOWNLOAD ═══════════════════════
+    // ═══════════════════════ TẢI XUỐNG ═══════════════════════
 
     private void handleOpenDownload(Message msg) throws Exception {
+        // Bước 1 của tải xuống: máy khách mở phiên tải xuống bằng vé do bộ điều phối cấp.
         String sessionId  = msg.getString("sessionId");
         String fileId     = msg.getString("fileId");
         String sha256Whole = msg.getString("sha256Whole");
         String downloaderId = msg.getString("downloaderId");
 
-        // Ticket verification
+        // Lấy thông tin vé để xác thực quyền tải xuống.
         String ticketNodeId = msg.getString("ticketNodeId");
         long   ticketExpiry = msg.getLong("ticketExpiry");
         String ticketSig    = msg.getString("ticketSignature");
 
+        // Kiểm tra vé để đảm bảo máy khách có quyền tải file này từ nút này.
         if (!coordinator.verifyTicket(sessionId, fileId, ticketNodeId, ticketExpiry, ticketSig)) {
             sendError("INVALID_TICKET", "Download ticket verification failed");
             return;
         }
 
-        // Check file exists
+        // File được lưu theo sha256Whole; không có hash này thì nút không có file.
         if (!fileStore.fileExists(sha256Whole)) {
             sendError("FILE_NOT_FOUND", "File not found: " + sha256Whole);
             return;
         }
 
+        // Tính fileSize và totalChunks để máy khách biết cần yêu cầu bao nhiêu khối.
         long fileSize = fileStore.getFileSize(sha256Whole);
         int totalChunks = fileStore.calculateTotalChunks(fileSize);
 
+        // Tạo phiên tải xuống để theo dõi khối nào đã gửi.
         DownloadSession session = sessionManager.createDownloadSession(
             sessionId, fileId, sha256Whole, fileSize,
             totalChunks, chunkSize, downloaderId
@@ -593,15 +636,18 @@ public class ClientHandler implements Runnable {
     }
 
     private void handleRequestChunk(Message msg) throws Exception {
+        // Bước 2 của tải xuống: máy khách yêu cầu một khối cụ thể theo chunkIndex.
         String sessionId = msg.getString("sessionId");
         int chunkIndex   = msg.getInt("chunkIndex");
 
+        // Lấy phiên tải xuống đã mở trước đó bằng OPEN_DOWNLOAD.
         DownloadSession session = sessionManager.getDownloadSession(sessionId);
         if (session == null) {
             sendError("INVALID_SESSION", "Download session not found: " + sessionId);
             return;
         }
 
+        // Chặn máy khách yêu cầu khối ngoài phạm vi file.
         if (!session.isValidChunkIndex(chunkIndex)) {
             sendError("INVALID_CHUNK_INDEX", "chunkIndex out of range: " + chunkIndex);
             return;
@@ -609,6 +655,7 @@ public class ClientHandler implements Runnable {
 
         byte[] chunkData;
         try {
+        // Đọc đúng đoạn file từ ổ đĩa bằng vị trí bắt đầu = chỉ số khối * kích thước khối.
             chunkData = fileStore.readStoredChunk(
                 session.getSha256Whole(), chunkIndex, chunkSize
             );
@@ -617,9 +664,10 @@ public class ClientHandler implements Runnable {
             return;
         }
 
+        // Gửi kèm hash khối để máy khách kiểm tra dữ liệu tải về có đúng không.
         String chunkHash = HashUtil.sha256(chunkData);
 
-        // Encrypt if encrypted session (use whichever cipher was negotiated)
+        // Nếu phiên đã bật mã hóa thì mã hóa khối trước khi trả về máy khách.
         byte[] payload = chunkData;
         if (aesSessionKey != null) {
             payload = encryptPayload(chunkData);
@@ -634,11 +682,9 @@ public class ClientHandler implements Runnable {
         resp.setData(payload);
         send(resp);
 
-        boolean wasComplete = session.isComplete();
-        session.markChunkSent(chunkIndex);
-
-        // Check if download is complete
-        if (!wasComplete && session.isComplete()) {
+        // Đánh dấu khối đã gửi; nếu đây là khối cuối cùng thì gửi DOWNLOAD_COMPLETE đúng một lần.
+        boolean justCompleted = session.markChunkSentAndCheckJustCompleted(chunkIndex);
+        if (justCompleted) {
             Message complete = Message.ok(MessageType.DOWNLOAD_COMPLETE)
                     .set("sessionId", sessionId)
                     .set("sha256Whole", session.getSha256Whole());
@@ -647,9 +693,10 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    // ═══════════════════════ DEDUP CHECK ═══════════════════════
+    // ═══════════════════════ KIỂM TRA TRÙNG LẶP ═══════════════════════
 
     private void handleCheckObject(Message msg) throws Exception {
+        // Máy khách hoặc bộ điều phối có thể hỏi trước hash này đã tồn tại trên nút chưa.
         String sha256 = msg.getString("sha256Whole");
         boolean exists = dedupStore.exists(sha256);
 
@@ -661,6 +708,7 @@ public class ClientHandler implements Runnable {
 
     private void handleScanRejectedUpload(UploadSession session, Path assembledPath,
                                           ScanResult scanResult) throws IOException {
+        // Xử lý khi file tải lên bị bộ quét virus từ chối.
         session.setStatus(UploadSession.Status.FAILED);
 
         String sessionId = session.getSessionId();
@@ -669,6 +717,7 @@ public class ClientHandler implements Runnable {
 
         if (scanResult.getStatus() == ScanStatus.INFECTED) {
             try {
+                // File nhiễm virus được chuyển sang khu cách ly để kiểm tra, không lưu vào kho chính.
                 Path quarantinePath = fileStore.quarantineFile(session, assembledPath, scanResult);
                 LOG.warning("Infected upload quarantined: session=" + sessionId +
                         " path=" + quarantinePath);
@@ -679,11 +728,13 @@ public class ClientHandler implements Runnable {
         }
 
         try {
+            // Dù quét lỗi hay nhiễm virus thì cũng dọn thư mục tạm của phiên.
             fileStore.cleanSessionDir(sessionId);
         } catch (IOException e) {
             LOG.warning("Failed to clean rejected upload session=" + sessionId + ": " + e.getMessage());
         }
 
+        // Xóa phiên khỏi bộ nhớ và báo bộ điều phối cập nhật trạng thái thất bại trong cơ sở dữ liệu.
         sessionManager.removeUploadSession(sessionId);
         coordinator.notifyUploadFailed(session.getFileId(), message);
 
@@ -724,6 +775,7 @@ public class ClientHandler implements Runnable {
     }
 
     private ScanResult validateScanSize(Path assembledPath) throws IOException {
+        // Nếu antivirus tắt hoặc không đặt giới hạn thì bỏ qua bước kiểm tra kích thước.
         if (!antivirusScanner.isEnabled() || antivirusMaxScanBytes <= 0) {
             return null;
         }
@@ -751,13 +803,12 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    // ═══════════════════════ HELPERS ═══════════════════════
+    // ═══════════════════════ HÀM HỖ TRỢ ═══════════════════════
 
     /**
-     * BUGFIX C6: best-effort cleanup of a failed upload session.
-     * Removes the temp chunks/meta files and unregisters the session from
-     * SessionManager so it does NOT get re-loaded on restart and does NOT
-     * leak memory. Safe to call from finalize failure paths (catch blocks).
+     * Dọn dẹp tốt nhất có thể khi phiên tải lên thất bại.
+     * Hàm này xóa các khối tạm, xóa siêu dữ liệu tạm và gỡ phiên khỏi SessionManager
+     * để phiên lỗi không bị nạp lại sau khi nút lưu trữ khởi động lại.
      */
     private void safeCleanupFailedSession(String sessionId, String reason) {
         try {
@@ -775,20 +826,23 @@ public class ClientHandler implements Runnable {
     }
 
     private synchronized void send(Message msg) throws IOException {
+        // Đồng bộ hóa để nhiều nhánh xử lý không ghi chồng khung dữ liệu lên cùng OutputStream.
         FrameCodec.writeFrame(out, msg);
     }
 
-    /** Encrypt outgoing chunk payload using the negotiated cipher mode. */
+    /** Mã hóa dữ liệu khối gửi ra bằng chế độ mã hóa đã bắt tay. */
     private byte[] encryptPayload(byte[] plaintext) throws Exception {
+        // Phiên hiện đại dùng AES-256-GCM; phiên cũ dùng AES-CBC để tương thích.
         if (ModernKeyExchange.CIPHER.equals(aesCipherMode)) {
             return AESCrypto.encryptGcm(aesSessionKey, plaintext);
         }
-        // Legacy or unset → CBC for backward compatibility
+        // Nhánh cũ hoặc chưa xác định thì dùng CBC để tương thích.
         return AESCrypto.encryptCbc(aesSessionKey, plaintext);
     }
 
-    /** Decrypt incoming chunk payload — auto-detects GCM by magic prefix. */
+    /** Giải mã dữ liệu khối nhận vào; tự nhận biết GCM theo tiền tố dữ liệu. */
     private byte[] decryptPayload(byte[] ciphertext) throws Exception {
+        // Tự nhận biết dữ liệu là GCM hay CBC dựa trên định dạng trong AESCrypto.
         return AESCrypto.decrypt(aesSessionKey, ciphertext);
     }
 
@@ -809,6 +863,7 @@ public class ClientHandler implements Runnable {
     }
 
     public void close() {
+        // Dừng vòng lặp xử lý và đóng socket TCP của máy khách.
         running = false;
         try {
             socket.close();

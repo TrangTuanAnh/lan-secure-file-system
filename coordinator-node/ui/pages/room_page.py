@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QScrollArea,
     QSizePolicy,
     QVBoxLayout,
@@ -699,12 +701,131 @@ class FileDeleteWorker(QObject):
                 service.disconnect()
 
 
+class _TransferProgressTracker:
+    """Quy đổi (khối, tổng khối, byte, tổng byte) -> phần trăm / tốc độ / ETA."""
+
+    def __init__(self) -> None:
+        self._start: Optional[float] = None
+
+    def update(self, current: int, total: int, bytes_done: int, total_bytes: int) -> dict[str, Any]:
+        now = time.monotonic()
+        if self._start is None:
+            self._start = now
+        elapsed = max(1e-6, now - self._start)
+        if total > 0:
+            percent = int(max(0, min(100, round(current / total * 100))))
+        elif total_bytes > 0:
+            percent = int(max(0, min(100, round(bytes_done / total_bytes * 100))))
+        else:
+            percent = 0
+        speed = bytes_done / elapsed  # byte mỗi giây
+        if current > 0 and total > 0:
+            eta = (total - current) * (elapsed / current)
+        elif speed > 0 and total_bytes > bytes_done:
+            eta = (total_bytes - bytes_done) / speed
+        else:
+            eta = 0.0
+        return {
+            "percent": percent,
+            "done": bytes_done,
+            "total": total_bytes,
+            "speed": speed,
+            "eta": max(0.0, eta),
+        }
+
+
+def _format_speed(bytes_per_sec: float) -> str:
+    value = float(bytes_per_sec)
+    for unit in ("B/s", "KB/s", "MB/s"):
+        if value < 1024:
+            return f"{int(value)} {unit}" if unit == "B/s" else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} GB/s"
+
+
+def _format_eta(seconds: float) -> str:
+    secs = int(round(seconds))
+    if secs <= 0:
+        return "almost done"
+    if secs < 60:
+        return f"{secs}s left"
+    minutes, secs = divmod(secs, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs:02d}s left"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m left"
+
+
+class _TransferProgressPanel(QFrame):
+    """Thanh trạng thái upload/download: phần trăm, tốc độ, ETA và dung lượng."""
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("transferProgressPanel")
+        self.setVisible(False)
+        self.setStyleSheet(
+            "#transferProgressBar{border:1px solid palette(mid);border-radius:8px;"
+            "text-align:center;background:rgba(127,127,127,0.18);}"
+            "#transferProgressBar::chunk{background:#3b82f6;border-radius:7px;}"
+            "#transferProgressDetail{color:palette(mid);}"
+        )
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 12, 20, 12)
+        layout.setSpacing(6)
+
+        self._title = QLabel("Transfer in progress")
+        self._title.setObjectName("transferProgressTitle")
+        self._title.setFont(app_font(11, 700))
+        layout.addWidget(self._title)
+
+        self._bar = QProgressBar()
+        self._bar.setObjectName("transferProgressBar")
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(True)
+        self._bar.setFixedHeight(18)
+        layout.addWidget(self._bar)
+
+        self._detail = QLabel("")
+        self._detail.setObjectName("transferProgressDetail")
+        self._detail.setFont(ui_font(9))
+        layout.addWidget(self._detail)
+
+    def start(self, verb: str, file_name: str) -> None:
+        self._title.setText(f"{verb} '{file_name}'")
+        self._bar.setValue(0)
+        self._bar.setFormat("0%")
+        self._detail.setText("Starting secure transfer...")
+        self.setVisible(True)
+
+    def update_progress(self, info: object) -> None:
+        if not isinstance(info, dict):
+            return
+        percent = int(info.get("percent", 0))
+        self._bar.setValue(percent)
+        self._bar.setFormat(f"{percent}%")
+        done = int(info.get("done", 0))
+        total = int(info.get("total", 0))
+        speed = float(info.get("speed", 0.0))
+        eta = float(info.get("eta", 0.0))
+        parts = [f"{percent}%", _format_speed(speed), _format_eta(eta)]
+        parts.append(f"{_format_size(done)} / {_format_size(total)}" if total > 0 else _format_size(done))
+        self._detail.setText("    ·    ".join(parts))
+        if not self.isVisible():
+            self.setVisible(True)
+
+    def finish(self) -> None:
+        self.setVisible(False)
+        self._bar.setValue(0)
+        self._detail.setText("")
+
+
 class FileUploadWorker(QObject):
     """Run INIT_UPLOAD and Storage Node data transfer off the UI thread."""
 
     success = Signal(str)
     failure = Signal(str)
-    progress = Signal(int, int, str)
+    progress = Signal(object)
 
     def __init__(
         self,
@@ -752,11 +873,12 @@ class FileUploadWorker(QObject):
                 return
 
             transfer_client = StorageNodeDataPlaneClient(str(plan.get("storageAddress") or ""))
+            tracker = _TransferProgressTracker()
             transfer_client.upload_file(
                 plan=plan,
                 file_path=self._file_path,
                 uploader_id=self._uploader_id,
-                progress_callback=self._emit_upload_progress,
+                progress_callback=lambda c, t, b, tb: self.progress.emit(tracker.update(c, t, b, tb)),
             )
             self.success.emit(f"File '{source_path.name}' uploaded successfully.")
         except ValueError as exc:
@@ -795,6 +917,7 @@ class FileDownloadWorker(QObject):
 
     success = Signal(str)
     failure = Signal(str)
+    progress = Signal(object)
 
     def __init__(
         self,
@@ -833,10 +956,12 @@ class FileDownloadWorker(QObject):
             logger.info("INIT_DOWNLOAD returned storage target: %s", plan.get("storageAddress"))
 
             transfer_client = StorageNodeDataPlaneClient(str(plan.get("storageAddress") or ""))
+            tracker = _TransferProgressTracker()
             transfer_client.download_file(
                 plan=plan,
                 save_path=self._save_path,
                 downloader_id=self._downloader_id,
+                progress_callback=lambda c, t, b, tb: self.progress.emit(tracker.update(c, t, b, tb)),
             )
             self.success.emit(f"Saved '{self._file_name}' to {self._save_path}.")
         except DataPlaneError as exc:
@@ -990,6 +1115,9 @@ class RoomPage(QWidget):
         self.delete_room_button.setToolTip("Delete room is not supported by backend yet.")
         toolbar_layout.addWidget(self.delete_room_button)
         root.addWidget(toolbar)
+
+        self.transfer_progress = _TransferProgressPanel()
+        root.addWidget(self.transfer_progress)
 
         content_row = QHBoxLayout()
         content_row.setContentsMargins(0, 0, 0, 0)
@@ -2026,14 +2154,19 @@ class RoomPage(QWidget):
         self._upload_worker.progress.connect(self._on_upload_progress)
         self._upload_worker.success.connect(self._on_upload_success)
         self._upload_worker.failure.connect(self._on_upload_failed)
+        self._upload_worker.progress.connect(self._on_transfer_progress)
         self._upload_worker.success.connect(self._upload_thread.quit)
         self._upload_worker.failure.connect(self._upload_thread.quit)
         self._upload_thread.finished.connect(self._upload_thread.deleteLater)
         self._upload_thread.finished.connect(self._upload_worker.deleteLater)
         self._upload_thread.finished.connect(self._cleanup_upload_thread)
+        self.transfer_progress.start("Uploading", self._pending_uploaded_file_name)
         self._begin_upload_status("Scanning uploaded file...")
         self._upload_thread.start()
         self.top_bar.set_subtitle("Uploading file to secure storage...")
+
+    def _on_transfer_progress(self, info: object) -> None:
+        self.transfer_progress.update_progress(info)
 
     def _on_upload_success(self, message: str) -> None:
         self._complete_upload_status(True, message)
@@ -2074,6 +2207,7 @@ class RoomPage(QWidget):
         self._finalize_upload_result(success, message)
 
     def _finalize_upload_result(self, success: bool, message: str) -> None:
+        self.transfer_progress.finish()
         if success:
             uploaded_name = self._pending_uploaded_file_name or "file"
             self.activity_occurred.emit(
@@ -2112,20 +2246,24 @@ class RoomPage(QWidget):
         self._download_thread.started.connect(self._download_worker.run)
         self._download_worker.success.connect(self._on_download_success)
         self._download_worker.failure.connect(self._on_download_failed)
+        self._download_worker.progress.connect(self._on_transfer_progress)
         self._download_worker.success.connect(self._download_thread.quit)
         self._download_worker.failure.connect(self._download_thread.quit)
         self._download_thread.finished.connect(self._download_thread.deleteLater)
         self._download_thread.finished.connect(self._download_worker.deleteLater)
         self._download_thread.finished.connect(self._cleanup_download_thread)
+        self.transfer_progress.start("Downloading", default_name)
         self._download_thread.start()
         self._show_sidebar_loading("Preparing file download...")
         self.top_bar.set_subtitle("Preparing secure download...")
 
     def _on_download_success(self, message: str) -> None:
+        self.transfer_progress.finish()
         self._show_sidebar_success("File downloaded successfully.")
         self.top_bar.set_subtitle("File downloaded successfully.")
 
     def _on_download_failed(self, message: str) -> None:
+        self.transfer_progress.finish()
         self._show_sidebar_error(message)
 
     def _cleanup_data_thread(self) -> None:
