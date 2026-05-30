@@ -359,8 +359,11 @@ class StorageNodeDataPlaneClient:
                 open_response, _ = _recv_frame(sock)
                 if open_response.get("type") == "ERROR":
                     raise DataPlaneError(open_response.get("message") or "OPEN_UPLOAD failed.")
-                if open_response.get("dedup"):
-                    return open_response
+                if open_response.get("dedup") or open_response.get("dup"):
+                    raise DataPlaneError(
+                        open_response.get("message")
+                        or "File already exists on storage node."
+                    )
 
                 resumed_missing = open_response.get("missingChunks")
                 if isinstance(resumed_missing, list) and resumed_missing:

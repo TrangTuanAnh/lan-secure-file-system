@@ -26,6 +26,7 @@ class ModernLineEdit(QLineEdit):
         self._border_progress = 0.0
         self._focus_glow = 0.0
         self._hover_progress = 0.0
+        self._invalid = False
         self._radius = 15
         self._accent_color = QColor(PALETTE.accent_alt)
         self._background_color = QColor("#1b2634")
@@ -131,6 +132,16 @@ class ModernLineEdit(QLineEdit):
         self._accent_color = to_color(color)
         self.update()
 
+    def set_invalid(self, invalid: bool = True) -> None:
+        self._invalid = bool(invalid)
+        self.update()
+
+    def clear_invalid(self) -> None:
+        self.set_invalid(False)
+
+    def is_invalid(self) -> bool:
+        return self._invalid
+
     def _input_rect(self) -> QRectF:
         # Inset leaves enough room for focus ring inside widget boundaries.
         return QRectF(self.rect()).adjusted(3.0, 3.0, -3.0, -3.0)
@@ -160,10 +171,12 @@ class ModernLineEdit(QLineEdit):
     def _paint_fill(self, painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
         hover = self._hover_progress
         focus = self._focus_glow
+        accent = QColor(PALETTE.error if self._invalid else self._accent_color)
+        background = QColor(PALETTE.error_fill if self._invalid else self._background_color)
         mix = 0.05 + 0.06 * hover + 0.08 * focus
         gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-        gradient.setColorAt(0.0, blend(self._background_color, self._accent_color, mix))
-        gradient.setColorAt(1.0, blend("#151d2b", self._accent_color, mix * 0.52))
+        gradient.setColorAt(0.0, blend(background, accent, mix))
+        gradient.setColorAt(1.0, blend("#151d2b", accent, mix * 0.52))
         painter.fillPath(path, gradient)
 
         # Gentle top sheen, clipped inside the rounded rect.
@@ -180,6 +193,7 @@ class ModernLineEdit(QLineEdit):
         if self._focus_glow <= 0.01:
             return
 
+        accent = QColor(PALETTE.error if self._invalid else self._accent_color)
         # Draw glow inside the widget to avoid the chopped/cropped look.
         for inset, width, alpha in (
             (0.0, 3.0, int(95 * self._focus_glow)),
@@ -187,16 +201,17 @@ class ModernLineEdit(QLineEdit):
         ):
             ring_rect = rect.adjusted(inset, inset, -inset, -inset)
             ring_path = self._rounded_path(ring_rect)
-            painter.setPen(QPen(with_alpha(self._accent_color, alpha), width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.setPen(QPen(with_alpha(accent, alpha), width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.drawPath(ring_path)
 
     def _paint_border(self, painter: QPainter, rect: QRectF, path: QPainterPath) -> None:
         focus = self._border_progress
         hover = self._hover_progress
+        accent = QColor(PALETTE.error if self._invalid else self._accent_color)
         gradient = QLinearGradient(rect.topLeft(), rect.topRight())
-        gradient.setColorAt(0.0, blend(PALETTE.border, self._accent_color, 0.24 + 0.52 * focus + 0.10 * hover))
-        gradient.setColorAt(0.55, blend("#143f38", self._accent_color, 0.18 + 0.45 * focus + 0.08 * hover))
-        gradient.setColorAt(1.0, blend(PALETTE.border, self._accent_color, 0.20 + 0.44 * focus + 0.08 * hover))
+        gradient.setColorAt(0.0, blend(PALETTE.border, accent, 0.24 + 0.52 * focus + 0.10 * hover))
+        gradient.setColorAt(0.55, blend("#143f38", accent, 0.18 + 0.45 * focus + 0.08 * hover))
+        gradient.setColorAt(1.0, blend(PALETTE.border, accent, 0.20 + 0.44 * focus + 0.08 * hover))
         painter.setPen(QPen(gradient, 1.25, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         painter.drawPath(path)
 
