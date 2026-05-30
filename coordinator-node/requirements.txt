@@ -1,2 +1,62 @@
+# Coordinator Node Requirements
+#
+# File nay dung de tong hop cong nghe va yeu cau can co de chay
+# `coordinator-node`, khong thay the cho `requirements.txt`.
+
+[Runtime]
+- Python 3.11+
+- Ubuntu 22.04+ / Debian-based Linux hoac Windows
+- TCP socket connectivity toi Coordinator Server va Storage Node
+
+[UI Framework]
+- PySide6
+- Qt for Python
+- QtSvg (di kem PySide6, dung de render SVG avatar)
+
+[Security and Data Plane]
+- cryptography>=42.0.0
+- pqcrypto==0.4.0
+
+[Configuration]
+- python-dotenv
+
+[Built-in Python Modules Used]
+- socket
+- struct
+- json
+- threading
+- uuid
+- hashlib
+- logging
+- pathlib
+- dataclasses
+- typing
+- queue
+- enum
+- secrets
+- base64
+- os
+- time
+- re
+
+[Application Architecture]
+- Desktop GUI client
+- Custom TCP frame protocol cho Coordinator Server
+- Direct TCP data-plane upload/download toi Storage Node
+- Streaming file I/O
+- AES-256-GCM encrypted payload
+- Hybrid key exchange: ECDH P-256 + ML-KEM-768
+
+[Main Internal Modules]
+- `main.py`: app entrypoint va window routing
+- `config.py`: runtime config loader
+- `network/backend_client_sdk.py`: Coordinator control-plane client
+- `network/storage_node_data_plane.py`: Storage-node data-plane client
+- `services/services.py`: service facade cho UI
+- `ui/`: pages, widgets, dashboard, settings, recent rooms
+
+[Suggested pip dependencies]
+PySide6>=6.7.0
 cryptography>=42.0.0
 pqcrypto==0.4.0
+python-dotenv>=1.0.0
