@@ -52,18 +52,26 @@ class ErrorLabel(QLabel):
 
     def show_error(self, message: str, timeout_ms: int = 3200) -> None:
         """Show an error message and optionally auto-hide it."""
+        if not str(message).strip():
+            self.hide_error()
+            return
         self._hide_timer.stop()
+        self._animation.stop()
         self.setText(message)
-        self.adjustSize()
         self.move_to_top_center(self._anchor_parent or self.parentWidget())
-        self.setVisible(True)
+        start_opacity = self._effect.opacity() if self.isVisible() else 0.16
+        self._effect.setOpacity(max(0.16, start_opacity))
+        self.show()
         self.raise_()
+        self.update()
         self._fade_to(1.0)
         if timeout_ms > 0:
             self._hide_timer.start(timeout_ms)
 
     def hide_error(self) -> None:
         """Fade the error out and then hide the label."""
+        if not self.isVisible() and self._effect.opacity() <= 0.01:
+            return
         self._hide_timer.stop()
         self._fade_to(0.0, hide_after=True)
 
@@ -94,12 +102,13 @@ class ErrorLabel(QLabel):
         self._anchor_parent = parent_widget
         if self.parentWidget() is not parent_widget:
             self.setParent(parent_widget)
-        self.adjustSize()
-        max_width = max(240, min(parent_widget.width() - 64, 400))
+        bounds = parent_widget.contentsRect()
+        available_width = max(220, bounds.width() - 48)
+        max_width = min(available_width, 400)
         self.setFixedWidth(max_width)
         self.adjustSize()
-        x = max(24, (parent_widget.width() - self.width()) // 2)
-        y = 52
+        x = bounds.x() + max(24, (bounds.width() - self.width()) // 2)
+        y = bounds.y() + 18
         self.move(x, y)
         self.raise_()
 

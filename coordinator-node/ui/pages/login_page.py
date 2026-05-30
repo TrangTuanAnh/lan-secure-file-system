@@ -164,6 +164,8 @@ class LoginWorker(QObject):
             self.failure.emit(
                 f"Connection refused. Is the server running on {APP_CONFIG.backend_host}:{APP_CONFIG.backend_port}?"
             )
+        except ValueError as exc:
+            self.failure.emit(str(exc))
         except Exception as exc:
             self.failure.emit(f"Login failed: {exc}")
         finally:
@@ -260,6 +262,8 @@ class LoginCard(QFrame):
         self.password_input.returnPressed.connect(self._emit_login_request)
         self.username_input.returnPressed.connect(self.password_input.setFocus)
         self.signup_link.clicked.connect(self.signup_requested.emit)
+        self.username_input.textChanged.connect(self.username_input.clear_invalid)
+        self.password_input.textChanged.connect(self.password_input.clear_invalid)
 
     @staticmethod
     def _build_field_label(text: str) -> QLabel:
@@ -289,6 +293,14 @@ class LoginCard(QFrame):
         self.remember_checkbox.setEnabled(not loading)
         self.signup_link.setEnabled(not loading)
         self.login_button.set_loading(loading, "Authenticating")
+
+    def clear_validation_state(self) -> None:
+        self.username_input.clear_invalid()
+        self.password_input.clear_invalid()
+
+    def mark_invalid_inputs(self, *inputs: ModernLineEdit) -> None:
+        for input_widget in inputs:
+            input_widget.set_invalid(True)
 
 
 class LoginWindow(QMainWindow):
@@ -344,8 +356,8 @@ class LoginWindow(QMainWindow):
         self.login_card = LoginCard()
         right_layout.addWidget(self.login_card, alignment=Qt.AlignCenter)
         main_layout.addWidget(right_panel, 11)
-        self._toast_host = self
-        self.error_toast = ErrorLabel(parent=self)
+        self._toast_host = right_panel
+        self.error_toast = ErrorLabel(parent=right_panel)
 
     def _apply_window_theme(self) -> None:
         palette = QPalette()
@@ -498,26 +510,32 @@ class LoginWindow(QMainWindow):
         self.login_card.set_server_status(online, message)
 
     def _on_login_requested(self, username: str, password: str) -> None:
-        validation_error = self._validate_login_inputs(username, password)
+        self.login_card.clear_validation_state()
+        validation_error, invalid_fields = self._validate_login_inputs(username, password)
         if validation_error:
-            self.error_toast.show_error(validation_error)
+            self._show_login_error(validation_error, invalid_fields)
             return
 
         self.error_toast.hide_error()
         self.login_card.set_login_loading(True)
         self._start_login_worker(username, password)
 
-    def _validate_login_inputs(self, username: str, password: str) -> Optional[str]:
+    def _validate_login_inputs(self, username: str, password: str) -> tuple[Optional[str], list[ModernLineEdit]]:
         if not username:
             self.login_card.username_input.setFocus()
-            return "Please enter your username."
+            return "Please enter your username.", [self.login_card.username_input]
         if not password:
             self.login_card.password_input.setFocus()
-            return "Please enter your password."
+            return "Please enter your password.", [self.login_card.password_input]
         if len(password) < 6:
             self.login_card.password_input.setFocus()
-            return "Password must be at least 6 characters."
-        return None
+            return "Password must be at least 6 characters.", [self.login_card.password_input]
+        return None, []
+
+    def _show_login_error(self, message: str, invalid_fields: list[ModernLineEdit]) -> None:
+        if invalid_fields:
+            self.login_card.mark_invalid_inputs(*invalid_fields)
+        self.error_toast.show_error(message)
 
     def _start_login_worker(self, username: str, password: str) -> None:
         if self._login_thread and self._login_thread.isRunning():
@@ -542,6 +560,7 @@ class LoginWindow(QMainWindow):
 
     def _on_login_success(self, payload: Dict[str, Any]) -> None:
         self.login_card.set_login_loading(False)
+        self.login_card.clear_validation_state()
         username = payload.get("username", "unknown")
         print(f"Login successful for user: {username}")
         print(f"Remember me: {self.login_card.remember_checkbox.isChecked()}")
@@ -549,7 +568,22 @@ class LoginWindow(QMainWindow):
 
     def _on_login_failed(self, message: str) -> None:
         self.login_card.set_login_loading(False)
-        self.error_toast.show_error(message)
+        self._show_login_error(*self._map_login_failure(message))
+
+    def _map_login_failure(self, message: str) -> tuple[str, list[ModernLineEdit]]:
+        error_text = str(message)
+        if "INVALID_CREDENTIALS" in error_text:
+            self.login_card.username_input.setFocus()
+            return (
+                "Invalid username or password.",
+                [self.login_card.username_input, self.login_card.password_input],
+            )
+        if "INVALID_INPUT" in error_text:
+            return (
+                "Username and password are required.",
+                [self.login_card.username_input, self.login_card.password_input],
+            )
+        return error_text, []
 
     def _on_signup_requested(self) -> None:
         # Navigation is handled by main.AppController.
