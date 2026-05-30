@@ -63,6 +63,25 @@ public class DownloadSession {
         }
     }
 
+    /**
+     * BUGFIX M16: atomic mark + completion-edge check.
+     *
+     * Returns true if (and only if) this call caused the session to
+     * transition from "not complete" to "complete". The previous
+     * pattern of {@code wasComplete = isComplete(); markChunkSent();
+     * if (!wasComplete && isComplete())} is not atomic across the read,
+     * write, and second read — two threads racing on the final two
+     * chunks could both observe the transition and emit
+     * DOWNLOAD_COMPLETE twice. By doing the mutation and the edge check
+     * inside a single synchronized block we get exactly-one semantics.
+     */
+    public synchronized boolean markChunkSentAndCheckJustCompleted(int chunkIndex) {
+        boolean wasComplete = sentChunks.cardinality() == totalChunks;
+        markChunkSent(chunkIndex);
+        boolean nowComplete = sentChunks.cardinality() == totalChunks;
+        return !wasComplete && nowComplete;
+    }
+
     /** Check if all chunks have been sent. */
     public synchronized boolean isComplete() {
         return sentChunks.cardinality() == totalChunks;

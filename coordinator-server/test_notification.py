@@ -374,11 +374,19 @@ class TestNotificationHandlers(unittest.TestCase):
         connection = Mock()
         connection.connection_id = "client-1:12345"
         connection.send_message = Mock()
-        
+
+        # BUGFIX C3: unsubscribe now requires a valid auth token, same
+        # as subscribe. Stub validate_token to succeed.
+        self.mock_auth.validate_token.return_value = (
+            True,
+            {'userId': 'user-789', 'globalRole': 'USER'},
+            None,
+        )
+
         # Create message
         message = Message(
             type=MessageType.UNSUBSCRIBE_ROOM,
-            payload={'roomId': 'room-123'},
+            payload={'token': 'valid-token', 'roomId': 'room-123'},
             request_id='req-456'
         )
         
@@ -403,11 +411,20 @@ class TestNotificationHandlers(unittest.TestCase):
         connection = Mock()
         connection.connection_id = "client-1:12345"
         connection.send_message = Mock()
-        
+
+        # BUGFIX C3: token is required first; supply a valid one so the
+        # handler reaches the missing-roomId check rather than failing
+        # at auth.
+        self.mock_auth.validate_token.return_value = (
+            True,
+            {'userId': 'user-789', 'globalRole': 'USER'},
+            None,
+        )
+
         # Create message without roomId
         message = Message(
             type=MessageType.UNSUBSCRIBE_ROOM,
-            payload={},
+            payload={'token': 'valid-token'},
             request_id='req-456'
         )
         
