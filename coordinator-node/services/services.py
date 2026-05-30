@@ -330,6 +330,9 @@ class UploadService(BaseService):
                 logger.info(f"Initialized upload for {file_name} to {result.get('storageNodeId')}")
             
             return result
+        except ValueError as e:
+            logger.warning(f"Upload initialization rejected for {file_name}: {e}")
+            raise
         except Exception as e:
             logger.error(f"Failed to initialize upload: {e}")
             return None
