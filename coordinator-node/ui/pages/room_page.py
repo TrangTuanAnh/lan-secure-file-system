@@ -704,6 +704,7 @@ class FileUploadWorker(QObject):
 
     success = Signal(str)
     failure = Signal(str)
+    progress = Signal(int, int, str)
 
     def __init__(
         self,
@@ -724,8 +725,10 @@ class FileUploadWorker(QObject):
         service: Optional[BackendService] = None
         try:
             source_path = Path(self._file_path)
+            self.progress.emit(0, 0, f"Preparing '{source_path.name}' for upload...")
             file_size = source_path.stat().st_size
             whole_hash = _stream_file_sha256(source_path)
+            self.progress.emit(0, 0, "Reserving storage node and upload session...")
 
             service = BackendService(self._runtime.to_backend_config())
             if not service.connect():
@@ -753,8 +756,11 @@ class FileUploadWorker(QObject):
                 plan=plan,
                 file_path=self._file_path,
                 uploader_id=self._uploader_id,
+                progress_callback=self._emit_upload_progress,
             )
             self.success.emit(f"File '{source_path.name}' uploaded successfully.")
+        except ValueError as exc:
+            self.failure.emit(self._format_init_upload_error(exc, self._file_path))
         except DataPlaneError as exc:
             self.failure.emit(str(exc))
         except Exception as exc:
@@ -762,6 +768,26 @@ class FileUploadWorker(QObject):
         finally:
             if service and service.is_connected():
                 service.disconnect()
+
+    def _emit_upload_progress(self, uploaded_chunks: int, total_chunks: int) -> None:
+        total = max(1, int(total_chunks or 0))
+        current = max(0, min(int(uploaded_chunks or 0), total))
+        percent = int((current / total) * 100) if total else 0
+        self.progress.emit(current, total, f"Uploading chunks... {percent}%")
+
+    @staticmethod
+    def _format_init_upload_error(exc: ValueError, file_path: str) -> str:
+        error_text = str(exc)
+        file_name = Path(file_path).name
+        if "DUPLICATE_FILE_IN_ROOM" in error_text:
+            return f"File '{file_name}' already exists in this room."
+        if "PERMISSION_DENIED" in error_text:
+            return "You do not have permission to upload files to this room."
+        if "STORAGE_NODE_UNAVAILABLE" in error_text:
+            return "No healthy storage node is available right now."
+        if "INVALID_INPUT" in error_text:
+            return "The selected file metadata is invalid for upload."
+        return error_text
 
 
 class FileDownloadWorker(QObject):
@@ -1468,6 +1494,17 @@ class RoomPage(QWidget):
     def _show_sidebar_loading(self, message: str) -> None:
         self._emit_sidebar_status("loading", message, 0)
 
+    def _show_sidebar_upload_progress(self, current: int, total: int, message: str) -> None:
+        self.sidebar_status_changed.emit(
+            {
+                "variant": "loading",
+                "message": message,
+                "current": current,
+                "total": total,
+                "auto_hide_ms": 0,
+            }
+        )
+
     def _on_room_data_loaded(self, payload: dict[str, Any]) -> None:
         self._set_loading_state(False)
         members = payload.get("members", [])
@@ -1986,6 +2023,7 @@ class RoomPage(QWidget):
         self._pending_uploaded_file_name = Path(file_path).name
         self._upload_worker.moveToThread(self._upload_thread)
         self._upload_thread.started.connect(self._upload_worker.run)
+        self._upload_worker.progress.connect(self._on_upload_progress)
         self._upload_worker.success.connect(self._on_upload_success)
         self._upload_worker.failure.connect(self._on_upload_failed)
         self._upload_worker.success.connect(self._upload_thread.quit)
@@ -2002,6 +2040,9 @@ class RoomPage(QWidget):
 
     def _on_upload_failed(self, message: str) -> None:
         self._complete_upload_status(False, message)
+
+    def _on_upload_progress(self, current: int, total: int, message: str) -> None:
+        self._show_sidebar_upload_progress(current, total, message)
 
     def _begin_upload_status(self, message: str) -> None:
         self._upload_status_active = True

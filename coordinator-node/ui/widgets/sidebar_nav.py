@@ -41,6 +41,7 @@ class SidebarNav(QFrame):
         self._avatar_user_id = ""
         self._avatar_global_role = "USER"
         self._status_variant = "loading"
+        self._status_progress: Optional[tuple[int, int]] = None
         self._status_hide_timer = QTimer(self)
         self._status_hide_timer.setSingleShot(True)
         self._status_hide_timer.timeout.connect(self.clear_status)
@@ -285,9 +286,21 @@ class SidebarNav(QFrame):
         is_loading = variant == "loading"
         self.status_bar.setVisible(is_loading)
         if is_loading:
-            self.status_bar.setRange(0, 0)
+            self._apply_progress_state()
         if auto_hide_ms > 0 and not is_loading:
             self._status_hide_timer.start(auto_hide_ms)
+
+    def _apply_progress_state(self) -> None:
+        if not self._status_progress:
+            self.status_bar.setRange(0, 0)
+            self.status_bar.setValue(0)
+            return
+
+        current, total = self._status_progress
+        safe_total = max(1, total)
+        safe_current = max(0, min(current, safe_total))
+        self.status_bar.setRange(0, safe_total)
+        self.status_bar.setValue(safe_current)
 
     def show_loading(self, message: str = "Scanning uploaded file...") -> None:
         self.set_status("loading", message or "Scanning uploaded file...")
@@ -300,6 +313,7 @@ class SidebarNav(QFrame):
 
     def clear_status(self) -> None:
         self._status_hide_timer.stop()
+        self._status_progress = None
         self.status_card.hide()
         self.status_label.clear()
         self.status_bar.hide()
@@ -314,6 +328,15 @@ class SidebarNav(QFrame):
         variant = str(payload.get("variant") or "loading").strip().lower()
         message = str(payload.get("message") or "").strip()
         auto_hide_ms = int(payload.get("auto_hide_ms") or 0)
+        current = payload.get("current")
+        total = payload.get("total")
+        if current is not None and total is not None:
+            try:
+                self._status_progress = (int(current), int(total))
+            except (TypeError, ValueError):
+                self._status_progress = None
+        elif variant in {"success", "error", "clear"}:
+            self._status_progress = None
         if variant == "success":
             self.show_success(message, auto_hide_ms=auto_hide_ms or 4200)
             return
