@@ -509,6 +509,7 @@ class BackendService:
             config: BackendConfig instance
         """
         self._client = BackendClient(config)
+        self._last_error: Optional[str] = None
         
         # Initialize service layers
         self.auth = AuthService(self._client)
@@ -521,11 +522,18 @@ class BackendService:
     def connect(self) -> bool:
         """Connect to backend server."""
         try:
+            self._last_error = None
             self._client.connect()
             return True
         except Exception as e:
+            self._last_error = str(e)
             logger.error(f"Failed to connect: {e}")
             return False
+
+    @property
+    def last_error(self) -> Optional[str]:
+        """Return the last connection error message, if any."""
+        return self._last_error
     
     def disconnect(self) -> None:
         """Disconnect from backend server."""

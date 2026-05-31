@@ -55,6 +55,7 @@ class LoginRuntimeConfig:
     tls: bool = APP_CONFIG.backend_tls
     tls_cacert: str = APP_CONFIG.backend_tls_cacert
     tls_insecure: bool = APP_CONFIG.backend_tls_insecure
+    tls_server_name: str = APP_CONFIG.backend_tls_server_name
 
     def to_backend_config(self) -> BackendConfig:
         return BackendConfig(
@@ -67,6 +68,7 @@ class LoginRuntimeConfig:
             tls=self.tls,
             tls_cacert=self.tls_cacert or None,
             tls_insecure=self.tls_insecure,
+            tls_server_name=self.tls_server_name or None,
         )
 
 
@@ -89,7 +91,8 @@ class BackendStartupWorker(QObject):
             elif connected:
                 self.finished.emit(False, "Connected but health check failed")
             else:
-                self.finished.emit(False, "Coordinator Server Offline")
+                detail = service.last_error or "Coordinator Server Offline"
+                self.finished.emit(False, detail)
         except Exception as exc:  # pragma: no cover - defensive UI path
             self.finished.emit(False, f"Startup connection failed: {exc}")
         finally:
@@ -114,7 +117,8 @@ class LoginWorker(QObject):
         try:
             service = BackendService(self._config)
             if not service.connect():
-                self.failure.emit("Cannot reach server. Please check if it is running.")
+                detail = service.last_error or "Cannot reach server. Please check if it is running."
+                self.failure.emit(detail)
                 return
             login_result = service._client.login(self._username, self._password)
             if login_result:

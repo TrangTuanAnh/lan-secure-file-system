@@ -35,9 +35,21 @@ def _load_dotenv_if_available() -> None:
         if ENV_FILE.exists():
             load_dotenv(ENV_FILE)
     except ImportError:
-        # python-dotenv is optional.
-        # Install with: pip install python-dotenv
-        pass
+        if not ENV_FILE.exists():
+            return
+
+        # Fallback parser so the desktop client still honors coordinator-node/.env
+        # even when python-dotenv is not installed in the local Python runtime.
+        for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
 
 
 def _get_str(key: str, default: str) -> str:
@@ -116,6 +128,7 @@ class AppConfig:
     backend_tls: bool
     backend_tls_cacert: str
     backend_tls_insecure: bool
+    backend_tls_server_name: str
 
     notification_host: str
     notification_port: int
@@ -136,6 +149,7 @@ class AppConfig:
             "tls": self.backend_tls,
             "tls_cacert": self.backend_tls_cacert or None,
             "tls_insecure": self.backend_tls_insecure,
+            "tls_server_name": self.backend_tls_server_name or None,
         }
 
     def is_admin_username(self, username: str) -> bool:
@@ -169,6 +183,7 @@ class AppConfig:
                 "BACKEND_TLS_CACERT", str(PROJECT_ROOT / "certs" / "server.crt")
             ),
             backend_tls_insecure=_get_bool("BACKEND_TLS_INSECURE", False),
+            backend_tls_server_name=_get_str("BACKEND_TLS_SERVER_NAME", ""),
 
             notification_host=_get_str("NOTIFICATION_HOST", "localhost"),
             notification_port=_get_int("NOTIFICATION_PORT", 8082),
