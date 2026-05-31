@@ -45,6 +45,12 @@ class ServerConfig:
     storage_max_workers: int
     upload_slot_ttl_seconds: int
     storage_min_free_bytes: int
+    # TLS for the client-facing plane (port 8080) only. The storage-node
+    # control plane (8081) stays plaintext — it talks to the Java node over the
+    # internal network.
+    client_tls_enabled: bool
+    client_tls_cert: str
+    client_tls_key: str
 
 
 @dataclass
@@ -92,6 +98,9 @@ def load_config() -> Config:
         storage_max_workers=int(os.getenv('STORAGE_MAX_WORKERS', '4')),
         upload_slot_ttl_seconds=int(os.getenv('UPLOAD_SLOT_TTL_SECONDS', '60')),
         storage_min_free_bytes=int(os.getenv('STORAGE_MIN_FREE_BYTES', '0')),
+        client_tls_enabled=os.getenv('CLIENT_TLS_ENABLED', 'false').lower() in ('1', 'true', 'yes', 'on'),
+        client_tls_cert=os.getenv('CLIENT_TLS_CERT', '/app/certs/server.crt'),
+        client_tls_key=os.getenv('CLIENT_TLS_KEY', '/app/certs/server.key'),
     )
     
     return Config(database=database, redis=redis, server=server)

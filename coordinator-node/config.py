@@ -112,6 +112,11 @@ class AppConfig:
     backend_max_retries: int
     backend_retry_delay: int
 
+    # TLS to the coordinator (port 8080)
+    backend_tls: bool
+    backend_tls_cacert: str
+    backend_tls_insecure: bool
+
     notification_host: str
     notification_port: int
 
@@ -128,6 +133,9 @@ class AppConfig:
             "socket_timeout": self.backend_socket_timeout,
             "max_retries": self.backend_max_retries,
             "retry_delay": self.backend_retry_delay,
+            "tls": self.backend_tls,
+            "tls_cacert": self.backend_tls_cacert or None,
+            "tls_insecure": self.backend_tls_insecure,
         }
 
     def is_admin_username(self, username: str) -> bool:
@@ -155,6 +163,12 @@ class AppConfig:
             backend_socket_timeout=_get_int("BACKEND_SOCKET_TIMEOUT", 5),
             backend_max_retries=_get_int("BACKEND_MAX_RETRIES", 2),
             backend_retry_delay=_get_int("BACKEND_RETRY_DELAY", 1),
+
+            backend_tls=_get_bool("BACKEND_TLS", False),
+            backend_tls_cacert=_get_str(
+                "BACKEND_TLS_CACERT", str(PROJECT_ROOT / "certs" / "server.crt")
+            ),
+            backend_tls_insecure=_get_bool("BACKEND_TLS_INSECURE", False),
 
             notification_host=_get_str("NOTIFICATION_HOST", "localhost"),
             notification_port=_get_int("NOTIFICATION_PORT", 8082),

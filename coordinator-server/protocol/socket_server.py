@@ -1,5 +1,7 @@
 """Base socket server with connection management."""
 import socket
+import ssl
+import select
 import threading
 import selectors
 from concurrent.futures import ThreadPoolExecutor
@@ -60,8 +62,30 @@ class SocketConnection:
             if self._closed:
                 logger.debug(f"Skip send to closed connection {self.connection_id}")
                 return
-            self.socket.sendall(frame)
+            self._sendall(frame)
         logger.debug(f"Sent message to {self.connection_id}: type={message.type.value}, size={len(message_bytes)}")
+
+    def _sendall(self, data: bytes) -> None:
+        """
+        Send all bytes, transparently handling TLS on non-blocking sockets.
+
+        Plaintext sockets keep the original behaviour. For a non-blocking
+        ``SSLSocket`` a write may raise ``SSLWantWriteError``/``SSLWantReadError``
+        mid-record; per the OpenSSL contract we wait for readiness and retry the
+        write with the same buffer.
+        """
+        sock = self.socket
+        if not isinstance(sock, ssl.SSLSocket):
+            sock.sendall(data)
+            return
+        while True:
+            try:
+                sock.sendall(data)
+                return
+            except ssl.SSLWantWriteError:
+                select.select([], [sock], [], 5)
+            except ssl.SSLWantReadError:
+                select.select([sock], [], [], 5)
     
     def receive_data(self, chunk_size: int = 4096) -> Optional[bytes]:
         """
@@ -82,6 +106,13 @@ class SocketConnection:
                 # Connection closed by peer
                 return None
             return data
+        except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError):
+            # Non-blocking TLS: a full record isn't available yet. Not an error
+            # and not EOF — signal "no data right now" with an empty buffer.
+            return b''
+        except ssl.SSLEOFError:
+            # TLS peer closed (possibly uncleanly) — treat as connection closed.
+            return None
         except socket.error as e:
             logger.error(f"Socket error on {self.connection_id}: {e}")
             raise
@@ -117,6 +148,7 @@ class BaseSocketServer:
         port: int,
         name: str = "SocketServer",
         max_workers: int = 8,
+        ssl_context: Optional[ssl.SSLContext] = None,
     ):
         """
         Initialize socket server.
@@ -126,11 +158,16 @@ class BaseSocketServer:
             port: Port to bind to
             name: Server name for logging
             max_workers: Worker pool size for handler dispatch
+            ssl_context: Optional server-side SSLContext. When provided, every
+                accepted connection is wrapped in TLS. Leave None for plaintext
+                (e.g. the internal storage-node control plane).
         """
         self.host = host
         self.port = port
         self.name = name
         self.max_workers = max_workers
+        self._ssl_context = ssl_context
+        self._tls_handshake_timeout = 15.0
 
         self._server_socket: Optional[socket.socket] = None
         self._selector = selectors.DefaultSelector()
@@ -143,7 +180,10 @@ class BaseSocketServer:
         # Message handlers: MessageType -> handler function
         self._handlers: Dict[MessageType, Callable[[SocketConnection, Message], None]] = {}
 
-        logger.info(f"{self.name} initialized on {host}:{port} (max_workers={max_workers})")
+        logger.info(
+            f"{self.name} initialized on {host}:{port} "
+            f"(max_workers={max_workers}, tls={'on' if ssl_context else 'off'})"
+        )
     
     def register_handler(
         self,
@@ -250,6 +290,24 @@ class BaseSocketServer:
         """Accept a new client connection."""
         try:
             client_socket, address = self._server_socket.accept()
+
+            if self._ssl_context is not None:
+                # Perform the TLS handshake in blocking mode (bounded by a
+                # timeout so a stalled peer can't hang the acceptor), then drop
+                # back to non-blocking for the selector-driven read loop.
+                try:
+                    client_socket.settimeout(self._tls_handshake_timeout)
+                    client_socket = self._ssl_context.wrap_socket(
+                        client_socket, server_side=True
+                    )
+                except (ssl.SSLError, OSError) as e:
+                    logger.warning(f"{self.name} TLS handshake failed from {address}: {e}")
+                    try:
+                        client_socket.close()
+                    except Exception:
+                        pass
+                    return
+
             client_socket.setblocking(False)
 
             # Create connection object
@@ -280,41 +338,52 @@ class BaseSocketServer:
         if not connection:
             logger.warning(f"Received data from unknown socket")
             return
-        
+
         try:
-            # Receive data
-            data = connection.receive_data()
-            
-            if data is None:
-                # Connection closed by peer
-                self._close_connection(sock)
-                return
-            
-            # Append to buffer
-            connection.buffer.append(data)
-            
-            # Extract and process all complete frames
+            # A single selector readiness event maps to one TCP read for plain
+            # sockets. For TLS, one TCP segment can carry several records that
+            # the SSL layer buffers internally; the selector won't fire again
+            # for those, so we loop while pending() reports buffered bytes.
             while True:
-                frame = connection.buffer.extract_frame()
-                if frame is None:
-                    break
-                
-                # Deserialize message
-                try:
-                    message = Message.from_bytes(frame)
-                    self._dispatch_message(connection, message)
-                except ValueError as e:
-                    logger.error(f"Invalid message from {connection.connection_id}: {e}")
-                    # Send error response
-                    error_msg = Message.create_error(
-                        "INVALID_MESSAGE",
-                        f"Failed to parse message: {e}"
-                    )
-                    connection.send_message(error_msg)
-        
+                data = connection.receive_data()
+
+                if data is None:
+                    # Connection closed by peer
+                    self._close_connection(sock)
+                    return
+
+                if data:
+                    connection.buffer.append(data)
+                    self._process_buffer(connection)
+
+                sock_obj = connection.socket
+                if isinstance(sock_obj, ssl.SSLSocket) and sock_obj.pending() > 0:
+                    continue
+                return
+
         except Exception as e:
             logger.error(f"Error handling data from {connection.connection_id}: {e}", exc_info=True)
             self._close_connection(sock)
+
+    def _process_buffer(self, connection: SocketConnection) -> None:
+        """Extract and dispatch all complete frames currently in the buffer."""
+        while True:
+            frame = connection.buffer.extract_frame()
+            if frame is None:
+                break
+
+            # Deserialize message
+            try:
+                message = Message.from_bytes(frame)
+                self._dispatch_message(connection, message)
+            except ValueError as e:
+                logger.error(f"Invalid message from {connection.connection_id}: {e}")
+                # Send error response
+                error_msg = Message.create_error(
+                    "INVALID_MESSAGE",
+                    f"Failed to parse message: {e}"
+                )
+                connection.send_message(error_msg)
     
     def _dispatch_message(self, connection: SocketConnection, message: Message) -> None:
         """

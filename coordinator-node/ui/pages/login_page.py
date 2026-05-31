@@ -52,6 +52,9 @@ class LoginRuntimeConfig:
     socket_timeout: int = APP_CONFIG.backend_socket_timeout
     max_retries: int = APP_CONFIG.backend_max_retries
     retry_delay: int = APP_CONFIG.backend_retry_delay
+    tls: bool = APP_CONFIG.backend_tls
+    tls_cacert: str = APP_CONFIG.backend_tls_cacert
+    tls_insecure: bool = APP_CONFIG.backend_tls_insecure
 
     def to_backend_config(self) -> BackendConfig:
         return BackendConfig(
@@ -61,6 +64,9 @@ class LoginRuntimeConfig:
             socket_timeout=self.socket_timeout,
             max_retries=self.max_retries,
             retry_delay=self.retry_delay,
+            tls=self.tls,
+            tls_cacert=self.tls_cacert or None,
+            tls_insecure=self.tls_insecure,
         )
 
 

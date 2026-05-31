@@ -5,6 +5,7 @@ Thread-safe, handles reconnection, implements frame codec protocol.
 """
 
 import socket
+import ssl
 import struct
 import json
 import uuid
@@ -42,6 +43,11 @@ class BackendConfig:
     max_retries: int = 3
     retry_delay: int = 2  # seconds
     frame_max_size: int = 10 * 1024 * 1024  # 10MB
+    # TLS for the connection to the coordinator (port 8080).
+    tls: bool = False
+    tls_cacert: Optional[str] = None  # path to the server cert to trust (pinned self-signed)
+    tls_insecure: bool = False  # skip verification (demo/fallback only)
+    tls_server_name: Optional[str] = None  # SNI / hostname to verify; defaults to host
     
 
 class FrameCodec:
@@ -187,7 +193,18 @@ class BackendClient:
                 self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._socket.settimeout(self.config.socket_timeout)
                 self._socket.connect((self.config.host, self.config.port))
-                
+
+                if self.config.tls:
+                    # Wrap the established TCP connection in TLS. The handshake
+                    # runs in blocking mode bounded by socket_timeout.
+                    ctx = self._build_tls_context()
+                    server_name = self.config.tls_server_name or self.config.host
+                    self._socket = ctx.wrap_socket(self._socket, server_hostname=server_name)
+                    logger.info(
+                        f"TLS established with {self.config.host}:{self.config.port} "
+                        f"({self._socket.version()})"
+                    )
+
                 # Start listener thread
                 if not self._running:
                     self._running = True
@@ -218,6 +235,28 @@ class BackendClient:
             f"Failed to connect to {self.config.host}:{self.config.port} after {self.config.max_retries} attempts"
         )
     
+    def _build_tls_context(self) -> ssl.SSLContext:
+        """
+        Build the client-side TLS context for the coordinator connection.
+
+        Default: verify the server against a pinned self-signed certificate
+        (``tls_cacert``). ``tls_insecure`` disables verification entirely and is
+        intended only as a demo/debug fallback.
+        """
+        if self.config.tls_insecure:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            logger.warning("TLS certificate verification DISABLED (tls_insecure=True)")
+            return ctx
+
+        if self.config.tls_cacert:
+            ctx = ssl.create_default_context(cafile=self.config.tls_cacert)
+        else:
+            ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        return ctx
+
     def disconnect(self) -> None:
         """Disconnect from backend server."""
         self._running = False
