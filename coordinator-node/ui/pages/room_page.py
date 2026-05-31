@@ -846,10 +846,14 @@ class FileUploadWorker(QObject):
         service: Optional[BackendService] = None
         try:
             source_path = Path(self._file_path)
-            self.progress.emit(0, 0, f"Preparing '{source_path.name}' for upload...")
+            self.progress.emit(
+                {"percent": 0, "detail": f"Preparing '{source_path.name}' for upload..."}
+            )
             file_size = source_path.stat().st_size
             whole_hash = _stream_file_sha256(source_path)
-            self.progress.emit(0, 0, "Reserving storage node and upload session...")
+            self.progress.emit(
+                {"percent": 0, "detail": "Reserving storage node and upload session..."}
+            )
 
             service = BackendService(self._runtime.to_backend_config())
             if not service.connect():
@@ -895,7 +899,14 @@ class FileUploadWorker(QObject):
         total = max(1, int(total_chunks or 0))
         current = max(0, min(int(uploaded_chunks or 0), total))
         percent = int((current / total) * 100) if total else 0
-        self.progress.emit(current, total, f"Uploading chunks... {percent}%")
+        self.progress.emit(
+            {
+                "percent": percent,
+                "detail": f"Uploading chunks... {percent}%",
+                "current_chunks": current,
+                "total_chunks": total,
+            }
+        )
 
     @staticmethod
     def _format_init_upload_error(exc: ValueError, file_path: str) -> str:
