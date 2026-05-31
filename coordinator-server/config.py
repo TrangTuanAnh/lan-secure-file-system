@@ -17,6 +17,11 @@ class DatabaseConfig:
     user: str
     password: str
     pool_size: int
+    # mTLS to PostgreSQL
+    sslmode: str = "disable"
+    sslcert: Optional[str] = None
+    sslkey: Optional[str] = None
+    sslrootcert: Optional[str] = None
 
 
 @dataclass
@@ -26,6 +31,11 @@ class RedisConfig:
     port: int
     password: Optional[str]
     pool_size: int
+    # mTLS to Redis
+    ssl_enabled: bool = False
+    ssl_cert: Optional[str] = None
+    ssl_key: Optional[str] = None
+    ssl_ca: Optional[str] = None
 
 
 @dataclass
@@ -51,6 +61,12 @@ class ServerConfig:
     client_tls_enabled: bool
     client_tls_cert: str
     client_tls_key: str
+    # mTLS for the storage-node control plane (8081): require + verify a client
+    # cert from the storage node against the internal CA.
+    storage_tls_enabled: bool
+    storage_tls_cert: str
+    storage_tls_key: str
+    storage_tls_ca: str
 
 
 @dataclass
@@ -71,7 +87,11 @@ def load_config() -> Config:
         name=os.getenv('DB_NAME', 'coordinator'),
         user=os.getenv('DB_USER', 'coordinator_user'),
         password=os.getenv('DB_PASSWORD', 'secure_password'),
-        pool_size=int(os.getenv('DB_POOL_SIZE', '20'))
+        pool_size=int(os.getenv('DB_POOL_SIZE', '20')),
+        sslmode=os.getenv('DB_SSLMODE', 'disable'),
+        sslcert=os.getenv('DB_SSLCERT', '/app/certs/internal/coordinator.crt'),
+        sslkey=os.getenv('DB_SSLKEY', '/app/certs/internal/coordinator.key'),
+        sslrootcert=os.getenv('DB_SSLROOTCERT', '/app/certs/internal/ca.crt'),
     )
     
     # Redis configuration
@@ -79,7 +99,11 @@ def load_config() -> Config:
         host=os.getenv('REDIS_HOST', 'localhost'),
         port=int(os.getenv('REDIS_PORT', '6379')),
         password=os.getenv('REDIS_PASSWORD', None),
-        pool_size=int(os.getenv('REDIS_POOL_SIZE', '10'))
+        pool_size=int(os.getenv('REDIS_POOL_SIZE', '10')),
+        ssl_enabled=os.getenv('REDIS_SSL', 'false').lower() in ('1', 'true', 'yes', 'on'),
+        ssl_cert=os.getenv('REDIS_SSL_CERT', '/app/certs/internal/coordinator.crt'),
+        ssl_key=os.getenv('REDIS_SSL_KEY', '/app/certs/internal/coordinator.key'),
+        ssl_ca=os.getenv('REDIS_SSL_CA', '/app/certs/internal/ca.crt'),
     )
     
     # Server configuration
@@ -101,6 +125,10 @@ def load_config() -> Config:
         client_tls_enabled=os.getenv('CLIENT_TLS_ENABLED', 'false').lower() in ('1', 'true', 'yes', 'on'),
         client_tls_cert=os.getenv('CLIENT_TLS_CERT', '/app/certs/server.crt'),
         client_tls_key=os.getenv('CLIENT_TLS_KEY', '/app/certs/server.key'),
+        storage_tls_enabled=os.getenv('STORAGE_TLS_ENABLED', 'false').lower() in ('1', 'true', 'yes', 'on'),
+        storage_tls_cert=os.getenv('STORAGE_TLS_CERT', '/app/certs/internal/coordinator.crt'),
+        storage_tls_key=os.getenv('STORAGE_TLS_KEY', '/app/certs/internal/coordinator.key'),
+        storage_tls_ca=os.getenv('STORAGE_TLS_CA', '/app/certs/internal/ca.crt'),
     )
     
     return Config(database=database, redis=redis, server=server)

@@ -26,16 +26,28 @@ class Database:
     def connect(self) -> None:
         """Create connection pool."""
         try:
-            self._pool = psycopg2.pool.SimpleConnectionPool(
+            conn_kwargs = dict(
                 minconn=1,
                 maxconn=self.config.pool_size,
                 host=self.config.host,
                 port=self.config.port,
                 database=self.config.name,
                 user=self.config.user,
-                password=self.config.password
+                password=self.config.password,
             )
-            logger.info(f"Database connection pool created (max={self.config.pool_size})")
+            sslmode = getattr(self.config, 'sslmode', 'disable')
+            if sslmode and sslmode != 'disable':
+                # mTLS: present the coordinator client cert + verify the server
+                # cert against the internal CA.
+                conn_kwargs.update(
+                    sslmode=sslmode,
+                    sslcert=self.config.sslcert,
+                    sslkey=self.config.sslkey,
+                    sslrootcert=self.config.sslrootcert,
+                )
+            self._pool = psycopg2.pool.SimpleConnectionPool(**conn_kwargs)
+            tls = f" (sslmode={sslmode})" if sslmode != 'disable' else ""
+            logger.info(f"Database connection pool created (max={self.config.pool_size}){tls}")
         except Exception as e:
             logger.error(f"Failed to create database connection pool: {e}")
             raise

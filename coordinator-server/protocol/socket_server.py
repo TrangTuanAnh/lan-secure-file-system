@@ -113,6 +113,10 @@ class SocketConnection:
         except ssl.SSLEOFError:
             # TLS peer closed (possibly uncleanly) — treat as connection closed.
             return None
+        except ConnectionError:
+            # Peer went away (broken pipe / reset), e.g. a health probe that
+            # connects then immediately closes. Treat as a normal close.
+            return None
         except socket.error as e:
             logger.error(f"Socket error on {self.connection_id}: {e}")
             raise

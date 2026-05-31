@@ -41,6 +41,7 @@ class StorageNodeServer(BaseSocketServer):
         reconciliation_service: Optional[ReconciliationService] = None,
         audit_service: Optional[AuditService] = None,
         max_workers: int = 4,
+        ssl_context=None,
     ):
         """
         Initialize Storage Node server.
@@ -56,7 +57,10 @@ class StorageNodeServer(BaseSocketServer):
             audit_service: Optional audit log writer. When provided, storage-node
                 authentication attempts and disconnects are recorded.
         """
-        super().__init__(host, port, name="StorageNodeServer", max_workers=max_workers)
+        super().__init__(
+            host, port, name="StorageNodeServer",
+            max_workers=max_workers, ssl_context=ssl_context,
+        )
 
         self.shared_secret = shared_secret
         self.ticket_service = ticket_service
