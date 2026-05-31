@@ -187,6 +187,7 @@ class BackendClient:
             return True
         
         self._set_state(ConnectionState.CONNECTING)
+        last_error: Optional[Exception] = None
         
         for attempt in range(self.config.max_retries):
             try:
@@ -219,20 +220,24 @@ class BackendClient:
                 return True
             
             except socket.timeout:
+                last_error = TimeoutError("Connection timeout")
                 logger.warning(f"Connection timeout on attempt {attempt + 1}/{self.config.max_retries}")
                 self._cleanup_socket()
                 if attempt < self.config.max_retries - 1:
                     time.sleep(self.config.retry_delay)
             
             except Exception as e:
+                last_error = e
                 logger.error(f"Connection error on attempt {attempt + 1}/{self.config.max_retries}: {e}")
                 self._cleanup_socket()
                 if attempt < self.config.max_retries - 1:
                     time.sleep(self.config.retry_delay)
         
         self._set_state(ConnectionState.ERROR)
+        detail = f": {last_error}" if last_error else ""
         raise BackendConnectionException(
-            f"Failed to connect to {self.config.host}:{self.config.port} after {self.config.max_retries} attempts"
+            f"Failed to connect to {self.config.host}:{self.config.port} after "
+            f"{self.config.max_retries} attempts{detail}"
         )
     
     def _build_tls_context(self) -> ssl.SSLContext:
