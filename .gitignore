@@ -42,3 +42,6 @@ storage-node/logs/
 **/surefire-reports/
 **/*.dumpstream
 .kiro/
+".env" 
+"*.env" 
+"!.env.example" 
