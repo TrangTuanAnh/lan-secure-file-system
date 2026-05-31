@@ -25,18 +25,31 @@ class RedisClient:
     def connect(self) -> None:
         """Create Redis connection pool and client."""
         try:
-            self._pool = redis.ConnectionPool(
+            pool_kwargs = dict(
                 host=self.config.host,
                 port=self.config.port,
                 password=self.config.password if self.config.password else None,
                 max_connections=self.config.pool_size,
-                decode_responses=True
+                decode_responses=True,
             )
+            if getattr(self.config, 'ssl_enabled', False):
+                # mTLS: present the coordinator client cert and verify the
+                # Redis server cert against the internal CA.
+                pool_kwargs.update(
+                    connection_class=redis.SSLConnection,
+                    ssl_certfile=self.config.ssl_cert,
+                    ssl_keyfile=self.config.ssl_key,
+                    ssl_ca_certs=self.config.ssl_ca,
+                    ssl_cert_reqs='required',
+                    ssl_check_hostname=True,
+                )
+            self._pool = redis.ConnectionPool(**pool_kwargs)
             self._client = redis.Redis(connection_pool=self._pool)
-            
+
             # Test connection
             self._client.ping()
-            logger.info(f"Redis connection established (host={self.config.host}:{self.config.port})")
+            tls = " (mTLS)" if getattr(self.config, 'ssl_enabled', False) else ""
+            logger.info(f"Redis connection established (host={self.config.host}:{self.config.port}){tls}")
         except Exception as e:
             logger.error(f"Failed to connect to Redis: {e}")
             raise

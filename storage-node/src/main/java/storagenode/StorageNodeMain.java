@@ -7,6 +7,7 @@ import storagenode.config.NodeConfig;
 import storagenode.crypto.RSAKeyExchange;
 import storagenode.monitor.StorageMonitor;
 import storagenode.network.CoordinatorClient;
+import storagenode.network.TlsConfig;
 import storagenode.network.StorageServer;
 import storagenode.session.SessionManager;
 import storagenode.storage.DedupStore;
@@ -92,11 +93,20 @@ public class StorageNodeMain {
             // BUGFIX M13: pass fileStore so STORAGE_AUTH carries the real
             // file manifest. Previous 7-arg call left it null, meaning the
             // Coordinator thought this node had zero files after a restart.
+            TlsConfig coordinatorTls = config.isCoordinatorTlsEnabled()
+                ? new TlsConfig(true,
+                    config.getCoordinatorTlsKeystore(), config.getCoordinatorTlsKeystorePassword(),
+                    config.getCoordinatorTlsCaCert())
+                : TlsConfig.disabled();
+            if (coordinatorTls.enabled) {
+                LOG.info("Coordinator control-plane mTLS enabled (keystore="
+                        + config.getCoordinatorTlsKeystore() + ")");
+            }
             CoordinatorClient coordinator = new CoordinatorClient(
                 config.getTicketSecret(), config.getNodeId(),
                 config.getCoordinatorHost(), config.getCoordinatorPort(),
                 config.getAdvertisedHost(), config.getAdvertisedPort(),
-                config.getStorageAddress(), fileStore
+                config.getStorageAddress(), fileStore, coordinatorTls
             );
             
             // Connect to Coordinator control plane

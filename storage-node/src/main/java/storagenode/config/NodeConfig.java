@@ -31,6 +31,12 @@ public class NodeConfig {
     private final String coordinatorHost;
     private final int coordinatorPort;
 
+    // Coordinator control-plane mTLS (8081)
+    private final boolean coordinatorTlsEnabled;
+    private final String coordinatorTlsKeystore;
+    private final String coordinatorTlsKeystorePassword;
+    private final String coordinatorTlsCaCert;
+
     // Security
     private final String ticketSecret;
     private final int rsaKeySize;
@@ -83,6 +89,14 @@ public class NodeConfig {
 
         this.coordinatorHost = getString("coordinator.host", "127.0.0.1", "COORDINATOR_HOST");
         this.coordinatorPort = getInt("coordinator.port", 8000, "COORDINATOR_PORT");
+
+        this.coordinatorTlsEnabled = getBoolean("coordinator.tls.enabled", false, "COORDINATOR_TLS_ENABLED");
+        this.coordinatorTlsKeystore = getString(
+                "coordinator.tls.keystore", "/app/certs/internal/keystore.p12", "COORDINATOR_TLS_KEYSTORE");
+        this.coordinatorTlsKeystorePassword = getString(
+                "coordinator.tls.keystore.password", "changeit", "COORDINATOR_TLS_KEYSTORE_PASSWORD");
+        this.coordinatorTlsCaCert = getString(
+                "coordinator.tls.ca", "/app/certs/internal/ca.crt", "COORDINATOR_TLS_CA");
 
         this.ticketSecret = getString("ticket.secret", "default_secret", "TICKET_SECRET");
         this.rsaKeySize = getInt("rsa.keysize", 2048, "RSA_KEY_SIZE");
@@ -139,6 +153,10 @@ public class NodeConfig {
     public int getChunkSize() { return chunkSize; }
     public String getCoordinatorHost() { return coordinatorHost; }
     public int getCoordinatorPort() { return coordinatorPort; }
+    public boolean isCoordinatorTlsEnabled() { return coordinatorTlsEnabled; }
+    public String getCoordinatorTlsKeystore() { return coordinatorTlsKeystore; }
+    public String getCoordinatorTlsKeystorePassword() { return coordinatorTlsKeystorePassword; }
+    public String getCoordinatorTlsCaCert() { return coordinatorTlsCaCert; }
     public String getTicketSecret() { return ticketSecret; }
     public int getRsaKeySize() { return rsaKeySize; }
     public int getAesKeySize() { return aesKeySize; }

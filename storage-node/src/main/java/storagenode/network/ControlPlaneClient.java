@@ -7,12 +7,20 @@ import storagenode.storage.FileStore;
 
 import java.io.*;
 import java.net.Socket;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.TrustManagerFactory;
 
 /**
  * Persistent socket connection to Coordinator Server control plane.
@@ -41,7 +49,8 @@ public class ControlPlaneClient {
     private final int dataPort;
     private final String storageAddress;
     private final FileStore fileStore;
-    
+    private final TlsConfig tls;
+
     private Socket socket;
     private InputStream in;
     private OutputStream out;
@@ -57,13 +66,21 @@ public class ControlPlaneClient {
                               String sharedSecret, String nodeId,
                               String dataHost, int dataPort, String storageAddress) {
         this(coordinatorHost, coordinatorPort, sharedSecret, nodeId,
-             dataHost, dataPort, storageAddress, null);
+             dataHost, dataPort, storageAddress, null, null);
     }
 
     public ControlPlaneClient(String coordinatorHost, int coordinatorPort,
                               String sharedSecret, String nodeId,
                               String dataHost, int dataPort, String storageAddress,
                               FileStore fileStore) {
+        this(coordinatorHost, coordinatorPort, sharedSecret, nodeId,
+             dataHost, dataPort, storageAddress, fileStore, null);
+    }
+
+    public ControlPlaneClient(String coordinatorHost, int coordinatorPort,
+                              String sharedSecret, String nodeId,
+                              String dataHost, int dataPort, String storageAddress,
+                              FileStore fileStore, TlsConfig tls) {
         this.coordinatorHost = coordinatorHost;
         this.coordinatorPort = coordinatorPort;
         this.sharedSecret = sharedSecret;
@@ -72,6 +89,7 @@ public class ControlPlaneClient {
         this.dataPort = dataPort;
         this.storageAddress = storageAddress;
         this.fileStore = fileStore;
+        this.tls = (tls != null) ? tls : TlsConfig.disabled();
     }
     
     /**
@@ -83,11 +101,17 @@ public class ControlPlaneClient {
         LOG.info("Connecting to Coordinator: " + coordinatorHost + ":" + coordinatorPort);
         
         try {
-            socket = new Socket();
-            socket.connect(new java.net.InetSocketAddress(coordinatorHost, coordinatorPort), 
+            socket = createSocket();
+            socket.connect(new java.net.InetSocketAddress(coordinatorHost, coordinatorPort),
                           CONNECT_TIMEOUT_MS);
+            if (socket instanceof SSLSocket) {
+                // Drive the mutual-TLS handshake now so failures surface here.
+                ((SSLSocket) socket).startHandshake();
+                LOG.info("Control-plane mTLS established (" +
+                        ((SSLSocket) socket).getSession().getProtocol() + ")");
+            }
             socket.setSoTimeout(0); // No timeout for blocking reads
-            
+
             in = new BufferedInputStream(socket.getInputStream());
             out = new BufferedOutputStream(socket.getOutputStream());
             running = true;
@@ -112,8 +136,59 @@ public class ControlPlaneClient {
     }
     
     /**
+     * Create the control-plane socket: a plain {@link Socket} when TLS is off,
+     * or an unconnected {@link SSLSocket} (client cert + CA verification, with
+     * server hostname checking) when mutual TLS is enabled.
+     */
+    private Socket createSocket() throws IOException {
+        if (!tls.enabled) {
+            return new Socket();
+        }
+        try {
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            try (InputStream ksIn = new FileInputStream(tls.keystorePath)) {
+                ks.load(ksIn, tls.keystorePassword.toCharArray());
+            }
+            KeyManagerFactory kmf =
+                    KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(ks, tls.keystorePassword.toCharArray());
+
+            // Build the truststore in-memory from the CA PEM. (A cert-only
+            // PKCS12 is not reliably recognised as a trust anchor by the JDK.)
+            KeyStore ts = KeyStore.getInstance(KeyStore.getDefaultType());
+            ts.load(null, null);
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            try (InputStream caIn = new FileInputStream(tls.caCertPath)) {
+                int i = 0;
+                for (Certificate ca : cf.generateCertificates(caIn)) {
+                    ts.setCertificateEntry("ca-" + (i++), ca);
+                }
+            }
+            TrustManagerFactory tmf =
+                    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(ts);
+
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), null);
+
+            SSLSocket s = (SSLSocket) ctx.getSocketFactory().createSocket();
+            s.setEnabledProtocols(new String[] {"TLSv1.3", "TLSv1.2"});
+            // Verify the coordinator's server cert hostname (SAN) against the
+            // host we dial (the "coordinator" service name).
+            SSLParameters params = s.getSSLParameters();
+            params.setEndpointIdentificationAlgorithm("HTTPS");
+            s.setSSLParameters(params);
+            return s;
+        } catch (IOException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IOException("Failed to build TLS socket: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Authenticate with Coordinator using shared secret.
-     * 
+     *
      * @throws IOException if authentication fails
      */
     private void authenticate() throws IOException {

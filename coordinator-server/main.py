@@ -213,6 +213,27 @@ def main():
         db.close()
         sys.exit(1)
     
+    # Build an mTLS server context for the storage-node control plane (8081):
+    # require + verify the storage node's client cert against the internal CA.
+    storage_ssl_context = None
+    if config.server.storage_tls_enabled:
+        cert_path = config.server.storage_tls_cert
+        key_path = config.server.storage_tls_key
+        ca_path = config.server.storage_tls_ca
+        missing = [p for p in (cert_path, key_path, ca_path) if not os.path.isfile(p)]
+        if missing:
+            logger.error(f"STORAGE_TLS_ENABLED but files missing: {missing}")
+            client_server.stop()
+            redis_client.close()
+            db.close()
+            sys.exit(1)
+        storage_ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        storage_ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        storage_ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        storage_ssl_context.verify_mode = ssl.CERT_REQUIRED  # mutual TLS
+        storage_ssl_context.load_verify_locations(cafile=ca_path)
+        logger.info(f"Storage-plane mTLS enabled (cert={cert_path}, ca={ca_path})")
+
     # Initialize and start storage node server
     try:
         storage_node_server = StorageNodeServer(
@@ -221,6 +242,7 @@ def main():
             shared_secret=config.server.storage_node_secret,
             ticket_service=ticket_service,
             upload_service=upload_service,
+            ssl_context=storage_ssl_context,
             timeout_seconds=config.server.storage_node_timeout,
             registry=storage_registry,
             reconciliation_service=reconciliation_service,

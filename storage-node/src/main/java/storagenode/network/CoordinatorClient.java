@@ -44,13 +44,21 @@ public class CoordinatorClient {
                              String coordinatorHost, int coordinatorPort,
                              String dataHost, int dataPort, String storageAddress) {
         this(ticketSecret, nodeId, coordinatorHost, coordinatorPort,
-             dataHost, dataPort, storageAddress, null);
+             dataHost, dataPort, storageAddress, null, null);
     }
 
     public CoordinatorClient(String ticketSecret, String nodeId,
                              String coordinatorHost, int coordinatorPort,
                              String dataHost, int dataPort, String storageAddress,
                              FileStore fileStore) {
+        this(ticketSecret, nodeId, coordinatorHost, coordinatorPort,
+             dataHost, dataPort, storageAddress, fileStore, null);
+    }
+
+    public CoordinatorClient(String ticketSecret, String nodeId,
+                             String coordinatorHost, int coordinatorPort,
+                             String dataHost, int dataPort, String storageAddress,
+                             FileStore fileStore, TlsConfig tls) {
         this.ticketSecret = ticketSecret;
         this.nodeId = nodeId;
         this.coordinatorHost = coordinatorHost;
@@ -63,7 +71,7 @@ public class CoordinatorClient {
         // FileStore is passed so STORAGE_AUTH carries the current manifest.
         this.controlPlaneClient = new ControlPlaneClient(
             coordinatorHost, coordinatorPort, ticketSecret, nodeId,
-            dataHost, dataPort, storageAddress, fileStore
+            dataHost, dataPort, storageAddress, fileStore, tls
         );
     }
 
