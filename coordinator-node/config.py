@@ -14,13 +14,51 @@ Usage:
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import FrozenSet
+from typing import FrozenSet, Optional
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-ENV_FILE = PROJECT_ROOT / ".env"
+SOURCE_ROOT = Path(__file__).resolve().parent
+BUNDLED_ROOT = Path(getattr(sys, "_MEIPASS", SOURCE_ROOT)).resolve()
+RUNTIME_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else SOURCE_ROOT
+PROJECT_ROOT = RUNTIME_ROOT
+ENV_FILES = []
+for candidate in (RUNTIME_ROOT / ".env", SOURCE_ROOT / ".env"):
+    if candidate not in ENV_FILES:
+        ENV_FILES.append(candidate)
+
+ACTIVE_ENV_FILE: Optional[Path] = None
+
+
+def _resolve_runtime_path(value: str, *, default_base: Optional[Path] = None) -> str:
+    """Resolve relative config paths against the active runtime/env directory."""
+    if not value:
+        return value
+
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+
+    candidate_bases = []
+    if ACTIVE_ENV_FILE is not None:
+        candidate_bases.append(ACTIVE_ENV_FILE.parent)
+    if default_base is not None:
+        candidate_bases.append(default_base)
+    candidate_bases.extend((RUNTIME_ROOT, BUNDLED_ROOT, SOURCE_ROOT))
+
+    seen = set()
+    for base_dir in candidate_bases:
+        if base_dir in seen:
+            continue
+        seen.add(base_dir)
+        candidate = (base_dir / path).resolve()
+        if candidate.exists():
+            return str(candidate)
+
+    base_dir = default_base or (ACTIVE_ENV_FILE.parent if ACTIVE_ENV_FILE is not None else RUNTIME_ROOT)
+    return str((base_dir / path).resolve())
 
 
 def _load_dotenv_if_available() -> None:
@@ -29,27 +67,35 @@ def _load_dotenv_if_available() -> None:
     The app still works without python-dotenv because os.environ/defaults
     are used as fallback.
     """
+    global ACTIVE_ENV_FILE
+
     try:
         from dotenv import load_dotenv
 
-        if ENV_FILE.exists():
-            load_dotenv(ENV_FILE)
+        for env_file in ENV_FILES:
+            if env_file.exists():
+                load_dotenv(env_file)
+                ACTIVE_ENV_FILE = env_file
+                return
     except ImportError:
-        if not ENV_FILE.exists():
-            return
+        for env_file in ENV_FILES:
+            if not env_file.exists():
+                continue
 
-        # Fallback parser so the desktop client still honors coordinator-node/.env
-        # even when python-dotenv is not installed in the local Python runtime.
-        for raw_line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            if not key:
-                continue
-            value = value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)
+            # Fallback parser so the desktop client still honors .env even when
+            # python-dotenv is not installed in the local Python runtime.
+            for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = value.strip().strip('"').strip("'")
+                os.environ.setdefault(key, value)
+            ACTIVE_ENV_FILE = env_file
+            return
 
 
 def _get_str(key: str, default: str) -> str:
@@ -179,8 +225,9 @@ class AppConfig:
             backend_retry_delay=_get_int("BACKEND_RETRY_DELAY", 1),
 
             backend_tls=_get_bool("BACKEND_TLS", False),
-            backend_tls_cacert=_get_str(
-                "BACKEND_TLS_CACERT", str(PROJECT_ROOT / "certs" / "server.crt")
+            backend_tls_cacert=_resolve_runtime_path(
+                _get_str("BACKEND_TLS_CACERT", "certs/server.crt"),
+                default_base=PROJECT_ROOT,
             ),
             backend_tls_insecure=_get_bool("BACKEND_TLS_INSECURE", False),
             backend_tls_server_name=_get_str("BACKEND_TLS_SERVER_NAME", ""),

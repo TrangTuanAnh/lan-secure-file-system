@@ -1,0 +1,13 @@
+{
+  "appearance": {
+    "reduce_glow_effects": false,
+    "reduce_animations": true,
+    "compact_layout": false
+  },
+  "security": {
+    "confirm_before_deleting_files": true,
+    "warn_before_downloading_unscanned_files": true,
+    "auto_logout": "Never",
+    "hide_user_id_in_profile_by_default": false
+  }
+}
