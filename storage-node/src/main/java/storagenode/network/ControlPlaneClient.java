@@ -40,6 +40,9 @@ public class ControlPlaneClient {
     private static final int HEARTBEAT_INTERVAL_SECONDS = 30;
     private static final int CONNECT_TIMEOUT_MS = 10000;
     private static final int RESPONSE_TIMEOUT_MS = 5000;
+    private static final long RECONNECT_MIN_BACKOFF_MS = 2000;
+    private static final long RECONNECT_MAX_BACKOFF_MS = 30000;
+    private static final long SUPERVISOR_POLL_MS = 2000;
     
     private final String coordinatorHost;
     private final int coordinatorPort;
@@ -59,6 +62,9 @@ public class ControlPlaneClient {
     
     private ScheduledExecutorService heartbeatExecutor;
     private Thread receiverThread;
+    private Thread supervisorThread;
+    // Set once disconnect() is called so the supervisor stops reconnecting.
+    private volatile boolean shuttingDown = false;
     
     private final BlockingQueue<Message> responseQueue = new LinkedBlockingQueue<>();
     
@@ -93,13 +99,26 @@ public class ControlPlaneClient {
     }
     
     /**
-     * Connect to Coordinator and authenticate.
-     * 
-     * @throws IOException if connection or authentication fails
+     * Connect to Coordinator and authenticate, then start a supervisor that
+     * automatically reconnects if the connection later drops (e.g. the
+     * Coordinator restarts). The initial connect is synchronous and throws on
+     * failure, preserving startup semantics.
+     *
+     * @throws IOException if the initial connection or authentication fails
      */
     public void connect() throws IOException {
+        shuttingDown = false;
+        doConnect();
+        startSupervisor();
+    }
+
+    /**
+     * Establish a single connection + authentication. Used by both the initial
+     * {@link #connect()} and the supervisor's reconnect attempts.
+     */
+    private void doConnect() throws IOException {
         LOG.info("Connecting to Coordinator: " + coordinatorHost + ":" + coordinatorPort);
-        
+
         try {
             socket = createSocket();
             socket.connect(new java.net.InetSocketAddress(coordinatorHost, coordinatorPort),
@@ -115,23 +134,73 @@ public class ControlPlaneClient {
             in = new BufferedInputStream(socket.getInputStream());
             out = new BufferedOutputStream(socket.getOutputStream());
             running = true;
-            
+
             // Start message receiver thread
             receiverThread = new Thread(this::receiveLoop, "ControlPlane-Receiver");
             receiverThread.setDaemon(true);
             receiverThread.start();
-            
+
             // Send STORAGE_AUTH
             authenticate();
-            
+
             // Start heartbeat thread
             startHeartbeat();
-            
+
             LOG.info("Connected to Coordinator successfully");
-            
+
         } catch (IOException e) {
             cleanup();
             throw new IOException("Failed to connect to Coordinator: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Start the supervisor thread that keeps the control-plane connection up.
+     * When the connection drops (and we are not shutting down) it re-establishes
+     * it with exponential backoff.
+     */
+    private void startSupervisor() {
+        if (supervisorThread != null && supervisorThread.isAlive()) {
+            return;
+        }
+        supervisorThread = new Thread(this::superviseLoop, "ControlPlane-Supervisor");
+        supervisorThread.setDaemon(true);
+        supervisorThread.start();
+    }
+
+    private void superviseLoop() {
+        LOG.info("Control plane supervisor started");
+        while (!shuttingDown) {
+            if (isConnected()) {
+                sleepQuietly(SUPERVISOR_POLL_MS);
+                continue;
+            }
+            if (shuttingDown) {
+                break;
+            }
+            LOG.warning("Control-plane connection is down; attempting to reconnect...");
+            long backoff = RECONNECT_MIN_BACKOFF_MS;
+            while (!shuttingDown && !isConnected()) {
+                cleanup(); // ensure a clean slate before a fresh socket
+                try {
+                    doConnect();
+                    LOG.info("Reconnected to Coordinator");
+                } catch (Exception e) {
+                    LOG.warning("Reconnect attempt failed: " + e.getMessage()
+                            + "; retrying in " + (backoff / 1000) + "s");
+                    sleepQuietly(backoff);
+                    backoff = Math.min(backoff * 2, RECONNECT_MAX_BACKOFF_MS);
+                }
+            }
+        }
+        LOG.info("Control plane supervisor stopped");
+    }
+
+    private void sleepQuietly(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
     
@@ -520,15 +589,20 @@ public class ControlPlaneClient {
      */
     public void disconnect() {
         LOG.info("Disconnecting from Coordinator");
+        shuttingDown = true;
         running = false;
         authenticated = false;
+        if (supervisorThread != null) {
+            supervisorThread.interrupt();
+        }
         cleanup();
     }
-    
+
     /**
-     * Cleanup resources.
+     * Cleanup resources. Idempotent and safe to call from multiple threads
+     * (the receiver thread on disconnect, and the supervisor before a reconnect).
      */
-    private void cleanup() {
+    private synchronized void cleanup() {
         running = false;
         authenticated = false;
         
@@ -552,15 +626,17 @@ public class ControlPlaneClient {
             LOG.fine("Error closing socket: " + e.getMessage());
         }
         
-        // Wait for receiver thread
-        if (receiverThread != null && receiverThread.isAlive()) {
+        // Wait for receiver thread (skip if cleanup() is being called from the
+        // receiver thread itself, to avoid a pointless self-join).
+        if (receiverThread != null && receiverThread.isAlive()
+                && Thread.currentThread() != receiverThread) {
             try {
                 receiverThread.join(2000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
-        
+
         LOG.info("Disconnected from Coordinator");
     }
 }
