@@ -1,5 +1,7 @@
 """Main entry point for Coordinator Server."""
 import sys
+import os
+import ssl
 import signal
 import threading
 from config import load_config
@@ -166,6 +168,25 @@ def main():
         db.close()
         sys.exit(1)
     
+    # Build a server-side TLS context for the client plane (port 8080) if
+    # enabled. Only the client-facing connection is wrapped; the storage-node
+    # control plane (8081) stays plaintext on the internal network.
+    client_ssl_context = None
+    if config.server.client_tls_enabled:
+        cert_path = config.server.client_tls_cert
+        key_path = config.server.client_tls_key
+        if not os.path.isfile(cert_path) or not os.path.isfile(key_path):
+            logger.error(
+                f"CLIENT_TLS_ENABLED but cert/key missing: cert={cert_path}, key={key_path}"
+            )
+            redis_client.close()
+            db.close()
+            sys.exit(1)
+        client_ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        client_ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
+        client_ssl_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        logger.info(f"Client TLS enabled (cert={cert_path})")
+
     # Initialize and start client socket server
     try:
         client_server = ClientSocketServer(
@@ -180,6 +201,7 @@ def main():
             notification_service=notification_service,
             health_service=health_service,
             max_workers=config.server.client_max_workers,
+            ssl_context=client_ssl_context,
         )
         client_server.start()
         logger.info(f"Client socket server started on port {config.server.client_port}")

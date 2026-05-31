@@ -52,6 +52,7 @@ class ClientSocketServer(BaseSocketServer):
         notification_service: NotificationService,
         health_service: HealthService,
         max_workers: int = 8,
+        ssl_context=None,
     ):
         """
         Initialize client socket server.
@@ -68,7 +69,10 @@ class ClientSocketServer(BaseSocketServer):
             notification_service: Notification service
             health_service: Health check service
         """
-        super().__init__(host, port, name="ClientSocketServer", max_workers=max_workers)
+        super().__init__(
+            host, port, name="ClientSocketServer",
+            max_workers=max_workers, ssl_context=ssl_context,
+        )
         
         # Services
         self.auth_service = auth_service
