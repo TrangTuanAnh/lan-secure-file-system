@@ -21,6 +21,7 @@ class DashboardRuntimeConfig:
     tls: bool = APP_CONFIG.backend_tls
     tls_cacert: str = APP_CONFIG.backend_tls_cacert
     tls_insecure: bool = APP_CONFIG.backend_tls_insecure
+    tls_server_name: str = APP_CONFIG.backend_tls_server_name
 
     def to_backend_config(self) -> BackendConfig:
         return BackendConfig(
@@ -33,6 +34,7 @@ class DashboardRuntimeConfig:
             tls=self.tls,
             tls_cacert=self.tls_cacert or None,
             tls_insecure=self.tls_insecure,
+            tls_server_name=self.tls_server_name or None,
         )
 
 
