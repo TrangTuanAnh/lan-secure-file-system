@@ -81,7 +81,7 @@ def auth_and_check(manifest, expect_count_in_log):
         resp = read_one_message(sock, buf)
         assert resp.type == MessageType.STORAGE_AUTH_RESPONSE, f"unexpected: {resp.type}"
         assert resp.payload.get("status") == "authenticated", resp.payload
-        print(f"  ✓ STORAGE_AUTH ok (manifest size={len(manifest)})  node_id={resp.payload.get('nodeId')}")
+        print(f"  [OK] STORAGE_AUTH ok (manifest size={len(manifest)})  node_id={resp.payload.get('nodeId')}")
         # Give the coordinator a moment to run reconciliation (it's synchronous
         # in the handler but our DB query races with it on a separate connection).
         time.sleep(0.5)
@@ -162,7 +162,7 @@ def main():
         auth_and_check([PRESENT_SHA, MISSING_SHA], expect_count_in_log=2)
         assert get_status(conn, present_id) == "READY"
         assert get_status(conn, missing_id) == "READY"
-        print("      ✓ both files still READY")
+        print("      [OK] both files still READY")
 
         print(f"[3/5] STORAGE_AUTH #2 — manifest only contains PRESENT, expect 1 MISSING")
         auth_and_check([PRESENT_SHA], expect_count_in_log=1)
@@ -171,7 +171,7 @@ def main():
         print(f"      present.status={s_present}  missing.status={s_missing}")
         assert s_present == "READY", f"expected READY, got {s_present}"
         assert s_missing == "MISSING", f"expected MISSING, got {s_missing}"
-        print("      ✓ reconciliation flipped the unreported file to MISSING")
+        print("      [OK] reconciliation flipped the unreported file to MISSING")
 
         print(f"[4/5] STORAGE_AUTH #3 — empty manifest, expect both MISSING (re-marking is idempotent)")
         # Reset the previously-flipped row back to READY to demonstrate this path.
@@ -180,7 +180,7 @@ def main():
         auth_and_check([], expect_count_in_log=2)
         assert get_status(conn, present_id) == "MISSING"
         assert get_status(conn, missing_id) == "MISSING"
-        print("      ✓ empty manifest -> both flipped to MISSING")
+        print("      [OK] empty manifest -> both flipped to MISSING")
 
         print(f"[5/5] All checks passed.")
     finally:

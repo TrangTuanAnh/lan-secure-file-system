@@ -22,15 +22,15 @@ The authorization system uses a permission matrix that defines which roles can p
 
 | Action | ADMIN | OWNER | MEMBER | VIEWER |
 |--------|-------|-------|--------|--------|
-| Create Room | ✓ | ✗ | ✗ | ✗ |
-| Add Member | ✓ | ✓ | ✗ | ✗ |
-| Remove Member | ✓ | ✓ | ✗ | ✗ |
-| Change Role | ✓ | ✓ | ✗ | ✗ |
-| Upload File | ✓ | ✓ | ✓ | ✗ |
-| Download File | ✓ | ✓ | ✓ | ✓ |
-| View Files | ✓ | ✓ | ✓ | ✓ |
-| Create Share Token | ✓ | ✓ | ✓ | ✗ |
-| Delete File | ✓ | ✓ | ✗ | ✗ |
+| Create Room | Yes | No | No | No |
+| Add Member | Yes | Yes | No | No |
+| Remove Member | Yes | Yes | No | No |
+| Change Role | Yes | Yes | No | No |
+| Upload File | Yes | Yes | Yes | No |
+| Download File | Yes | Yes | Yes | Yes |
+| View Files | Yes | Yes | Yes | Yes |
+| Create Share Token | Yes | Yes | Yes | No |
+| Delete File | Yes | Yes | No | No |
 
 ## Roles
 
@@ -77,11 +77,11 @@ def upload_handler(message, context, auth_service):
     user_id = context['userId']
     global_role = context['globalRole']
     room_id = message.payload.get('roomId')
-    
+
     # Check permission
     if not auth_service.check_permission(user_id, global_role, room_id, 'UPLOAD_FILE'):
         return error_response('PERMISSION_DENIED')
-    
+
     # Proceed with upload...
 ```
 
@@ -177,7 +177,7 @@ python -m pytest test_authorization.py -v
 
 **Choice**: Query PostgreSQL on every permission check
 
-**Rationale**: 
+**Rationale**:
 - Avoids cache invalidation complexity
 - Ensures permissions are always up-to-date
 - Index on (room_id, user_id) makes queries fast enough

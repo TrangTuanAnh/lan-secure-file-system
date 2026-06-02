@@ -269,15 +269,15 @@ LOGOUT:  client → socket → Coordinator → DEL session (Redis) → trả ok
 
 | Hành động | ADMIN | OWNER | MEMBER | VIEWER |
 |-----------|-------|-------|--------|--------|
-| Tạo phòng | ✓ | — | — | — |
-| Thêm member | ✓ | ✓ | ✗ | ✗ |
-| Xóa member | ✓ | ✓ | ✗ | ✗ |
-| Đổi role | ✓ | ✓ | ✗ | ✗ |
-| Upload file | ✓ | ✓ | ✓ | ✗ |
-| Download file | ✓ | ✓ | ✓ | ✓ |
-| Xem file list | ✓ | ✓ | ✓ | ✓ |
-| Tạo share token | ✓ | ✓ | ✓ | ✗ |
-| Xóa file | ✓ | ✓ | ✗ | ✗ |
+| Tạo phòng | Yes | No | No | No |
+| Thêm member | Yes | Yes | No | No |
+| Xóa member | Yes | Yes | No | No |
+| Đổi role | Yes | Yes | No | No |
+| Upload file | Yes | Yes | Yes | No |
+| Download file | Yes | Yes | Yes | Yes |
+| Xem file list | Yes | Yes | Yes | Yes |
+| Tạo share token | Yes | Yes | Yes | No |
+| Xóa file | Yes | Yes | No | No |
 
 ### Quy tắc
 

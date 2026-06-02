@@ -1,8 +1,8 @@
-# 📡 Backend API Reference - TCP Socket Protocol
+# Backend API Reference - TCP Socket Protocol
 
-**Version:** 1.0  
-**Protocol:** TCP Socket + JSON Message + Length-prefix Frame (4-byte big-endian)  
-**Base Port:** 8080  
+**Version:** 1.0
+**Protocol:** TCP Socket + JSON Message + Length-prefix Frame (4-byte big-endian)
+**Base Port:** 8080
 **Default Host:** localhost
 
 ## Protocol Overview
@@ -62,7 +62,7 @@ Example:
 
 ## API Endpoints
 
-### 🔐 AUTHENTICATION (No Token Required)
+### AUTHENTICATION (No Token Required)
 
 #### 1. SIGNUP
 Register a new user account.
@@ -212,7 +212,7 @@ Invalidate session token.
 
 ---
 
-### 🏢 ROOM MANAGEMENT (Token Required)
+### ROOM MANAGEMENT (Token Required)
 
 All room requests require `"token"` in payload.
 
@@ -436,7 +436,7 @@ Change member role (OWNER only).
 
 ---
 
-### 📁 FILE OPERATIONS (Token Required)
+### FILE OPERATIONS (Token Required)
 
 #### 10. LIST_FILES
 Get all files in a room.
@@ -588,7 +588,7 @@ Delete a file (OWNER/MEMBER only).
 
 ---
 
-### 📤 UPLOAD CONTROL (Token Required)
+### UPLOAD CONTROL (Token Required)
 
 #### 14. INIT_UPLOAD
 Initialize file upload.
@@ -650,7 +650,7 @@ Initialize file upload.
 
 ---
 
-### 📥 DOWNLOAD CONTROL (Token or Share Token Required)
+### DOWNLOAD CONTROL (Token or Share Token Required)
 
 #### 15. INIT_DOWNLOAD (with auth token)
 Initialize file download using authentication token.
@@ -716,7 +716,7 @@ Initialize file download using public share token (no auth required).
 
 ---
 
-### 🔗 SHARE TOKENS (Token Required)
+### SHARE TOKENS (Token Required)
 
 #### 16. CREATE_SHARE_TOKEN
 Create public download link.
@@ -750,7 +750,7 @@ Create public download link.
 
 ---
 
-### 🔔 NOTIFICATIONS (Token Required, Persistent)
+### NOTIFICATIONS (Token Required, Persistent)
 
 #### 17. SUBSCRIBE_ROOM
 Subscribe to real-time events in a room.
@@ -831,7 +831,7 @@ Unsubscribe from room events.
 
 ---
 
-### ❤️ HEALTH & DIAGNOSTICS (No Token Required)
+### HEALTH & DIAGNOSTICS (No Token Required)
 
 #### 19. PING
 Health check.

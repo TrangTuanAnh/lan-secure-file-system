@@ -233,7 +233,7 @@ Giả sử `STORAGE_MIN_FREE_BYTES = 1 GiB`.
 | Client (Alice) | Soạn message INIT_UPLOAD, gửi qua socket tới coordinator port 8080. |
 | Coordinator: Acceptor thread | Đọc frame, đẩy vào ThreadPoolExecutor. |
 | Coordinator: Worker thread `ClientSocketServer-Worker_3` | Vào [`UploadService.handle_init_upload`](../coordinator-server/upload/upload_service.py#L157). Sinh `file_id = "F-alice"`. Gọi [`_select_storage_node(reservation_id="F-alice")`](../coordinator-server/upload/upload_service.py#L301). |
-| Coordinator: Registry (dưới lock) | [`_reap_expired_locked()`](../coordinator-server/storage_node/registry.py#L304) — không có gì. Filter healthy: A ✅, B ✅, **C ❌** (0.5 GiB < 1 GiB). Còn lại [A, B]. `random.sample([A,B], 2)` = [A, B]. Score A=(2, -8GiB, "A"), score B=(2, -50GiB, "B"). B điểm thấp hơn (vì -50 < -8). **Chọn B**. Tạo reservation `"F-alice" → B`, `B.active_uploads = 3`. Trả về B. |
+| Coordinator: Registry (dưới lock) | [`_reap_expired_locked()`](../coordinator-server/storage_node/registry.py#L304) — không có gì. Filter healthy: A đạt, B đạt, **C loại** (0.5 GiB < 1 GiB). Còn lại [A, B]. `random.sample([A,B], 2)` = [A, B]. Score A=(2, -8GiB, "A"), score B=(2, -50GiB, "B"). B điểm thấp hơn (vì -50 < -8). **Chọn B**. Tạo reservation `"F-alice" → B`, `B.active_uploads = 3`. Trả về B. |
 | Coordinator: Worker thread (tiếp) | DB INSERT file row với `storage_node_id=B`. Sinh ticket, lưu Redis. Gửi UPLOAD_PLAN response chứa địa chỉ data plane của B. |
 
 ### Bước 2 — Bob gửi INIT_UPLOAD song song (file_id `F-bob`)

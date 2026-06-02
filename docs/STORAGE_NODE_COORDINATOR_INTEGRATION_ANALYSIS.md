@@ -53,7 +53,7 @@ def generate_upload_ticket(self, file_id, user_id, room_id, ...):
     return ticket_id
 ```
 
-**Trạng thái**: ✅ Đã triển khai (local verification)
+**Trạng thái**: Đã triển khai (local verification)
 
 ---
 
@@ -73,11 +73,11 @@ def generate_upload_ticket(self, file_id, user_id, room_id, ...):
 ```java
 private void handleFinalizeUpload(Message msg) throws Exception {
     // ... assemble file, verify hash ...
-    
+
     // Notify coordinator
     coordinator.notifyUploadComplete(
-        session.getFileId(), 
-        session.getSha256Whole(), 
+        session.getFileId(),
+        session.getSha256Whole(),
         session.getFileSize()
     );
 }
@@ -100,7 +100,7 @@ def _handle_upload_complete(self, connection, message):
     sha256_whole = message.payload.get('sha256Whole')
     stored_name = message.payload.get('storedName')
     final_size = message.payload.get('finalSize')
-    
+
     # Route to upload service
     success, error_code = self.upload_service.handle_upload_complete(
         file_id=file_id,
@@ -122,7 +122,7 @@ def handle_upload_complete(self, file_id, sha256_whole, stored_name, final_size)
     )
 ```
 
-**Trạng thái**: ⚠️ Đã có handler ở Coordinator, CHƯA gửi từ Storage Node
+**Trạng thái**: Đã có handler ở Coordinator, CHƯA gửi từ Storage Node
 
 ---
 
@@ -143,7 +143,7 @@ def handle_upload_complete(self, file_id, sha256_whole, stored_name, final_size)
 private void handleFinalizeUpload(Message msg) throws Exception {
     // ... if hash mismatch or I/O error ...
     coordinator.notifyUploadFailed(
-        session.getFileId(), 
+        session.getFileId(),
         "Hash mismatch after assembly"
     );
 }
@@ -163,7 +163,7 @@ public void notifyUploadFailed(String fileId, String reason) {
 def _handle_upload_failed(self, connection, message):
     file_id = message.payload.get('fileId')
     reason = message.payload.get('reason', 'Unknown error')
-    
+
     success, error_code = self.upload_service.handle_upload_failed(
         file_id=file_id,
         reason=reason
@@ -181,7 +181,7 @@ def handle_upload_failed(self, file_id, reason):
     )
 ```
 
-**Trạng thái**: ⚠️ Đã có handler ở Coordinator, CHƯA gửi từ Storage Node
+**Trạng thái**: Đã có handler ở Coordinator, CHƯA gửi từ Storage Node
 
 ---
 
@@ -206,20 +206,20 @@ def _handle_storage_auth(self, connection, message):
     if secret != self.shared_secret:
         # Send error
         return
-    
+
     # Mark node as authenticated
     node_info.authenticated = True
-    
+
 def _handle_ping(self, connection, message):
     # Update last ping time
     node_info.update_ping_time()
-    
+
     # Respond with PONG
     pong = Message.create_response(MessageType.PONG, ...)
     connection.send_message(pong)
 ```
 
-**Trạng thái**: ✅ Đã triển khai ở Coordinator, CHƯA triển khai ở Storage Node
+**Trạng thái**: Đã triển khai ở Coordinator, CHƯA triển khai ở Storage Node
 
 ---
 
@@ -239,17 +239,17 @@ def _handle_ping(self, connection, message):
 ```python
 def _handle_verify_ticket(self, connection, message):
     ticket_id = message.payload.get('ticket')
-    
+
     # Verify ticket using ticket service
     is_valid, ticket_data, error_code = self.ticket_service.verify_ticket(ticket_id)
-    
+
     if is_valid:
         response = Message.create_response(MessageType.TICKET_VALID, ticket_data, ...)
     else:
         response = Message.create_response(MessageType.TICKET_INVALID, {"error": error_code}, ...)
 ```
 
-**Trạng thái**: ✅ Đã triển khai ở Coordinator, CHƯA triển khai ở Storage Node
+**Trạng thái**: Đã triển khai ở Coordinator, CHƯA triển khai ở Storage Node
 
 ---
 
@@ -280,7 +280,7 @@ import java.util.logging.Logger;
 
 /**
  * Persistent socket connection to Coordinator Server control plane.
- * 
+ *
  * Handles:
  * - Authentication (STORAGE_AUTH)
  * - Heartbeat (PING/PONG)
@@ -289,19 +289,19 @@ import java.util.logging.Logger;
  */
 public class ControlPlaneClient {
     private static final Logger LOG = Logger.getLogger(ControlPlaneClient.class.getName());
-    
+
     private final String coordinatorHost;
     private final int coordinatorPort;
     private final String sharedSecret;
     private final String nodeId;
-    
+
     private Socket socket;
     private InputStream in;
     private OutputStream out;
     private volatile boolean running = false;
-    
+
     private ScheduledExecutorService heartbeatExecutor;
-    
+
     public ControlPlaneClient(String coordinatorHost, int coordinatorPort,
                               String sharedSecret, String nodeId) {
         this.coordinatorHost = coordinatorHost;
@@ -309,51 +309,51 @@ public class ControlPlaneClient {
         this.sharedSecret = sharedSecret;
         this.nodeId = nodeId;
     }
-    
+
     /**
      * Connect to Coordinator and authenticate.
      */
     public void connect() throws IOException {
         LOG.info("Connecting to Coordinator: " + coordinatorHost + ":" + coordinatorPort);
-        
+
         socket = new Socket(coordinatorHost, coordinatorPort);
         in = new BufferedInputStream(socket.getInputStream());
         out = new BufferedOutputStream(socket.getOutputStream());
         running = true;
-        
+
         // Send STORAGE_AUTH
         authenticate();
-        
+
         // Start heartbeat thread
         startHeartbeat();
-        
+
         // Start message receiver thread
         new Thread(this::receiveLoop, "ControlPlane-Receiver").start();
-        
+
         LOG.info("Connected to Coordinator successfully");
     }
-    
+
     private void authenticate() throws IOException {
         Message authMsg = new Message(MessageType.STORAGE_AUTH)
             .set("secret", sharedSecret)
             .set("nodeId", nodeId);
-        
+
         sendMessage(authMsg);
-        
+
         // Wait for STORAGE_AUTH_RESPONSE
         Message response = receiveMessage();
         if (response == null || !response.getType().equals(MessageType.STORAGE_AUTH_RESPONSE)) {
             throw new IOException("Authentication failed");
         }
-        
+
         String status = response.getString("status");
         if (!"authenticated".equals(status)) {
             throw new IOException("Authentication rejected: " + status);
         }
-        
+
         LOG.info("Authenticated with Coordinator");
     }
-    
+
     private void startHeartbeat() {
         heartbeatExecutor = Executors.newSingleThreadScheduledExecutor();
         heartbeatExecutor.scheduleAtFixedRate(() -> {
@@ -364,17 +364,17 @@ public class ControlPlaneClient {
             }
         }, 30, 30, TimeUnit.SECONDS);
     }
-    
+
     private void sendPing() throws IOException {
         Message ping = new Message(MessageType.PING);
         sendMessage(ping);
         LOG.fine("PING sent to Coordinator");
     }
-    
+
     /**
      * Notify Coordinator that upload completed successfully.
      */
-    public void notifyUploadComplete(String fileId, String sha256Whole, 
+    public void notifyUploadComplete(String fileId, String sha256Whole,
                                       String storedName, long finalSize) {
         try {
             Message msg = new Message(MessageType.UPLOAD_COMPLETE)
@@ -382,15 +382,15 @@ public class ControlPlaneClient {
                 .set("sha256Whole", sha256Whole)
                 .set("storedName", storedName)
                 .set("finalSize", finalSize);
-            
+
             sendMessage(msg);
             LOG.info("UPLOAD_COMPLETE sent: fileId=" + fileId);
-            
+
         } catch (IOException e) {
             LOG.severe("Failed to send UPLOAD_COMPLETE: " + e.getMessage());
         }
     }
-    
+
     /**
      * Notify Coordinator that upload failed.
      */
@@ -399,15 +399,15 @@ public class ControlPlaneClient {
             Message msg = new Message(MessageType.UPLOAD_FAILED)
                 .set("fileId", fileId)
                 .set("reason", reason);
-            
+
             sendMessage(msg);
             LOG.info("UPLOAD_FAILED sent: fileId=" + fileId);
-            
+
         } catch (IOException e) {
             LOG.severe("Failed to send UPLOAD_FAILED: " + e.getMessage());
         }
     }
-    
+
     /**
      * Verify ticket via Coordinator (optional, alternative to local HMAC).
      */
@@ -415,17 +415,17 @@ public class ControlPlaneClient {
         try {
             Message msg = new Message(MessageType.VERIFY_TICKET)
                 .set("ticket", ticketId);
-            
+
             sendMessage(msg);
-            
+
             // Wait for response (with timeout)
             Message response = receiveMessageWithTimeout(5000);
-            
+
             if (response == null) {
                 LOG.warning("Ticket verification timeout");
                 return false;
             }
-            
+
             if (response.getType().equals(MessageType.TICKET_VALID)) {
                 LOG.info("Ticket verified: " + ticketId);
                 return true;
@@ -433,21 +433,21 @@ public class ControlPlaneClient {
                 LOG.warning("Ticket invalid: " + ticketId);
                 return false;
             }
-            
+
         } catch (Exception e) {
             LOG.severe("Failed to verify ticket: " + e.getMessage());
             return false;
         }
     }
-    
+
     private void receiveLoop() {
         while (running) {
             try {
                 Message msg = receiveMessage();
                 if (msg == null) break;
-                
+
                 handleMessage(msg);
-                
+
             } catch (IOException e) {
                 if (running) {
                     LOG.warning("Connection lost: " + e.getMessage());
@@ -456,7 +456,7 @@ public class ControlPlaneClient {
             }
         }
     }
-    
+
     private void handleMessage(Message msg) {
         switch (msg.getType()) {
             case PONG:
@@ -472,31 +472,31 @@ public class ControlPlaneClient {
                 LOG.fine("Received: " + msg.getType());
         }
     }
-    
+
     private synchronized void sendMessage(Message msg) throws IOException {
         FrameCodec.writeFrame(out, msg);
     }
-    
+
     private Message receiveMessage() throws IOException {
         return FrameCodec.readFrame(in);
     }
-    
+
     private Message receiveMessageWithTimeout(long timeoutMs) throws IOException {
         // TODO: Implement timeout logic
         return receiveMessage();
     }
-    
+
     public void disconnect() {
         running = false;
-        
+
         if (heartbeatExecutor != null) {
             heartbeatExecutor.shutdown();
         }
-        
+
         try {
             if (socket != null) socket.close();
         } catch (IOException ignored) {}
-        
+
         LOG.info("Disconnected from Coordinator");
     }
 }
@@ -517,38 +517,38 @@ public class CoordinatorClient {
     private final String ticketSecret;
     private final String nodeId;
     private final ControlPlaneClient controlPlaneClient;  // NEW
-    
+
     public CoordinatorClient(String ticketSecret, String nodeId,
                              String coordinatorHost, int coordinatorPort) {
         this.ticketSecret = ticketSecret;
         this.nodeId = nodeId;
-        
+
         // Initialize control plane client
         this.controlPlaneClient = new ControlPlaneClient(
             coordinatorHost, coordinatorPort, ticketSecret, nodeId
         );
     }
-    
+
     public void connect() throws IOException {
         controlPlaneClient.connect();
     }
-    
+
     public void disconnect() {
         controlPlaneClient.disconnect();
     }
-    
+
     // Keep local HMAC verification for backward compatibility
     public boolean verifyTicket(String sessionId, String fileId,
                                  String ticketNodeId, long expiry, String signature) {
         // ... existing HMAC logic ...
     }
-    
+
     // NEW: Delegate to control plane client
     public void notifyUploadComplete(String fileId, String sha256Whole, long fileSize) {
         String storedName = "data/store/" + sha256Whole.substring(0, 2) + "/" + sha256Whole;
         controlPlaneClient.notifyUploadComplete(fileId, sha256Whole, storedName, fileSize);
     }
-    
+
     // NEW: Delegate to control plane client
     public void notifyUploadFailed(String fileId, String reason) {
         controlPlaneClient.notifyUploadFailed(fileId, reason);
@@ -569,13 +569,13 @@ public class CoordinatorClient {
 ```java
 public static void main(String[] args) {
     // ... existing initialization ...
-    
+
     // 7. Initialize coordinator client
     CoordinatorClient coordinator = new CoordinatorClient(
         config.getTicketSecret(), config.getNodeId(),
         config.getCoordinatorHost(), config.getCoordinatorPort()
     );
-    
+
     // NEW: Connect to Coordinator control plane
     try {
         coordinator.connect();
@@ -584,9 +584,9 @@ public static void main(String[] args) {
         LOG.warning("Failed to connect to Coordinator: " + e.getMessage());
         LOG.warning("Running in standalone mode (local ticket verification only)");
     }
-    
+
     // ... existing code ...
-    
+
     // 9. Shutdown hook
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
         LOG.info("Shutdown signal received");
@@ -594,7 +594,7 @@ public static void main(String[] args) {
         monitor.stop();
         coordinator.disconnect();  // NEW
     }));
-    
+
     // 10. Start server (blocking)
     server.start();
 }
@@ -611,7 +611,7 @@ package storagenode.protocol;
 
 public enum MessageType {
     // ... existing data plane types ...
-    
+
     // Control plane types (for Coordinator communication)
     STORAGE_AUTH,
     STORAGE_AUTH_RESPONSE,
@@ -727,14 +727,13 @@ Client                  Coordinator              Storage Node
 
 ## 4. Tóm tắt code còn thiếu
 
-### ✅ Đã có (Coordinator Server)
+### Đã có (Coordinator Server)
 1. `storage_node_server.py` - Socket server cho Storage Node
-2. `storage_node/IMPLEMENTATION_SUMMARY.md` - Documentation
-3. Message handlers: STORAGE_AUTH, PING, VERIFY_TICKET, UPLOAD_COMPLETE, UPLOAD_FAILED
-4. `upload_service.py` - Handle upload complete/failed
-5. `ticket_service.py` - Generate và verify tickets
+2. Message handlers: STORAGE_AUTH, PING, VERIFY_TICKET, UPLOAD_COMPLETE, UPLOAD_FAILED
+3. `upload_service.py` - Handle upload complete/failed
+4. `ticket_service.py` - Generate và verify tickets
 
-### ⚠️ Còn thiếu (Storage Node)
+### Còn thiếu (Storage Node)
 1. **`ControlPlaneClient.java`** - Socket client kết nối đến Coordinator
    - Authentication
    - Heartbeat (PING/PONG)

@@ -1,6 +1,6 @@
-# 📋 Phân tích Project: LAN Secure File System
+# Phân tích Project: LAN Secure File System
 
-## 1. 🏗️ Tổng quan kiến trúc
+## 1. Tổng quan kiến trúc
 
 Project là một **hệ thống chia sẻ file an toàn trong LAN** với kiến trúc **Control Plane + Data Plane**:
 
@@ -54,10 +54,10 @@ Project là một **hệ thống chia sẻ file an toàn trong LAN** với kiế
 
 ---
 
-## 2. 🧩 Thành phần chính (Components)
+## 2. Thành phần chính (Components)
 
 ### 2.1 **Frontend - C# WPF Application**
-📁 **Đường dẫn:** `coordinator-node/frontend-cs/`
+**Đường dẫn:** `coordinator-node/frontend-cs/`
 
 **Vai trò:** Giao diện người dùng để quản lý room, file, upload/download
 
@@ -81,18 +81,18 @@ frontend-cs/
 ```
 
 **Chức năng chính:**
-- ✅ Login / Signup / Logout
-- ✅ Danh sách Room
-- ✅ Quản lý thành viên room
-- ✅ Danh sách file trong room
-- ✅ Upload/Download file
-- ✅ Xem recent tasks
-- ✅ Sharing token
+- Login / Signup / Logout
+- Danh sách Room
+- Quản lý thành viên room
+- Danh sách file trong room
+- Upload/Download file
+- Xem recent tasks
+- Sharing token
 
 ---
 
 ### 2.2 **Coordinator Server - Python (Control Plane)**
-📁 **Đường dẫn:** `coordinator-server/`
+**Đường dẫn:** `coordinator-server/`
 
 **Vai trò:** Quản lý logic kinh doanh, xác thực, phân quyền, metadata
 
@@ -100,55 +100,55 @@ frontend-cs/
 
 **Các module chính:**
 
-#### 📦 **auth/** - Authentication & Authorization
+#### **auth/** - Authentication & Authorization
 - `auth_service.py` - Xác thực user (signup, login, logout, token validation)
 - `password_hasher.py` - Hash password với bcrypt
 - `auth_handlers.py` - Socket message handlers
 - `authorization_service.py` - Phân quyền (kiểm tra user có quyền làm gì)
 
-#### 📦 **room/** - Room Management
+#### **room/** - Room Management
 - `room_service.py` - Tạo room, thêm/xóa thành viên, gán role
 - `room_handlers.py` - Socket message handlers
 
-#### 📦 **file/** - File Metadata
+#### **file/** - File Metadata
 - `file_service.py` - Quản lý metadata file, versioning
 - `file_handlers.py` - Socket message handlers
 
-#### 📦 **upload/** & **download/** - Transfer Control
+#### **upload/** & **download/** - Transfer Control
 - `upload_service.py` - Kiểm tra quyền, sinh ticket upload, lấy danh sách Storage Node
 - `upload_handlers.py` - Socket message handlers
 - `download_service.py` - Kiểm tra quyền, sinh ticket download
 - `download_handlers.py` - Socket message handlers
 
-#### 📦 **ticket/** - Ticket Management
+#### **ticket/** - Ticket Management
 - `ticket_service.py` - Sinh HMAC ticket (short-lived credential)
 - `ticket_handlers.py` - Socket message handlers
 
-#### 📦 **notification/** - Real-time Notifications
+#### **notification/** - Real-time Notifications
 - `notification_service.py` - Quản lý subscribers, gửi event
 - `notification_handlers.py` - Socket message handlers
 
-#### 📦 **storage_node/** - Storage Node Communication
+#### **storage_node/** - Storage Node Communication
 - `storage_node_server.py` - Server nhận kết nối từ Storage Node (Port 9000)
 - `registry.py` - Quản lý danh sách Storage Node khỏe
 - Handlers cho `STORAGE_AUTH`, `PING/PONG`, `UPLOAD_COMPLETE`, `UPLOAD_FAILED`
 
-#### 📦 **protocol/** - Socket Protocol
+#### **protocol/** - Socket Protocol
 - `message.py` - Message serialization (JSON + length-prefix frame)
 - `message_types.py` - Định nghĩa tất cả message type
 - `socket_server.py` - Base socket server, connection management
 - `frame_codec.py` - Frame encoding/decoding
 
-#### 📦 **audit/** - Audit Logging
+#### **audit/** - Audit Logging
 - `audit_service.py` - Ghi log tất cả action (CREATE_FILE, UPLOAD, DELETE, etc.)
 
-#### 📦 **health/** - Health Check
+#### **health/** - Health Check
 - `health_service.py` - Server status, database connection check
 
 ---
 
 ### 2.3 **Storage Node - Java (Data Plane)**
-📁 **Đường dẫn:** `storage-node/src/main/java/storagenode/`
+**Đường dẫn:** `storage-node/src/main/java/storagenode/`
 
 **Vai trò:** Lưu trữ data file, xử lý upload/download chunk, quét virus
 
@@ -156,38 +156,38 @@ frontend-cs/
 
 **Các module chính:**
 
-#### 📦 **network/**
+#### **network/**
 - `ClientHandler.java` - Xử lý kết nối từ client, dispatch message
 - `CoordinatorClient.java` - Kết nối tới Coordinator, xác thực ticket, thông báo upload hoàn thành
 - `ServerSocket.java` - Lắng nghe kết nối client
 
-#### 📦 **protocol/**
+#### **protocol/**
 - `Message.java` - Protocol message format
 - `MessageType.java` - Định nghĩa message type
 - `FrameCodec.java` - Frame encoding/decoding
 
-#### 📦 **session/**
+#### **session/**
 - `UploadSession.java` - Theo dõi upload chunk, resume
 - `DownloadSession.java` - Theo dõi download
 - `SessionManager.java` - Quản lý session
 
-#### 📦 **storage/**
+#### **storage/**
 - `FileStore.java` - Lưu file vào disk theo SHA-256 hash
 - `DedupStore.java` - Deduplication (file cùng hash reuse)
 
-#### 📦 **crypto/**
+#### **crypto/**
 - `RSAKeyExchange.java` - Key exchange RSA
 - `AESCrypto.java` - Mã hóa AES stream
 - `HashUtil.java` - SHA-256 hash
 
-#### 📦 **antivirus/**
+#### **antivirus/**
 - `AntivirusScanner.java` - Quét virus qua ClamAV clamd
 
 ---
 
 ### 2.4 **Database & Cache**
 
-#### 🗄️ **PostgreSQL** (Metadata lâu dài)
+#### **PostgreSQL** (Metadata lâu dài)
 ```sql
 -- Users
 users (id, username, email, password_hash, global_role, created_at)
@@ -206,14 +206,14 @@ audit_logs (id, user_id, action, resource_type, resource_id, details, timestamp)
 scan_reports (id, file_id, scan_status, result, timestamp)
 ```
 
-#### 🔴 **Redis** (Session & Tokens)
+#### **Redis** (Session & Tokens)
 ```
 sessions:token:<uuid> → {userId, username, globalRole, expiry}
 ```
 
 ---
 
-## 3. 🔌 Giao tiếp giữa các thành phần
+## 3. Giao tiếp giữa các thành phần
 
 ### 3.1 **Frontend ↔ Coordinator Server (Control Plane)**
 
@@ -223,7 +223,7 @@ sessions:token:<uuid> → {userId, username, globalRole, expiry}
 
 **Các message type:**
 
-#### 🔐 **Authentication** (không cần token)
+#### **Authentication** (không cần token)
 ```
 SIGNUP
   Request: {username, email, password}
@@ -238,7 +238,7 @@ LOGOUT
   Response: {status} | ERROR
 ```
 
-#### 🏢 **Room Management** (cần token)
+#### **Room Management** (cần token)
 ```
 CREATE_ROOM
   Request: {name}
@@ -265,7 +265,7 @@ LIST_MEMBERS
   Response: [{userId, username, role, email}, ...] | ERROR
 ```
 
-#### 📁 **File Operations** (cần token)
+#### **File Operations** (cần token)
 ```
 LIST_FILES
   Request: {roomId}
@@ -284,7 +284,7 @@ DELETE_FILE
   Response: {status} | ERROR
 ```
 
-#### 📤 **Upload Initiation** (cần token)
+#### **Upload Initiation** (cần token)
 ```
 INIT_UPLOAD
   Request: {roomId, fileInfo: {name, size, sha256Whole, chunkCount, chunkSize}}
@@ -299,7 +299,7 @@ INIT_UPLOAD
   } | ERROR
 ```
 
-#### 📥 **Download Initiation** (cần token hoặc shareToken)
+#### **Download Initiation** (cần token hoặc shareToken)
 ```
 INIT_DOWNLOAD
   Request: {fileId} hoặc {shareToken}
@@ -313,14 +313,14 @@ INIT_DOWNLOAD
   } | ERROR
 ```
 
-#### 🔗 **Sharing Token** (cần token)
+#### **Sharing Token** (cần token)
 ```
 CREATE_SHARE_TOKEN
   Request: {fileId, expiry}
   Response: {shareToken, fileId, expiry} | ERROR
 ```
 
-#### 🔔 **Notifications** (cần token, persistent)
+#### **Notifications** (cần token, persistent)
 ```
 SUBSCRIBE_ROOM
   Request: {roomId}
@@ -336,7 +336,7 @@ UNSUBSCRIBE_ROOM
   Response: {status, subscribed: false}
 ```
 
-#### ❤️ **Health Check** (không cần token)
+#### **Health Check** (không cần token)
 ```
 PING
   Request: {}
@@ -461,14 +461,14 @@ Storage Node → Coordinator: TICKET_VALID hoặc TICKET_INVALID
 
 ---
 
-## 4. 📊 Data Flow Diagrams
+## 4. Data Flow Diagrams
 
 ### 4.1 **User Login Flow**
 ```
 Frontend                    Coordinator              PostgreSQL
   │                            │                         │
-  ├─ LOGIN {user, pass} ───────→                        
-  │                            │                         
+  ├─ LOGIN {user, pass} ───────→
+  │                            │
   │                            ├─ Query user ──────────→
   │                            │                      [SELECT]
   │                            ←─────────────────────────┤
@@ -529,9 +529,9 @@ Frontend                    Coordinator              Storage Node
   │                            │                         │
   ├─ INIT_DOWNLOAD ───────────→                         │
   │                            │                         │
-  │                            ├─ Check permission       
-  │                            ├─ Generate ticket       
-  │                            ├─ Select Storage Node    
+  │                            ├─ Check permission
+  │                            ├─ Generate ticket
+  │                            ├─ Select Storage Node
   │                            │
   │← DOWNLOAD_PLAN {ticket} ───
   │
@@ -552,7 +552,7 @@ Frontend                    Coordinator              Storage Node
 
 ---
 
-## 5. 📋 API Summary for Frontend
+## 5. API Summary for Frontend
 
 ### **Base Structure**
 ```python
@@ -618,7 +618,7 @@ Tất cả request (except SIGNUP, LOGIN, PING, STATUS) cần chứa:
 
 ---
 
-## 6. 🔐 Bảo mật
+## 6. Bảo mật
 
 ### **Authentication**
 - bcrypt password hashing (cost 12)
@@ -646,7 +646,7 @@ Tất cả request (except SIGNUP, LOGIN, PING, STATUS) cần chứa:
 
 ---
 
-## 7. 🗂️ Folder Structure Reference
+## 7. Folder Structure Reference
 
 ```
 lan-secure-file-system/
@@ -715,7 +715,7 @@ lan-secure-file-system/
 
 ---
 
-## 8. 🚀 Deployment Architecture
+## 8. Deployment Architecture
 
 ```
 ┌─────────────────────────────────────┐
@@ -742,7 +742,7 @@ lan-secure-file-system/
 
 ---
 
-## 9. 📌 Key Concepts
+## 9. Key Concepts
 
 ### **HMAC Ticket System**
 - Client request upload/download → Coordinator sinh ticket
@@ -769,7 +769,7 @@ lan-secure-file-system/
 
 ---
 
-## 10. 📞 Integration Checklist
+## 10. Integration Checklist
 
 Để connect frontend tới backend:
 

@@ -129,12 +129,12 @@ class BackendConfig:
     port: int
     timeout: int
     socket_timeout: int
-    
+
 @dataclass
 class Config:
     backend: BackendConfig
     # ... other config
-    
+
     @classmethod
     def load(cls):
         host = os.getenv("BACKEND_HOST", "localhost")
@@ -212,11 +212,11 @@ class DashboardPage:
     def __init__(self, service):
         self.service = service
         self.create_widgets()
-    
+
     def create_widgets(self):
         # Create UI elements
         pass
-    
+
     def refresh_rooms(self):
         # Load rooms from service
         pass
@@ -226,7 +226,7 @@ class RoomListWidget:
     def __init__(self, on_room_click=None):
         self.on_room_click = on_room_click
         self.create_widgets()
-    
+
     def set_rooms(self, rooms):
         # Update list
         pass
@@ -246,11 +246,11 @@ class LoginWorker(AsyncWorker):
         self.service = service
         self.username = username
         self.password = password
-    
+
     def run(self):
         try:
             result = self.service.auth.login(
-                self.username, 
+                self.username,
                 self.password
             )
             self.success.emit(result)
@@ -266,20 +266,20 @@ Keep track of current user, room, etc.
 # managers/session_manager.py
 class SessionManager:
     _instance = None
-    
+
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
-    
+
     def __init__(self):
         self.current_user = None
         self.token = None
-    
+
     def set_user(self, user, token):
         self.current_user = user
         self.token = token
-    
+
     def is_authenticated(self):
         return self.token is not None
 ```
@@ -484,11 +484,11 @@ __all__ = ["User", "Room", "File", "Event"]
 
 ## Benefits of This Structure
 
-✅ **Separation of Concerns** - Each layer has clear responsibility  
-✅ **Testability** - Easy to mock services and test UI logic  
-✅ **Reusability** - Services, models, widgets can be reused  
-✅ **Maintainability** - Find code quickly, understand relationships  
-✅ **Scalability** - Easy to add new features without touching existing code  
-✅ **Threading Safety** - Clear boundaries for background operations  
-✅ **Code Organization** - Logical grouping by responsibility, not by file type  
+**Separation of Concerns** - Each layer has clear responsibility
+**Testability** - Easy to mock services and test UI logic
+**Reusability** - Services, models, widgets can be reused
+**Maintainability** - Find code quickly, understand relationships
+**Scalability** - Easy to add new features without touching existing code
+**Threading Safety** - Clear boundaries for background operations
+**Code Organization** - Logical grouping by responsibility, not by file type
 

@@ -28,7 +28,7 @@ Implement socket protocol and message handling for the Coordinator Server.
   - `decode_header(data: bytes) -> Optional[int]`: Extracts message length from header
   - `decode_frame(data: bytes) -> Tuple[Optional[bytes], int]`: Extracts complete frame
   - Maximum message size: 10 MB (prevents memory exhaustion)
-  
+
 - **FrameBuffer class**: Accumulates partial data and extracts complete frames
   - `append(data: bytes)`: Add incoming data to buffer
   - `extract_frame() -> Optional[bytes]`: Extract one complete frame
@@ -95,29 +95,29 @@ Implement socket protocol and message handling for the Coordinator Server.
 Comprehensive test suite in `test_protocol.py`:
 
 ### Frame Codec Tests
-- ✅ Encode message with length prefix
-- ✅ Decode header from frame
-- ✅ Decode complete frame
-- ✅ Handle incomplete frames
-- ✅ Reject oversized messages
+- Encode message with length prefix
+- Decode header from frame
+- Decode complete frame
+- Handle incomplete frames
+- Reject oversized messages
 
 ### Frame Buffer Tests
-- ✅ Extract single frame
-- ✅ Extract multiple frames
-- ✅ Accumulate partial frames
+- Extract single frame
+- Extract multiple frames
+- Accumulate partial frames
 
 ### Message Tests
-- ✅ Message to/from dictionary
-- ✅ Message to/from JSON
-- ✅ Message serialization roundtrip
-- ✅ Create error messages
-- ✅ Validate message types
-- ✅ Validate required fields
+- Message to/from dictionary
+- Message to/from JSON
+- Message serialization roundtrip
+- Create error messages
+- Validate message types
+- Validate required fields
 
 ### Socket Server Tests
-- ✅ Server starts and stops
-- ✅ Client connection handling
-- ✅ PING/PONG message exchange
+- Server starts and stops
+- Client connection handling
+- PING/PONG message exchange
 
 **Test Results**: All 20 tests pass
 

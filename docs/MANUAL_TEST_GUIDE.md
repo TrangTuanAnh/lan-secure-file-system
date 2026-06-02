@@ -150,10 +150,10 @@ docker compose down -v
 
 Nếu tất cả OK, bạn sẽ thấy:
 
-1. ✅ Coordinator Server khởi động thành công
-2. ✅ Storage Node Server khởi động thành công
-3. ✅ Storage Node kết nối đến Coordinator
-4. ✅ Storage Node xác thực thành công
-5. ✅ Heartbeat hoạt động (PING/PONG mỗi 30 giây)
+1. Coordinator Server khởi động thành công
+2. Storage Node Server khởi động thành công
+3. Storage Node kết nối đến Coordinator
+4. Storage Node xác thực thành công
+5. Heartbeat hoạt động (PING/PONG mỗi 30 giây)
 
 **Hệ thống đã sẵn sàng để test upload/download!**

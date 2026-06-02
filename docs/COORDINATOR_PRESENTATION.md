@@ -48,7 +48,7 @@
 ```sql
 - id: UUID (PK)
 - username: VARCHAR(50) UNIQUE
-- email: VARCHAR(255) UNIQUE  
+- email: VARCHAR(255) UNIQUE
 - password_hash: VARCHAR(255) -- bcrypt cost 12
 - global_role: VARCHAR(10) -- 'USER' hoặc 'ADMIN'
 - created_at, updated_at: TIMESTAMPTZ
@@ -209,14 +209,14 @@ Client → LOGOUT → DEL Redis → OK
 
 | Hành động | ADMIN | OWNER | MEMBER | VIEWER |
 |-----------|-------|-------|--------|--------|
-| Tạo phòng | ✓ | — | — | — |
-| Thêm/xóa member | ✓ | ✓ | ✗ | ✗ |
-| Đổi role | ✓ | ✓ | ✗ | ✗ |
-| Upload file | ✓ | ✓ | ✓ | ✗ |
-| Download file | ✓ | ✓ | ✓ | ✓ |
-| Xem file list | ✓ | ✓ | ✓ | ✓ |
-| Tạo share token | ✓ | ✓ | ✓ | ✗ |
-| Xóa file | ✓ | ✓ | ✗ | ✗ |
+| Tạo phòng | Yes | No | No | No |
+| Thêm/xóa member | Yes | Yes | No | No |
+| Đổi role | Yes | Yes | No | No |
+| Upload file | Yes | Yes | Yes | No |
+| Download file | Yes | Yes | Yes | Yes |
+| Xem file list | Yes | Yes | Yes | Yes |
+| Tạo share token | Yes | Yes | Yes | No |
+| Xóa file | Yes | Yes | No | No |
 
 **Quy tắc**:
 - ADMIN có full quyền mọi phòng
@@ -428,11 +428,11 @@ Client              Coordinator           Storage Node
 
 **Atomic SQL**:
 ```sql
-UPDATE share_tokens 
-SET download_count = download_count + 1 
-WHERE token = $1 
-  AND download_count < max_downloads 
-  AND expires_at > NOW() 
+UPDATE share_tokens
+SET download_count = download_count + 1
+WHERE token = $1
+  AND download_count < max_downloads
+  AND expires_at > NOW()
 RETURNING *
 ```
 
@@ -566,22 +566,22 @@ RETURNING *
 
 ## 11. TRẠNG THÁI TRIỂN KHAI
 
-### 11.1 Đã hoàn thành ✅
+### 11.1 Đã hoàn thành
 
-- ✅ Database schema (7 bảng + migrations)
-- ✅ Redis connection + session storage
-- ✅ Socket protocol (frame codec, message format)
-- ✅ Authentication module (signup, login, logout)
-- ✅ Authorization module (permission checking)
-- ✅ Room management (create, add/remove member, set role)
-- ✅ File management (list, detail, versions, delete)
-- ✅ Upload control plane (init, ticket, complete)
-- ✅ Download control plane (init, share token)
-- ✅ Notification system (subscribe, broadcast)
-- ✅ Storage Node communication (heartbeat, callbacks)
-- ✅ Audit logging
-- ✅ Health check
-- ✅ Comprehensive test suite
+- Database schema (7 bảng + migrations)
+- Redis connection + session storage
+- Socket protocol (frame codec, message format)
+- Authentication module (signup, login, logout)
+- Authorization module (permission checking)
+- Room management (create, add/remove member, set role)
+- File management (list, detail, versions, delete)
+- Upload control plane (init, ticket, complete)
+- Download control plane (init, share token)
+- Notification system (subscribe, broadcast)
+- Storage Node communication (heartbeat, callbacks)
+- Audit logging
+- Health check
+- Comprehensive test suite
 
 ### 11.2 Test Coverage
 
@@ -595,7 +595,7 @@ RETURNING *
 - Download tests: 8 tests
 - Notification tests: 6 tests
 
-**All tests passing** ✅
+**All tests passing**
 
 ---
 
@@ -614,12 +614,12 @@ services:
       POSTGRES_PASSWORD: password
     ports:
       - "5432:5432"
-  
+
   redis:
     image: redis:7
     ports:
       - "6379:6379"
-  
+
   coordinator:
     build: .
     depends_on:
@@ -765,11 +765,11 @@ Coordinator Server là **control plane** hoàn chỉnh cho hệ thống truyền
 - **3 socket servers** (client, storage, notification)
 
 ### 15.3 Sẵn sàng production
-- ✅ Database schema hoàn chỉnh
-- ✅ All core features implemented
-- ✅ Comprehensive test coverage
-- ✅ Docker deployment ready
-- ✅ Documentation đầy đủ
+- Database schema hoàn chỉnh
+- All core features implemented
+- Comprehensive test coverage
+- Docker deployment ready
+- Documentation đầy đủ
 
 ---
 

@@ -45,16 +45,16 @@ docker-compose --profile multi-node up -d --build
 ```
 
 Script này sẽ:
-- ✓ Kiểm tra Docker đang chạy
-- ✓ Clean up containers cũ
-- ✓ Build và start services
-- ✓ Đợi PostgreSQL healthy
-- ✓ Đợi Redis healthy
-- ✓ Đợi Coordinator ready
-- ✓ Đợi Storage Node connect
-- ✓ Kiểm tra authentication
-- ✓ Kiểm tra heartbeat (PING/PONG)
-- ✓ Hiển thị logs
+- Kiểm tra Docker đang chạy
+- Clean up containers cũ
+- Build và start services
+- Đợi PostgreSQL healthy
+- Đợi Redis healthy
+- Đợi Coordinator ready
+- Đợi Storage Node connect
+- Kiểm tra authentication
+- Kiểm tra heartbeat (PING/PONG)
+- Hiển thị logs
 
 ### 3. Xem logs
 
@@ -422,7 +422,3 @@ If you encounter issues:
 3. Check network: `docker network inspect`
 4. Restart services: `docker-compose restart`
 5. Rebuild: `docker-compose up -d --build`
-
-For more details, see:
-- `STORAGE_NODE_INTEGRATION_FIX.md` - Implementation details
-- `FIX_SUMMARY_VI.md` - Vietnamese summary

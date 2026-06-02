@@ -70,7 +70,7 @@ class User:
     username: str
     email: str
     global_role: str
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         return cls(**data)
@@ -87,7 +87,7 @@ class Room:
     member_count: int
     my_role: str  # OWNER, MEMBER, VIEWER
     created_at: int
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         return cls(**data)
@@ -116,7 +116,7 @@ class File:
     uploaded_by: str
     uploaded_at: int
     version: int
-    
+
     @classmethod
     def from_dict(cls, data: dict):
         return cls(**data)
@@ -174,7 +174,7 @@ class AuthService(BaseService):
         except Exception as e:
             logger.error(f"Signup failed: {e}")
             return False
-    
+
     def login(self, username: str, password: str) -> bool:
         try:
             result = self.client.login(username, password)
@@ -183,7 +183,7 @@ class AuthService(BaseService):
         except Exception as e:
             logger.error(f"Login failed: {e}")
             return False
-    
+
     def logout(self) -> bool:
         try:
             self.client.logout()
@@ -191,7 +191,7 @@ class AuthService(BaseService):
         except Exception as e:
             logger.error(f"Logout failed: {e}")
             return False
-    
+
     def is_authenticated(self) -> bool:
         return self.client.get_token() is not None
 ```
@@ -216,7 +216,7 @@ class RoomService(BaseService):
         except Exception as e:
             logger.error(f"Failed to get rooms: {e}")
             return []
-    
+
     def create_room(self, name: str) -> Optional[Room]:
         try:
             result = self.client.create_room(name)
@@ -226,7 +226,7 @@ class RoomService(BaseService):
         except Exception as e:
             logger.error(f"Failed to create room: {e}")
             return None
-    
+
     def get_members(self, room_id: str) -> List[Member]:
         try:
             result = self.client.list_members(room_id)
@@ -235,7 +235,7 @@ class RoomService(BaseService):
         except Exception as e:
             logger.error(f"Failed to get members: {e}")
             return []
-    
+
     # ... add_member, remove_member, set_role, etc.
 ```
 
@@ -257,7 +257,7 @@ class FileService(BaseService):
         except Exception as e:
             logger.error(f"Failed to get files: {e}")
             return []
-    
+
     def get_file_detail(self, file_id: str) -> Optional[File]:
         try:
             result = self.client.file_detail(file_id)
@@ -265,7 +265,7 @@ class FileService(BaseService):
         except Exception as e:
             logger.error(f"Failed to get file detail: {e}")
             return None
-    
+
     def delete_file(self, file_id: str) -> bool:
         try:
             self.client.delete_file(file_id)
@@ -273,7 +273,7 @@ class FileService(BaseService):
         except Exception as e:
             logger.error(f"Failed to delete file: {e}")
             return False
-    
+
     # ... get_versions, etc.
 ```
 
@@ -292,11 +292,11 @@ class BackendService:
     def __init__(self, host="localhost", port=8080):
         config = BackendConfig(host=host, port=port)
         self._client = BackendClient(config)
-        
+
         self.auth = AuthService(self._client)
         self.rooms = RoomService(self._client)
         self.files = FileService(self._client)
-    
+
     def connect(self) -> bool:
         try:
             self._client.connect()
@@ -305,10 +305,10 @@ class BackendService:
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             return False
-    
+
     def disconnect(self) -> None:
         self._client.disconnect()
-    
+
     def is_connected(self) -> bool:
         return self._client.is_connected()
 ```
@@ -388,7 +388,7 @@ def on_room_created(self, room):
 # After room selection
 def on_room_selected(self, room_id: str):
     self.current_room_id = room_id
-    
+
     # Subscribe to events
     self.worker.queue_task(
         func=self.service.notifications.subscribe_room,
@@ -437,14 +437,14 @@ def test_login_success(mock_client):
         "token": "test-token",
         "expiresAt": 1234567890
     }
-    
+
     result = service.login("user", "pass")
     assert result is True
 
 def test_login_failure(mock_client):
     service = AuthService(mock_client)
     mock_client.login.side_effect = Exception("Invalid password")
-    
+
     result = service.login("user", "wrong")
     assert result is False
 ```
@@ -454,14 +454,14 @@ def test_login_failure(mock_client):
 def test_full_login_flow():
     service = BackendService()
     assert service.connect()
-    
+
     result = service.auth.login("testuser", "password123")
     assert result is True
     assert service.auth.is_authenticated()
-    
+
     rooms = service.rooms.get_rooms()
     assert isinstance(rooms, list)
-    
+
     service.disconnect()
 ```
 
@@ -525,43 +525,43 @@ def start_auto_refresh(self):
 ## File Migration Checklist
 
 ```
-✅ Protocol understanding
+Protocol understanding
   └─ TCP Socket + JSON
   └─ Frame codec (4-byte length prefix)
   └─ Request-response matching (requestId)
 
-✅ Data models created
+Data models created
   └─ User, Room, Member, File classes
   └─ Conversion from dict
 
-✅ Service layer implemented
+Service layer implemented
   └─ AuthService
   └─ RoomService
   └─ FileService
   └─ BackendService facade
 
-✅ UI integration
+UI integration
   └─ Remove all mock data references
   └─ Replace with service calls
   └─ Add loading indicators
   └─ Implement error dialogs
 
-✅ Background threading
+Background threading
   └─ AsyncWorker for non-blocking I/O
   └─ Event handlers / callbacks
   └─ Proper cleanup on exit
 
-✅ Real-time events
+Real-time events
   └─ Subscribe to room
   └─ Event callbacks registered
   └─ UI updates on events
 
-✅ Testing
+Testing
   └─ Unit tests for services
   └─ Integration tests
   └─ Manual UI testing
 
-✅ Production ready
+Production ready
   └─ Session persistence
   └─ Error handling
   └─ Timeout logic

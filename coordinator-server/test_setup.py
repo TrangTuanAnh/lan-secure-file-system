@@ -21,7 +21,7 @@ def load_test_config():
     print("\n=== Testing Configuration ===")
     try:
         config = load_config()
-        print(f"✓ Configuration loaded successfully")
+        print(f"[OK] Configuration loaded successfully")
         print(f"  Database: {config.database.host}:{config.database.port}/{config.database.name}")
         print(f"  Redis: {config.redis.host}:{config.redis.port}")
         print(f"  Server Ports: Client={config.server.client_port}, "
@@ -29,7 +29,7 @@ def load_test_config():
               f"Notification={config.server.notification_port}")
         return config
     except Exception as e:
-        print(f"✗ Configuration loading failed: {e}")
+        print(f"[FAIL] Configuration loading failed: {e}")
         return None
 
 
@@ -44,17 +44,17 @@ def check_database(config):
     try:
         db = Database(config.database)
         db.connect()
-        print(f"✓ Database connection pool created")
+        print(f"[OK] Database connection pool created")
         
         # Test query
         result = db.execute_query("SELECT 1 as test, NOW() as current_time")
-        print(f"✓ Test query successful: {result}")
+        print(f"[OK] Test query successful: {result}")
         
         db.close()
-        print(f"✓ Database connection closed")
+        print(f"[OK] Database connection closed")
         return True
     except Exception as e:
-        print(f"✗ Database test failed: {e}")
+        print(f"[FAIL] Database test failed: {e}")
         return False
 
 
@@ -69,36 +69,36 @@ def check_redis(config):
     try:
         redis_client = RedisClient(config.redis)
         redis_client.connect()
-        print(f"✓ Redis connection established")
+        print(f"[OK] Redis connection established")
         
         # Test ping
         if redis_client.ping():
-            print(f"✓ Redis ping successful")
+            print(f"[OK] Redis ping successful")
         else:
-            print(f"✗ Redis ping failed")
+            print(f"[FAIL] Redis ping failed")
             return False
         
         # Test session storage
         test_token = "test-token-123"
         test_data = {"userId": "test-user", "globalRole": "USER"}
         redis_client.set_session(test_token, test_data, 60)
-        print(f"✓ Session stored in Redis")
+        print(f"[OK] Session stored in Redis")
         
         retrieved = redis_client.get_session(test_token)
         if retrieved == test_data:
-            print(f"✓ Session retrieved successfully: {retrieved}")
+            print(f"[OK] Session retrieved successfully: {retrieved}")
         else:
-            print(f"✗ Session retrieval mismatch: expected {test_data}, got {retrieved}")
+            print(f"[FAIL] Session retrieval mismatch: expected {test_data}, got {retrieved}")
             return False
         
         redis_client.delete_session(test_token)
-        print(f"✓ Session deleted")
+        print(f"[OK] Session deleted")
         
         redis_client.close()
-        print(f"✓ Redis connection closed")
+        print(f"[OK] Redis connection closed")
         return True
     except Exception as e:
-        print(f"✗ Redis test failed: {e}")
+        print(f"[FAIL] Redis test failed: {e}")
         return False
 
 
@@ -116,7 +116,7 @@ def main():
     # Test configuration
     config = load_test_config()
     if not config:
-        print("\n✗ Setup test failed: Configuration error")
+        print("\n[FAIL] Setup test failed: Configuration error")
         sys.exit(1)
     
     # Test database
@@ -129,15 +129,15 @@ def main():
     print("\n" + "=" * 60)
     print("Test Summary")
     print("=" * 60)
-    print(f"Configuration: ✓")
-    print(f"Database: {'✓' if db_ok else '✗'}")
-    print(f"Redis: {'✓' if redis_ok else '✗'}")
+    print(f"Configuration: [OK]")
+    print(f"Database: {'[OK]' if db_ok else '[FAIL]'}")
+    print(f"Redis: {'[OK]' if redis_ok else '[FAIL]'}")
     
     if db_ok and redis_ok:
-        print("\n✓ All tests passed! Setup is complete.")
+        print("\n[OK] All tests passed! Setup is complete.")
         sys.exit(0)
     else:
-        print("\n✗ Some tests failed. Please check the errors above.")
+        print("\n[FAIL] Some tests failed. Please check the errors above.")
         sys.exit(1)
 
 

@@ -68,11 +68,11 @@ RIGHT (Do this):
     def on_login_click():
         thread = Thread(target=do_login)
         thread.start()
-    
+
     def do_login():
         result = client.login(user, pass)  # Runs in background
         queue.put(("login_result", result))
-    
+
     # In GUI: periodically check queue
     def check_queue():
         while not queue.empty():
@@ -91,37 +91,37 @@ from typing import Callable, Any, Dict
 class AsyncWorker:
     """
     Worker thread that executes tasks and returns results via queue.
-    
+
     Usage:
         worker = AsyncWorker()
         worker.start()
-        worker.queue_task(lambda: client.login("user", "pass"), 
+        worker.queue_task(lambda: client.login("user", "pass"),
                          on_success=lambda r: print(f"Logged in: {r}"))
         # In GUI event loop:
         worker.poll_results()
     """
-    
+
     def __init__(self):
         self._task_queue = queue.Queue()
         self._result_queue = queue.Queue()
         self._running = False
         self._thread = None
-    
+
     def start(self):
         """Start worker thread."""
         if self._running:
             return
-        
+
         self._running = True
         self._thread = threading.Thread(target=self._worker_loop, daemon=True)
         self._thread.start()
-    
+
     def stop(self):
         """Stop worker thread."""
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
-    
+
     def queue_task(
         self,
         func: Callable,
@@ -132,7 +132,7 @@ class AsyncWorker:
     ):
         """
         Queue a task to run in background.
-        
+
         Args:
             func: Function to execute
             args: Positional arguments
@@ -148,7 +148,7 @@ class AsyncWorker:
             "on_error": on_error
         }
         self._task_queue.put(task)
-    
+
     def _worker_loop(self):
         """Main worker loop (runs in background thread)."""
         while self._running:
@@ -156,7 +156,7 @@ class AsyncWorker:
                 task = self._task_queue.get(timeout=1)
             except queue.Empty:
                 continue
-            
+
             try:
                 result = task["func"](*task["args"], **task["kwargs"])
                 self._result_queue.put({
@@ -170,11 +170,11 @@ class AsyncWorker:
                     "error": e,
                     "callback": task["on_error"]
                 })
-    
+
     def poll_results(self):
         """
         Poll for completed tasks (call from GUI thread).
-        
+
         Executes callbacks in GUI thread context.
         """
         while True:
@@ -182,7 +182,7 @@ class AsyncWorker:
                 result = self._result_queue.get_nowait()
             except queue.Empty:
                 break
-            
+
             if result["type"] == "success":
                 if result["callback"]:
                     result["callback"](result["result"])
@@ -203,13 +203,13 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal
 class LoginWorker(QObject):
     finished = pyqtSignal(dict)  # Signal with result
     error = pyqtSignal(str)      # Signal with error message
-    
+
     def __init__(self, client, username, password):
         super().__init__()
         self.client = client
         self.username = username
         self.password = password
-    
+
     def run(self):
         try:
             result = self.client.login(self.username, self.password)
@@ -221,21 +221,21 @@ class LoginDialog(QDialog):
     def on_login_click(self):
         worker = LoginWorker(self.client, user, pass)
         thread = QThread()
-        
+
         worker.moveToThread(thread)
         worker.finished.connect(self.on_login_success)
         worker.error.connect(self.on_login_error)
-        
+
         thread.started.connect(worker.run)
         thread.finished.connect(thread.deleteLater)
-        
+
         thread.start()
-    
+
     def on_login_success(self, result):
         # This runs in GUI thread!
         self.token = result["token"]
         self.close()
-    
+
     def on_login_error(self, error_msg):
         # This runs in GUI thread!
         QMessageBox.critical(self, "Error", error_msg)
@@ -255,57 +255,57 @@ class TkinterBackendApp:
     """
     Tkinter app that uses background threads for network I/O.
     """
-    
+
     def __init__(self, root):
         self.root = root
         self.root.title("File Sharing App")
-        
+
         # Initialize backend service
         from services import BackendService
         self.service = BackendService()
-        
+
         # Create worker
         self.worker = AsyncWorker()
         self.worker.start()
-        
+
         # Create UI
         self._create_widgets()
-        
+
         # Start polling for results
         self._poll_worker()
-    
+
     def _create_widgets(self):
         """Create UI widgets."""
         # Login frame
         frame = tk.Frame(self.root)
         frame.pack(padx=20, pady=20)
-        
+
         tk.Label(frame, text="Username:").grid(row=0, column=0)
         self.username_entry = tk.Entry(frame)
         self.username_entry.grid(row=0, column=1)
-        
+
         tk.Label(frame, text="Password:").grid(row=1, column=0)
         self.password_entry = tk.Entry(frame, show="*")
         self.password_entry.grid(row=1, column=1)
-        
+
         tk.Button(
             frame,
             text="Login",
             command=self.on_login_click
         ).grid(row=2, columnspan=2)
-        
+
         self.status_label = tk.Label(self.root, text="Ready")
         self.status_label.pack()
-    
+
     def on_login_click(self):
         """Handle login button click."""
         username = self.username_entry.get()
         password = self.password_entry.get()
-        
+
         if not username or not password:
             messagebox.showerror("Error", "Enter username and password")
             return
-        
+
         # Queue login task (runs in background)
         self.worker.queue_task(
             func=self.service.auth.login,
@@ -313,24 +313,24 @@ class TkinterBackendApp:
             on_success=self.on_login_success,
             on_error=self.on_login_error
         )
-        
+
         self.status_label.config(text="Logging in...")
-    
+
     def on_login_success(self, result):
         """Callback when login succeeds (runs in GUI thread)."""
         self.status_label.config(text="Logged in!")
         messagebox.showinfo("Success", f"Token: {result.get('token')[:8]}...")
-    
+
     def on_login_error(self, error):
         """Callback when login fails (runs in GUI thread)."""
         self.status_label.config(text="Login failed")
         messagebox.showerror("Error", str(error))
-    
+
     def _poll_worker(self):
         """Poll worker for results (call periodically from GUI)."""
         self.worker.poll_results()
         self.root.after(100, self._poll_worker)  # Poll every 100ms
-    
+
     def on_closing(self):
         """Cleanup when app closes."""
         self.worker.stop()
@@ -355,7 +355,7 @@ class AsyncBackend:
         self.loop = asyncio.new_event_loop()
         self.thread = Thread(target=self.loop.run_forever, daemon=True)
         self.thread.start()
-    
+
     def call_async(self, func, *args, on_result=None):
         '''Schedule function in async loop, call callback when done'''
         future = asyncio.run_coroutine_threadsafe(
@@ -363,7 +363,7 @@ class AsyncBackend:
             self.loop
         )
         return future
-    
+
     async def _run_func(self, func, args, on_result):
         try:
             result = await self.loop.run_in_executor(
@@ -383,8 +383,8 @@ class AsyncBackend:
 
 """
 1. NEVER BLOCK THE GUI THREAD
-   ❌ result = client.login(user, pass)  # BLOCKS
-   ✅ worker.queue_task(client.login, args=(user, pass))
+   result = client.login(user, pass)  # BLOCKS
+   worker.queue_task(client.login, args=(user, pass))
 
 2. USE CALLBACKS FOR RESULTS
    - Worker threads put results in queue
@@ -430,10 +430,10 @@ class AsyncBackend:
 
 if __name__ == "__main__":
     root = tk.Tk()
-    
+
     app = TkinterBackendApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_closing)
-    
+
     root.mainloop()
 
 
