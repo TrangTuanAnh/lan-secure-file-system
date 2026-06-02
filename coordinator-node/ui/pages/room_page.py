@@ -2185,8 +2185,13 @@ class RoomPage(QWidget):
     def _on_upload_failed(self, message: str) -> None:
         self._complete_upload_status(False, message)
 
-    def _on_upload_progress(self, current: int, total: int, message: str) -> None:
-        self._show_sidebar_upload_progress(current, total, message)
+    def _on_upload_progress(self, info: object) -> None:
+        # `progress` là Signal(object): mỗi lần phát một dict tiến độ
+        # ({"percent", "detail", ...} hoặc {"percent", "done", "total", ...}).
+        data = info if isinstance(info, dict) else {}
+        percent = int(data.get("percent", 0) or 0)
+        message = data.get("detail") or f"Uploading file... {percent}%"
+        self._show_sidebar_upload_progress(percent, 100, message)
 
     def _begin_upload_status(self, message: str) -> None:
         self._upload_status_active = True
