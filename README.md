@@ -1,179 +1,105 @@
 ```text
     __    ___    _   __   _____ ______________  ______  ______   ____________    ______
    / /   /   |  / | / /  / ___// ____/ ____/ / / / __ \/ ____/  / ____/  _/ /   / ____/
-  / /   / /| | /  |/ /   \__ \/ __/ / /   / / / / /_/ / __/    / /_   / // /   / __/   
- / /___/ ___ |/ /|  /   ___/ / /___/ /___/ /_/ / _, _/ /___   / __/ _/ // /___/ /___   
-/_____/_/  |_/_/ |_/   /____/_____/\____/\____/_/ |_/_____/  /_/   /___/_____/_____/   
-                                                         
+  / /   / /| | /  |/ /   \__ \/ __/ / /   / / / / /_/ / __/    / /_   / // /   / __/
+ / /___/ ___ |/ /|  /   ___/ / /___/ /___/ /_/ / _, _/ /___   / __/ _/ // /___/ /___
+/_____/_/  |_/_/ |_/   /____/_____/\____/\____/_/ |_/_____/  /_/   /___/_____/_____/
 ```
-
 
 # LAN Secure File System
 
-Repository này chứa một hệ thống chia sẻ file an toàn trong mạng LAN với kiến trúc tách thành control plane và data plane. Mục tiêu của repo là quản lý phòng chia sẻ file, cấp quyền thành viên, khởi tạo upload/download qua Coordinator, và truyền file chunked đến Storage Node với cơ chế xác thực, kiểm tra toàn vẹn, dedup và quét virus.
+Hệ thống chia sẻ và lưu trữ file an toàn trong mạng LAN của doanh nghiệp, xây dựng trên
+nền **Socket** với kiến trúc tách **control plane** và **data plane**. Hệ thống hỗ trợ
+đăng nhập + phân quyền theo phòng, truyền file theo **chunk có resume**, **kiểm tra toàn
+vẹn (SHA-256)**, **mã hóa đường truyền (AES + RSA)**, **chống trùng nội dung (dedup)** và
+**quét virus** trước khi lưu.
 
-## Tổng quan hệ thống
+## Tổng quan
 
-Hệ thống gồm 3 khối nghiệp vụ chính:
+Hệ thống gồm 3 thành phần chạy độc lập, ghép với nhau qua một bộ message/protocol thống nhất:
 
-- `coordinator-node`: desktop client viết bằng Python + PySide6.
-- `coordinator-server`: backend control plane viết bằng Python, dùng PostgreSQL + Redis.
-- `storage-node`: data plane viết bằng Java, nhận/ghép chunk, scan file và lưu trữ.
+| Thành phần | Vai trò | Ngôn ngữ |
+|------------|---------|----------|
+| `coordinator-server` | **Control plane** — xác thực, phòng/role, metadata file, cấp ticket, notification, audit log | Python + PostgreSQL + Redis |
+| `storage-node` | **Data plane** — nhận/ghép chunk, verify hash, mã hóa, dedup, lưu trữ, quét virus | Java |
+| `coordinator-node` | **Client** desktop — đăng nhập, xem phòng/file, upload/download, theo dõi tiến trình | Python + PySide6 |
 
-Ngoài ra repo còn có:
+## Kiến trúc & luồng chạy
 
-- `docker-compose.yml`: dùng để dựng nhanh toàn bộ stack.
-- `docs/`: tài liệu phân tích, topology, docker, manual test.
-- `test-data/`: file mẫu để test upload/download.
-- `run_client.bat`: script mở desktop client trên Windows.
+Hai kênh giao tiếp được tách riêng để mỗi bên làm đúng việc của mình:
 
-## Kiến trúc và luồng chạy
+- **Control Plane** (Client <-> Coordinator): các lệnh quản trị dạng JSON — login, room, quyền, khởi tạo upload/download, subscribe notification.
+- **Data Plane** (Client <-> Storage Node): truyền dữ liệu file thật theo chunk.
 
-Lượt upload:
+**Luồng upload**
 
 1. Client đăng nhập vào `coordinator-server`.
-2. Client gọi `INIT_UPLOAD` để xin upload plan.
-3. Coordinator chọn `storage-node` khỏe nhất, tạo ticket và trả về `storageAddress`.
-4. Client kết nối trực tiếp đến `storage-node` để gửi chunk.
-5. Storage Node verify chunk/hash, finalize file, scan virus, commit file vào store.
+2. Client gọi `INIT_UPLOAD` để xin upload plan (kèm scan report).
+3. Coordinator kiểm tra quyền, kiểm tra dedup, chọn `storage-node`, cấp **HMAC ticket** và trả `storageAddress`.
+4. Client kết nối trực tiếp đến `storage-node`, gửi từng chunk.
+5. Storage Node verify hash từng chunk + toàn file, ghép file, quét virus, commit vào store.
 6. Storage Node báo `UPLOAD_COMPLETE` về Coordinator.
-7. Coordinator cập nhật metadata, audit log và phát sự kiện realtime.
+7. Coordinator cập nhật metadata, ghi audit log, phát sự kiện realtime `NEW_FILE`.
 
-Lượt download:
+**Luồng download**
 
 1. Client gọi `INIT_DOWNLOAD` lên Coordinator.
-2. Coordinator kiểm tra quyền, tạo ticket download và trả về thông tin file.
-3. Client kết nối trực tiếp đến `storage-node`.
-4. Storage Node phục vụ chunk, client ghi file streaming và verify SHA-256.
+2. Coordinator kiểm tra quyền (hoặc share token), cấp ticket download, trả thông tin file.
+3. Client kết nối trực tiếp đến `storage-node`, nhận chunk theo plan.
+4. Client ghi file streaming và verify SHA-256 sau khi tải xong.
 
 ## Cấu trúc repo
 
 ```text
 .
-|-- coordinator-node/        # Desktop client
-|   |-- main.py
-|   |-- config.py
-|   |-- network/
-|   |-- services/
-|   |-- ui/
-|   `-- assets/
-|-- coordinator-server/      # Control plane backend
-|   |-- main.py
-|   |-- auth/
-|   |-- room/
-|   |-- file/
-|   |-- upload/
-|   |-- download/
-|   |-- notification/
-|   |-- storage_node/
-|   |-- protocol/
-|   `-- alembic/
-|-- storage-node/            # Data plane storage service
-|   |-- src/main/java/storagenode/
-|   |-- antivirus/
-|   `-- docs/
-|-- docs/                    # Tài liệu tổng hợp cấp repo
-|-- test-data/               # Dữ liệu test
-|-- docker-compose.yml
-|-- run_client.bat
-`-- test-integration.sh
+|-- coordinator-server/     # Control plane (Python): auth, room, file, upload,
+|                           #   download, notification, ticket, protocol, alembic
+|-- storage-node/           # Data plane (Java): network, protocol, crypto,
+|                           #   session, storage, antivirus, monitor
+|-- coordinator-node/       # Desktop client (Python + PySide6)
+|-- docs/                   # Tài liệu kiến trúc & vận hành cấp hệ thống
+|-- test-data/              # Dữ liệu mẫu để test upload/download
+|-- docker-compose.yml      # Dựng nhanh toàn bộ stack
+|-- run_client.bat / .sh    # Mở desktop client
+|-- test-integration.sh     # Test tích hợp end-to-end
+`-- REPORT.md               # Báo cáo chi tiết toàn hệ thống
 ```
 
-## Mô tả nhanh từng thành phần
+## Yêu cầu môi trường
 
-### 1. `coordinator-node`
+- **Java** 17+ và **Maven** (cho `storage-node`)
+- **Python** 3.11+ (cho `coordinator-server` và `coordinator-node`)
+- **PostgreSQL** 14+ và **Redis** 6+
+- **ClamAV / clamd** (quét virus) — hoặc dùng `NoOpAntivirusScanner` khi demo
+- **Docker** + **Docker Compose** (tùy chọn, để dựng nhanh)
 
-Client desktop cho người dùng cuối:
+## Cách chạy
 
-- Đăng nhập, đăng ký.
-- Xem overview và danh sách room.
-- Tạo room nếu có quyền `ADMIN`.
-- Xem thành viên, thêm/xóa/sửa role trong room.
-- Upload/download file.
-- Xem metadata file, version, trạng thái scan.
-- Chỉnh một số setting giao diện và hành vi an toàn local.
-
-### 2. `coordinator-server`
-
-Backend trung tâm:
-
-- Xác thực người dùng, quản lý session.
-- Quản lý room, member, role.
-- Quản lý metadata file và version.
-- Khởi tạo upload/download plan.
-- Chọn storage node cho upload.
-- Tạo và verify ticket.
-- Broadcast sự kiện realtime.
-- Ghi audit log.
-- Theo dõi heartbeat storage node.
-
-### 3. `storage-node`
-
-Nơi xử lý data plane:
-
-- Nhận file theo chunk qua TCP socket.
-- Resume upload.
-- Verify hash từng chunk và toàn file.
-- Quét virus với ClamAV/clamd.
-- Lưu file vào store và hỗ trợ dedup.
-- Phục vụ download theo chunk.
-- Kết nối control plane để auth, ping, gửi manifest và thông báo kết quả upload.
-
-## Cách sử dụng
-
-### Chạy bằng Docker Compose
-
-Tại thư mục gốc:
+### Dựng nhanh bằng Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-Mặc định stack sẽ khởi tạo:
-
-- `postgres` trên port `5432`
-- `redis` trên port `6379`
-- `coordinator-server` trên port `8080`, `8081`, `8082`
-- `storage-node-1` trên port `9001`
-- `clamd-storage-node-1`
-
-Nếu muốn mở thêm storage node thứ hai:
+Stack mặc định gồm: `postgres` (5432), `redis` (6379), `coordinator-server`
+(8080-8082), `storage-node-1` (9001) và `clamd`. Mở thêm node thứ hai:
 
 ```bash
 docker compose --profile multi-node up --build
 ```
 
-### Chạy desktop client
-
-Trên Windows:
-
-```bat
-run_client.bat
-```
-
-Trên Linux:
-```sh
-chmod +x run_client.sh
-./run_client.sh
-```
-Script này sẽ chuyển vào `coordinator-node/` và chạy:
-
-```bat
-pythonw main.py
-```
-
 ### Chạy riêng từng thành phần
 
-#### Coordinator Server
+**Coordinator Server**
 
 ```bash
 cd coordinator-server
+pip install -r requirements.txt
+# cấu hình PostgreSQL/Redis qua .env (xem .env.example)
 python main.py
 ```
 
-Cần cấu hình PostgreSQL và Redis phù hợp qua `.env` hoặc environment variables.
-
-#### Storage Node
+**Storage Node**
 
 ```bash
 cd storage-node
@@ -181,34 +107,59 @@ mvn clean package
 java -jar target/storage-node-1.0.0.jar storage-node.properties
 ```
 
-#### Coordinator Node
+**Desktop Client**
 
 ```bash
-cd coordinator-node
-python main.py
+# Windows
+run_client.bat
+# Linux/macOS
+./run_client.sh
 ```
 
-## Công nghệ chính
+## Tính năng chính
 
-- Frontend desktop: Python, PySide6
-- Backend control plane: Python
-- Data plane: Java
-- Database: PostgreSQL
-- Cache/ticket/session: Redis
-- Antivirus: ClamAV / clamd
-- Đồng bộ và truyền thông: TCP socket protocol tự định nghĩa
+- Đăng ký / đăng nhập, password lưu dạng **hash + salt**, session token.
+- Phân quyền toàn cục `ADMIN` và theo phòng `OWNER | MEMBER | VIEWER`.
+- Upload/download qua socket, truyền theo **chunk 512KB** có **resume** khi rớt mạng.
+- **Toàn vẹn**: SHA-256 từng chunk và toàn file.
+- **Mã hóa đường truyền**: AES-256-CBC cho data, trao khóa bằng RSA (mã hóa lai).
+- **Ticket HMAC-SHA256** do Coordinator cấp, Storage Node tự verify.
+- **Dedup** theo nội dung (content-addressed storage theo SHA-256).
+- **Quét virus** trước khi lưu (ClamAV).
+- **Thông báo realtime** khi có file mới, **share token** có thời hạn, **audit log**.
 
-## Tài liệu bổ sung
+## Tài liệu
 
-- `REPORT.md`: báo cáo chi tiết về tất cả node, giao tiếp và giao diện.
-- `docs/SYSTEM_TOPOLOGY_AND_DATA_FLOW_VI.md`: topology và data flow.
-- `docs/DOCKER_SETUP.md`: hướng dẫn dựng Docker.
-- `docs/MANUAL_TEST_GUIDE.md`: kiểm thử thủ công.
-- `storage-node/docs/DATA_PLANE_PROTOCOL.md`: protocol data plane.
+**Hệ thống**
 
-## Ghi chú hiện trạng
+- [`REPORT.md`](REPORT.md) — báo cáo chi tiết toàn hệ thống
+- [`docs/SYSTEM_TOPOLOGY_AND_DATA_FLOW_VI.md`](docs/SYSTEM_TOPOLOGY_AND_DATA_FLOW_VI.md) — topology & data flow
+- [`docs/SYSTEM_IO_FLOWS_VI.md`](docs/SYSTEM_IO_FLOWS_VI.md) — luồng I/O chi tiết
+- [`docs/MULTITHREADING_VI.md`](docs/MULTITHREADING_VI.md) — mô hình đa luồng
+- [`docs/LOAD_BALANCER_VI.md`](docs/LOAD_BALANCER_VI.md) — cân bằng tải storage node
+- [`docs/DOCKER_SETUP.md`](docs/DOCKER_SETUP.md) — hướng dẫn dựng Docker
+- [`docs/MANUAL_TEST_GUIDE.md`](docs/MANUAL_TEST_GUIDE.md) — kiểm thử thủ công
 
-- Repo hiện tập trung rất rõ vào luồng upload/download an toàn trong LAN.
-- `coordinator-server` là nơi quyết định metadata, phân quyền và phân bổ node.
-- `storage-node` là nơi xử lý file thực tế.
-- `coordinator-node` đã có giao diện desktop khá đầy đủ cho demo và vận hành cơ bản.
+**Storage Node (data plane)**
+
+- [`storage-node/docs/DATA_PLANE_PROTOCOL.md`](storage-node/docs/DATA_PLANE_PROTOCOL.md) — giao thức data plane
+- [`storage-node/docs/CHUNK_FORMAT.md`](storage-node/docs/CHUNK_FORMAT.md) — định dạng chunk & lưu trữ
+- [`storage-node/docs/STORAGE_NODE_ARCHITECTURE_REPORT.md`](storage-node/docs/STORAGE_NODE_ARCHITECTURE_REPORT.md) — kiến trúc storage node
+
+**Coordinator Server & Client**
+
+- [`coordinator-server/README.md`](coordinator-server/README.md) - [`coordinator-server/SETUP.md`](coordinator-server/SETUP.md)
+- [`coordinator-node/docs/BACKEND_API_REFERENCE.md`](coordinator-node/docs/BACKEND_API_REFERENCE.md) — API reference
+- [`coordinator-node/docs/FRONTEND_INTEGRATION_GUIDE.md`](coordinator-node/docs/FRONTEND_INTEGRATION_GUIDE.md) — tích hợp client
+
+## Phân chia công việc
+
+Hệ thống được chia thành ba khối dọc khá độc lập, nối với nhau qua contract message/protocol đã thống nhất:
+
+- **Coordinator Server** — control plane, database, auth & phân quyền, metadata, notification, share token, audit.
+- **Storage Node** — data plane, truyền chunk, resume, hash, mã hóa, dedup, lưu trữ.
+- **Client** — giao diện người dùng, luồng upload/download, virus scan local, realtime.
+
+## Công nghệ
+
+Python · PySide6 · Java · PostgreSQL · Redis · ClamAV · TCP socket protocol tự định nghĩa · Docker

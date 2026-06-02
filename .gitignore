@@ -12,6 +12,7 @@ desktop.ini
 .classpath
 .project
 .settings/
+.kiro/
 
 # Java / Maven build outputs
 **/target/
@@ -21,12 +22,24 @@ desktop.ini
 *.ear
 dependency-reduced-pom.xml
 
-# Python cache/build outputs
+# Python virtual environments
+.venv/
+.venv-win/
+venv/
+env/
+ENV/
+
+# Python cache / build outputs
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# PyInstaller / packaged app output
+build/
+dist/
+Secure File System/
 
 # Logs and runtime artifacts
 *.log
@@ -41,7 +54,8 @@ storage-node/logs/
 # Test artifacts
 **/surefire-reports/
 **/*.dumpstream
-.kiro/
-".env" 
-"*.env" 
-"!.env.example" 
+
+# Secrets / environment
+.env
+*.env
+!.env.example
