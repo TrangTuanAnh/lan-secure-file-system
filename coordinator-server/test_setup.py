@@ -25,8 +25,7 @@ def load_test_config():
         print(f"  Database: {config.database.host}:{config.database.port}/{config.database.name}")
         print(f"  Redis: {config.redis.host}:{config.redis.port}")
         print(f"  Server Ports: Client={config.server.client_port}, "
-              f"Storage={config.server.storage_port}, "
-              f"Notification={config.server.notification_port}")
+              f"Storage={config.server.storage_port}")
         return config
     except Exception as e:
         print(f"[FAIL] Configuration loading failed: {e}")

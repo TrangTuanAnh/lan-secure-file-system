@@ -176,9 +176,6 @@ class AppConfig:
     backend_tls_insecure: bool
     backend_tls_server_name: str
 
-    notification_host: str
-    notification_port: int
-
     storage_host: str
     storage_port: int
     admin_usernames: FrozenSet[str]
@@ -231,9 +228,6 @@ class AppConfig:
             ),
             backend_tls_insecure=_get_bool("BACKEND_TLS_INSECURE", False),
             backend_tls_server_name=_get_str("BACKEND_TLS_SERVER_NAME", ""),
-
-            notification_host=_get_str("NOTIFICATION_HOST", "localhost"),
-            notification_port=_get_int("NOTIFICATION_PORT", 8082),
 
             storage_host=_get_str("STORAGE_HOST", "localhost"),
             storage_port=_get_int("STORAGE_PORT", 9001),

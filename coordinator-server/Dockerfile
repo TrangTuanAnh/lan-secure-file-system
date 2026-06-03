@@ -27,8 +27,6 @@ RUN mkdir -p /app/logs
 EXPOSE 8080
 # Storage node communication port
 EXPOSE 8081
-# Notification service port
-EXPOSE 8082
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

@@ -263,8 +263,7 @@ def main():
     
     logger.info("Coordinator Server initialized successfully")
     logger.info(f"Configuration: Client Port={config.server.client_port}, "
-                f"Storage Port={config.server.storage_port}, "
-                f"Notification Port={config.server.notification_port}")
+                f"Storage Port={config.server.storage_port}")
     logger.info("Server is ready to accept connections")
     
     # Keep main thread alive (cross-platform: works on Windows too)

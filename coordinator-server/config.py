@@ -43,7 +43,6 @@ class ServerConfig:
     """Server ports and timeouts configuration."""
     client_port: int
     storage_port: int
-    notification_port: int
     session_ttl_seconds: int
     upload_ticket_ttl_seconds: int
     download_ticket_ttl_seconds: int
@@ -110,7 +109,6 @@ def load_config() -> Config:
     server = ServerConfig(
         client_port=int(os.getenv('SERVER_CLIENT_PORT', '8080')),
         storage_port=int(os.getenv('SERVER_STORAGE_PORT', '8081')),
-        notification_port=int(os.getenv('SERVER_NOTIFICATION_PORT', '8082')),
         session_ttl_seconds=int(os.getenv('SESSION_TTL_SECONDS', '86400')),
         upload_ticket_ttl_seconds=int(os.getenv('UPLOAD_TICKET_TTL_SECONDS', '1800')),
         download_ticket_ttl_seconds=int(os.getenv('DOWNLOAD_TICKET_TTL_SECONDS', '900')),
