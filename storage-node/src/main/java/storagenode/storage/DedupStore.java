@@ -53,7 +53,18 @@ public class DedupStore {
 
     /** Register a file in the dedup store. */
     public void register(String sha256, Path filePath) {
-        registry.put(sha256.toLowerCase(), filePath.toString());
+        String key = sha256.toLowerCase();
+        String newPath = filePath.toString();
+        // BUGFIX M25: make register idempotent. Concurrent identical uploads
+        // both reach here; without this check each one rewrites the whole
+        // registry (TOCTOU + redundant disk writes). If the sha is already
+        // mapped to this same path and the file is on disk, there is nothing
+        // to do.
+        String existing = registry.get(key);
+        if (newPath.equals(existing) && Files.exists(filePath)) {
+            return;
+        }
+        registry.put(key, newPath);
         save();
         LOG.info("Dedup registered: " + sha256 + " -> " + filePath);
     }
@@ -94,10 +105,28 @@ public class DedupStore {
     }
 
     private synchronized void save() {
-        try (Writer w = Files.newBufferedWriter(registryFile)) {
-            GSON.toJson(registry, w);
+        // BUGFIX M24: write to a sibling temp file then atomically move it over
+        // the registry. The old in-place truncate-write meant a crash mid-write
+        // could corrupt or wipe the entire dedup registry.
+        Path tmp = registryFile.resolveSibling(registryFile.getFileName() + ".tmp");
+        try {
+            try (Writer w = Files.newBufferedWriter(tmp)) {
+                GSON.toJson(registry, w);
+            }
+            moveWithAtomicFallback(tmp, registryFile);
         } catch (IOException e) {
             LOG.warning("Failed to save dedup registry: " + e.getMessage());
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {}
+        }
+    }
+
+    private static void moveWithAtomicFallback(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 }

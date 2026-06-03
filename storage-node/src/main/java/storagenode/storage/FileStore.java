@@ -99,7 +99,12 @@ public class FileStore {
         Path dir = tempDir.resolve(sessionId);
         // Mỗi khối được lưu thành một file riêng: chunk_0, chunk_1, ...
         Path chunkFile = dir.resolve("chunk_" + chunkIndex);
-        Files.write(chunkFile, data);
+        // Ghi ra file tạm rồi di chuyển nguyên tử đè lên chunk_k. Nếu nút bị
+        // dừng giữa lúc ghi, sẽ không bao giờ thấy một chunk_k ngắn/lỗi bị
+        // bước phục hồi tin là khối hoàn chỉnh.
+        Path chunkTmp = dir.resolve("chunk_" + chunkIndex + ".tmp");
+        Files.write(chunkTmp, data);
+        moveWithAtomicFallback(chunkTmp, chunkFile);
     }
 
     /** Đọc một khối từ thư mục tạm của phiên tải lên. */

@@ -271,6 +271,11 @@ public class ControlPlaneClient {
             .set("storageAddress", storageAddress)
             .set("manifest", manifest);
 
+        Long freeBytes = currentFreeBytes();
+        if (freeBytes != null) {
+            authMsg.set("freeBytes", freeBytes);
+        }
+
         LOG.info("Sending STORAGE_AUTH with manifest: " + manifest.size() + " file(s)");
 
         sendMessage(authMsg);
@@ -334,8 +339,34 @@ public class ControlPlaneClient {
      */
     private void sendPing() throws IOException {
         Message ping = new Message(MessageType.PING);
+        Long freeBytes = currentFreeBytes();
+        if (freeBytes != null) {
+            ping.set("freeBytes", freeBytes);
+        }
         sendMessage(ping);
         LOG.fine("PING sent to Coordinator");
+    }
+
+    /**
+     * Usable free space (bytes) on the data volume, reported to the Coordinator
+     * so it can apply capacity-aware load balancing. Returns null when the data
+     * directory is unavailable so the Coordinator treats capacity as unknown.
+     */
+    private Long currentFreeBytes() {
+        if (fileStore == null) {
+            return null;
+        }
+        try {
+            // BUGFIX M26: report the actual usable space, including 0. A
+            // genuinely full disk (usable==0) must not read as "unknown"
+            // (= infinite capacity) or it would defeat the Coordinator's
+            // min_free_bytes safety filter exactly when it matters most.
+            // The catch below still returns null on a real error.
+            long usable = fileStore.getDataDir().toFile().getUsableSpace();
+            return usable;
+        } catch (Exception e) {
+            return null;
+        }
     }
     
     /**

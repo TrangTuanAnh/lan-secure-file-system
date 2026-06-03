@@ -312,6 +312,26 @@ public class ClientHandler implements Runnable {
         // Nếu phiên đã tồn tại, đây là tải lên tiếp sau khi mất kết nối.
         UploadSession existing = sessionManager.getUploadSession(sessionId);
         if (existing != null) {
+            // HARDENING: một yêu cầu mở lại phiên phải khớp siêu dữ liệu của
+            // phiên đang có. Nếu sha256Whole/fileSize/totalChunks khác đi thì
+            // từ chối (trừ khi phiên cũ đã FAILED), tránh việc nối tiếp một
+            // phiên với metadata mâu thuẫn. Resume hợp lệ luôn gửi metadata
+            // giống hệt nên không bị ảnh hưởng.
+            if (existing.getStatus() != UploadSession.Status.FAILED) {
+                boolean shaMismatch = sha256Whole == null
+                        || !sha256Whole.equalsIgnoreCase(existing.getSha256Whole());
+                boolean sizeMismatch = fileSize != existing.getFileSize();
+                boolean chunksMismatch = totalChunks != existing.getTotalChunks();
+                if (shaMismatch || sizeMismatch || chunksMismatch) {
+                    sendError("SESSION_METADATA_MISMATCH",
+                            "Re-open metadata does not match existing upload session");
+                    LOG.warning("Rejected re-open of session " + sessionId +
+                            " due to metadata mismatch: shaMismatch=" + shaMismatch +
+                            " sizeMismatch=" + sizeMismatch +
+                            " chunksMismatch=" + chunksMismatch);
+                    return;
+                }
+            }
             // Trả cho máy khách danh sách khối còn thiếu để chỉ gửi lại phần thiếu.
             List<Integer> missing = existing.getMissingChunks();
             Message resp = Message.ok(MessageType.OPEN_UPLOAD_RESP)

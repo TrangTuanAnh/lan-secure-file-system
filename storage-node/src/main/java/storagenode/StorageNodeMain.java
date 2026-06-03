@@ -6,6 +6,7 @@ import storagenode.antivirus.NoOpAntivirusScanner;
 import storagenode.config.NodeConfig;
 import storagenode.crypto.RSAKeyExchange;
 import storagenode.monitor.StorageMonitor;
+import storagenode.protocol.FrameCodec;
 import storagenode.network.CoordinatorClient;
 import storagenode.network.TlsConfig;
 import storagenode.network.StorageServer;
@@ -45,6 +46,24 @@ public class StorageNodeMain {
             // 1. Load configuration
             LOG.info("Loading configuration from: " + configFile);
             NodeConfig config = new NodeConfig(configFile);
+
+            // 1b. Validate chunk.size against the frame data cap. Encrypted
+            // chunks add GCM magic+nonce+tag overhead (64 bytes of headroom);
+            // if chunk.size is raised near/above MAX_DATA_SIZE, uploads would
+            // hard-fail with an opaque framing error. Fail fast with a clear
+            // message instead.
+            int chunkSize = config.getChunkSize();
+            if (chunkSize <= 0) {
+                throw new IllegalArgumentException(
+                    "chunk.size must be > 0, got: " + chunkSize);
+            }
+            if (chunkSize + 64 > FrameCodec.MAX_DATA_SIZE) {
+                throw new IllegalArgumentException(
+                    "chunk.size (" + chunkSize + ") is too large: chunk.size + 64 bytes"
+                    + " of encryption overhead must not exceed FrameCodec.MAX_DATA_SIZE ("
+                    + FrameCodec.MAX_DATA_SIZE + "). Lower chunk.size to at most "
+                    + (FrameCodec.MAX_DATA_SIZE - 64) + " bytes.");
+            }
 
             // 2. Setup logging
             setupLogging(config);

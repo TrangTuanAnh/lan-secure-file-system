@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
 import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -126,11 +127,20 @@ public class Message {
         return Boolean.parseBoolean(v.toString());
     }
 
-    @SuppressWarnings("unchecked")
     public List<Double> getNumberList(String key) {
+        // BUGFIX M23: a header list may hold Integer (built in-process, e.g.
+        // missingChunks) or Double (parsed from JSON over the wire). The old
+        // blind (List<Double>) cast threw ClassCastException when iterated as
+        // Double. Convert each element via Number.doubleValue() instead.
         Object v = headers.get(key);
-        if (v instanceof List) return (List<Double>) v;
-        return null;
+        if (!(v instanceof List)) {
+            return null;
+        }
+        List<Double> result = new ArrayList<>();
+        for (Object e : (List<?>) v) {
+            result.add(((Number) e).doubleValue());
+        }
+        return result;
     }
 
     // ── Serialization helpers ──

@@ -23,7 +23,8 @@ public class FrameCodec {
     // Giới hạn phần đầu để tránh máy khách gửi siêu dữ liệu quá lớn.
     private static final int MAX_HEADER_SIZE = 16 * 1024;
     // Giới hạn phần dữ liệu; lớn hơn khối mặc định 512KB để đủ chứa dữ liệu mã hóa.
-    private static final int MAX_DATA_SIZE   = 2 * 1024 * 1024;
+    // Công khai để lúc khởi động có thể kiểm tra chunk.size cấu hình không vượt quá giới hạn khung.
+    public static final int MAX_DATA_SIZE   = 2 * 1024 * 1024;
 
     // ────────── GHI KHUNG RA SOCKET ──────────
 
