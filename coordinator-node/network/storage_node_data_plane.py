@@ -371,10 +371,17 @@ class StorageNodeDataPlaneClient:
                 else:
                     chunk_indexes = list(range(total_chunks))
 
-                # Khi resume, một số khối đã có sẵn trên node. Tính sẵn để phần
-                # trăm phản ánh tiến độ của CẢ file chứ không chỉ phần còn lại.
-                already_done_chunks = max(0, total_chunks - len(chunk_indexes))
-                bytes_sent = min(already_done_chunks * chunk_size, file_size)
+                # Khi resume, một số khối đã có sẵn trên node. Cộng đúng kích
+                # thước thật của từng khối đã xong (khối cuối có thể không đầy)
+                # để phần trăm phản ánh tiến độ của CẢ file, không chỉ phần còn
+                # lại — tránh nhảy hoặc đứng phần trăm khi khối thiếu nằm giữa file.
+                missing_set = set(chunk_indexes)
+                already_done_chunks = max(0, total_chunks - len(missing_set))
+                bytes_sent = sum(
+                    min(chunk_size, file_size - index * chunk_size)
+                    for index in range(total_chunks)
+                    if index not in missing_set
+                )
 
                 # Mở file một lần, sau đó seek tới từng vị trí khối để đọc.
                 # Cách này tránh mở/đóng file lặp lại và vẫn giữ RAM ổn định.
@@ -484,6 +491,11 @@ class StorageNodeDataPlaneClient:
                     or 0
                 )
 
+                # File rỗng (0 khối): không có gì để tải, không chờ DOWNLOAD_COMPLETE;
+                # tính toàn vẹn vẫn do kiểm tra hash toàn file bên dưới đảm bảo.
+                if total_chunks <= 0:
+                    download_complete = True
+
                 for index in range(total_chunks):
                     # Yêu cầu nút lưu trữ gửi đúng khối theo chỉ số index.
                     _send_frame(
@@ -515,9 +527,15 @@ class StorageNodeDataPlaneClient:
                         progress_callback(index + 1, total_chunks, bytes_written, total_bytes)
 
                     if index == total_chunks - 1:
-                        complete_header, _ = _recv_frame(sock)
-                        if complete_header.get("type") == "DOWNLOAD_COMPLETE":
-                            download_complete = True
+                        # Khung DOWNLOAD_COMPLETE chỉ là tín hiệu; dữ liệu đã nhận đủ
+                        # và được verify hash. Nếu node không gửi (hoặc trễ) thì bỏ
+                        # qua, tránh treo tới hết socket timeout.
+                        try:
+                            complete_header, _ = _recv_frame(sock)
+                            if complete_header.get("type") == "DOWNLOAD_COMPLETE":
+                                download_complete = True
+                        except OSError:
+                            pass
         except socket.gaierror as exc:
             raise DataPlaneError(f"Cannot connect to storage node at {host}:{port} ({exc})") from exc
         except OSError as exc:

@@ -482,8 +482,8 @@ class NotificationService(BaseService):
         self.client.on_event("MEMBER_REMOVED", callback)
     
     def on_member_role_changed(self, callback: Callable) -> None:
-        """Register callback for MEMBER_ROLE_CHANGED events."""
-        self.client.on_event("MEMBER_ROLE_CHANGED", callback)
+        """Register callback for ROLE_UPDATED events (the event the server emits)."""
+        self.client.on_event("ROLE_UPDATED", callback)
     
     def get_subscribed_rooms(self) -> set:
         """Get currently subscribed rooms."""

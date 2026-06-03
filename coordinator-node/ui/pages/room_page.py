@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -14,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtCore import QObject, QElapsedTimer, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QElapsedTimer, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import (
     QApplication,
@@ -895,19 +896,6 @@ class FileUploadWorker(QObject):
             if service and service.is_connected():
                 service.disconnect()
 
-    def _emit_upload_progress(self, uploaded_chunks: int, total_chunks: int) -> None:
-        total = max(1, int(total_chunks or 0))
-        current = max(0, min(int(uploaded_chunks or 0), total))
-        percent = int((current / total) * 100) if total else 0
-        self.progress.emit(
-            {
-                "percent": percent,
-                "detail": f"Uploading chunks... {percent}%",
-                "current_chunks": current,
-                "total_chunks": total,
-            }
-        )
-
     @staticmethod
     def _format_init_upload_error(exc: ValueError, file_path: str) -> str:
         error_text = str(exc)
@@ -987,6 +975,78 @@ class FileDownloadWorker(QObject):
 _MIN_UPLOAD_STATUS_MS = 3000
 
 
+class RoomNotificationListener(QObject):
+    """Giữ một kết nối realtime tới Coordinator trong lúc một phòng đang mở.
+
+    Khi Coordinator đẩy sự kiện (NEW_FILE, FILE_DELETED, MEMBER_ADDED/REMOVED,
+    ROLE_UPDATED) cho phòng này, phát tín hiệu ``room_event`` để trang tự làm
+    mới. Callback từ SDK chạy trên thread listener nền; ``room_event`` là Signal
+    nên Qt tự xếp hàng (queued) sang UI thread — không bao giờ đụng widget từ
+    thread nền. Mọi lỗi (không kết nối được, mất kết nối) đều được nuốt + log:
+    trang vẫn hoạt động bình thường với nút refresh thủ công.
+    """
+
+    room_event = Signal(str, dict)
+
+    _EVENTS = ("NEW_FILE", "FILE_DELETED", "MEMBER_ADDED", "MEMBER_REMOVED", "ROLE_UPDATED")
+
+    def __init__(
+        self,
+        runtime: DashboardRuntimeConfig,
+        token: str,
+        room_id: str,
+        parent: Optional[QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._runtime = runtime
+        self._token = token
+        self._room_id = room_id
+        self._service: Optional[BackendService] = None
+        self._stopped = False
+
+    def start(self) -> None:
+        """Thiết lập kết nối ở thread nền vì connect() có thể chặn."""
+        threading.Thread(target=self._run, name="room-notif", daemon=True).start()
+
+    def _run(self) -> None:
+        try:
+            service = BackendService(self._runtime.to_backend_config())
+            service.connect()
+            if self._token:
+                service._client.set_token(self._token)
+            # Đăng ký callback trước khi subscribe để không bỏ lỡ sự kiện đầu tiên.
+            for event_type in self._EVENTS:
+                service._client.on_event(
+                    event_type,
+                    lambda payload, et=event_type: self._on_sdk_event(et, payload),
+                )
+            service.notifications.subscribe_room(self._room_id)
+            if self._stopped:
+                service.disconnect()
+                return
+            self._service = service
+            logger.info("Room notifications active for room=%s", self._room_id)
+        except Exception as exc:
+            logger.warning("Room notifications unavailable for room=%s: %s", self._room_id, exc)
+
+    def _on_sdk_event(self, event_type: str, payload: Any) -> None:
+        if self._stopped:
+            return
+        try:
+            self.room_event.emit(event_type, dict(payload) if isinstance(payload, dict) else {})
+        except Exception:
+            pass
+
+    def stop(self) -> None:
+        self._stopped = True
+        service, self._service = self._service, None
+        if service is not None:
+            try:
+                service.disconnect()
+            except Exception:
+                pass
+
+
 class RoomPage(QWidget):
     """Primary room content focused on secure file management."""
 
@@ -1034,6 +1094,7 @@ class RoomPage(QWidget):
         self._upload_worker: Optional[FileUploadWorker] = None
         self._download_thread: Optional[QThread] = None
         self._download_worker: Optional[FileDownloadWorker] = None
+        self._notif_listener: Optional[RoomNotificationListener] = None
 
         self._members: list[dict[str, Any]] = []
         self._files: list[dict[str, Any]] = []
@@ -1054,6 +1115,7 @@ class RoomPage(QWidget):
         self._build_ui()
         self._apply_styles()
         self.reload_room_data()
+        self._start_notifications()
 
     @property
     def room_id(self) -> str:
@@ -1576,6 +1638,28 @@ class RoomPage(QWidget):
         self._data_thread.finished.connect(self._cleanup_data_thread)
         self._data_thread.start()
 
+    def _start_notifications(self) -> None:
+        """Bật cập nhật realtime cho phòng đang mở. Lỗi ở đây không làm hỏng trang."""
+        room_id = self.room_id
+        if not room_id:
+            return
+        try:
+            listener = RoomNotificationListener(self._runtime, self._token, room_id, parent=self)
+            listener.room_event.connect(self._on_room_event)
+            listener.start()
+            self._notif_listener = listener
+        except Exception as exc:
+            logger.warning("Could not start room notifications: %s", exc)
+
+    @Slot(str, dict)
+    def _on_room_event(self, event_type: str, payload: dict) -> None:
+        # Chạy trên UI thread (tín hiệu queued). Chỉ làm mới khi sự kiện đúng phòng này.
+        event_room = str(payload.get("roomId") or payload.get("room_id") or "")
+        if event_room and event_room != self.room_id:
+            return
+        logger.info("Realtime event %s for room=%s -> reload", event_type, self.room_id)
+        self.reload_room_data()
+
     def _is_file_uploader(self, file_data: dict[str, Any]) -> bool:
         uploader_id = str(file_data.get("uploader_id") or "").strip()
         if uploader_id and self._current_user_id:
@@ -1662,6 +1746,9 @@ class RoomPage(QWidget):
         self._set_loading_state(False)
         self.top_bar.set_server_status("Offline", "offline")
         self.top_bar.set_subtitle("Unable to load room inventory.")
+        upper = (message or "").upper()
+        if "INVALID_TOKEN" in upper or "AUTH_REQUIRED" in upper:
+            message = "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại."
         self.error_toast.show_error(message)
         self._members = []
         self._files = []
@@ -2311,6 +2398,10 @@ class RoomPage(QWidget):
         self._download_worker = None
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        listener = getattr(self, "_notif_listener", None)
+        if listener is not None:
+            listener.stop()
+            self._notif_listener = None
         for thread_name in (
             "_data_thread",
             "_detail_thread",
