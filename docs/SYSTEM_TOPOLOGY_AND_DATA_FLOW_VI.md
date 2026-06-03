@@ -11,7 +11,7 @@ Hệ thống được thiết kế theo mô hình phân tách **Control Plane** 
 ### Sơ đồ Topology
 
 - **Client Tier**: Bao gồm Client / Frontend. Giao tiếp qua các luồng độc lập:
-  - Kết nối đến Coordinator qua Cổng 8080 (Auth, File Meta, Init) và 8082 (Notifications/Events).
+  - Kết nối đến Coordinator qua Cổng 8080 cho toàn bộ control plane (Auth, File Meta, Init); sự kiện realtime (Notifications/Events) được đẩy ngược trên chính kết nối 8080 này, không có cổng riêng.
   - Kết nối trực tiếp đến Storage Nodes qua Cổng 9001, 9002... để lấy và đẩy trực tiếp (Upload/Download) Data Chunks.
 - **Control Plane**: Bao gồm Coordinator Server (Python).
   - Tương tác với PostgreSQL (lưu Metadata, Users, Rooms) và Redis Cache (lưu Tokens, Sessions).
@@ -23,12 +23,12 @@ Hệ thống được thiết kế theo mô hình phân tách **Control Plane** 
 ### Các thành phần chính
 
 1.  **Coordinator Server (Control Plane - Python):**
-    *   Cổng giao tiếp mặc định: `:8080` (Client), `:8081` (Storage Node), `:8082` (Notifications).
+    *   Cổng giao tiếp mặc định: `:8080` (Client, gồm cả sự kiện realtime), `:8081` (Storage Node).
     *   Nhiệm vụ: Quản lý Authentication (Redis token), Authorization (Quyền truy cập phòng, chia sẻ file bằng share token), Metadata file (PostgreSQL).
     *   **Không** lưu trữ nội dung file thực tế, chỉ cấp "Sổ thông hành" (HMAC Ticket) cho Client tiếp cận Data Plane.
 2.  **Storage Node (Data Plane - Java):**
     *   Cổng giao tiếp mặc định: `:9001`, `:9002`...
-    *   Nhiệm vụ: Lắng nghe kết nối TCP Socket trực tiếp từ Client để xử lý UPLOAD / DOWNLOAD từng Chunk (Mã hoá RSA + AES, toàn vẹn SHA-256).
+    *   Nhiệm vụ: Lắng nghe kết nối TCP Socket trực tiếp từ Client để xử lý UPLOAD / DOWNLOAD từng Chunk (mã hóa AES-256-GCM, khóa phiên trao đổi qua ECDH P-256 + ML-KEM-768, toàn vẹn SHA-256).
     *   Duy trì `Persistent Socket` thông qua `:8081` tới Coordinator để cập nhật trạng thái (UPLOAD_COMPLETE, UPLOAD_FAILED) một cách bất đồng bộ.
 3.  **Hạ tầng bổ trợ:**
     *   **PostgreSQL:** Nơi chứa thông tin lâu dài (Users, Rooms, Roles, File Metadata, Audit logs).
@@ -49,7 +49,7 @@ Quá trình tải lên sử dụng cơ chế **Zero Round-Trip Verification**, C
 4. **Luân chuyển Chunks**: Client lặp lại quá trình băm file và gửi từng packet `UPLOAD_CHUNK` mã hóa (cùng Index chunk). Storage Node liên tục phản hồi `ACK_CHUNK`.
 5. **Chốt hạ file (Finalize)**: Sau khi đủ, Client gửi `FINALIZE_UPLOAD`. Storage Node tiến hành ráp file, kiểm tra SHA-256 tổng thể. Nếu an toàn, nó báo về `FINALIZE_RESP` với cờ hiệu 'Thành công' (hoặc 'IO Error', 'Hash Mismatch').
 6. **Đồng bộ hóa với Coordinator**: (Sự kiện bất đồng bộ) Thông qua Socket 8081 Persistent, Storage Node gọi ngầm `UPLOAD_COMPLETE` hoặc `FAILED` báo Coordinator biết đường cập nhật trạng thái Database thành `READY` hay `DELETED`.
-7. **Truyền bá Server Events**: Coordinator broadcast sự kiện `NEW_FILE` đến cộng đồng thành viên room qua thông báo Socket nhánh 8082.
+7. **Truyền bá Server Events**: Coordinator broadcast sự kiện `NEW_FILE` tới các thành viên đã subscribe room, đẩy qua chính kết nối Socket 8080 mà client đang mở (envelope `EVENT`).
 
 ---
 
@@ -61,10 +61,10 @@ Tuơng tự Upload, quy trình tải xuống cũng được thực hiện trực
 
 **Các bước diễn ra:**
 1. **Khởi tạo Download (Control Plane)**: Client yêu cầu tải bằng lệnh `INIT_DOWNLOAD` (mang theo FileID và Auth Token hoặc Share Token) tới Coordinator (Socket 8080).
-2. **Xét quyền và Cấp vé**: Coordinator kiểm tra quyền truy vấn, nếu Client xài Share Token nó sẽ tự trừ quota đi 1 lượt. Sau đó Coordinator cấp `DOWNLOAD_PLAN` giao Ticket bảo mật HMAC, kích cỡ tổng, chunk size và báo tên Storage Node đang cầm data đó.
-3. **Mở luồng Nhận (Data Plane)**: Client đâm chốt cửa thẳng vào Storage Node được thả link, dùng `OPEN_DOWNLOAD` đi vào nộp Ticket. Storage cũng tự thẩm định lại mã HMAC và trả lại `OPEN_DOWNLOAD_RESP`.
-4. **Kéo Chunks về**: Xong thủ tục, Client liên tục dội bom `REQUEST_CHUNK` cho tuỳ ý số Index của file (được quyền tuỳ biến thứ tự lấy - tải out-of-order). Storage node chỉ phục vụ bằng các lệnh `DOWNLOAD_CHUNK` trút về.
-5. **Hoạch định Hoàn thành**: Khi Storage Node nhận thấy nó đã trút đủ tổng số khối cho ID Phiên đó, tự động tuôn `DOWNLOAD_COMPLETE` bế mạc kết nối, chấm dứt việc chiếm dụng Data Plane.
+2. **Xét quyền và cấp vé**: Coordinator kiểm tra quyền; nếu Client dùng Share Token thì trừ quota đi 1 lượt. Sau đó cấp `DOWNLOAD_PLAN` gồm HMAC Ticket, kích cỡ tổng, chunk size và Storage Node đang giữ dữ liệu.
+3. **Mở luồng nhận (Data Plane)**: Client kết nối thẳng tới Storage Node được chỉ định, gửi `OPEN_DOWNLOAD` kèm Ticket. Storage Node tự xác minh HMAC và trả `OPEN_DOWNLOAD_RESP`.
+4. **Tải chunks**: Client gửi `REQUEST_CHUNK` theo từng Index (cho phép tải out-of-order); Storage Node trả về từng `DOWNLOAD_CHUNK`.
+5. **Hoàn tất**: Khi đã gửi đủ số khối của phiên, Storage Node gửi `DOWNLOAD_COMPLETE` và đóng kết nối Data Plane.
 
 ---
 
@@ -73,6 +73,6 @@ Tuơng tự Upload, quy trình tải xuống cũng được thực hiện trực
 1. **Kháng nghẽn thắt cổ chai (Decentralized Bottleneck):** Coordinator không bao giờ chạm vào Byte thực của file. 100% băng thông nặng được gánh bởi giao tiếp phân tán từ Client -> Nhiều Storage Nodes.
 2. **Xác thực phi tập trung (Decentralized Auth with HMAC):** Storage node không cần "gọi điện" hỏi Coordinator với mỗi chunk upload, tự nó thẩm định bằng Ticket nội bộ.
 3. **Mã hoá (E2E / Transport Level Encryption):**
-    * Bootstrapping Public Key bằng RSA để trao đổi AES Session Key.
+    * Thiết lập khóa phiên AES-256-GCM qua trao khóa lai ECDH P-256 + ML-KEM-768 (dẫn xuất bằng HKDF-SHA256); tự hạ về ECDH-only khi client thiếu ML-KEM. Nhánh RSA + AES-CBC chỉ giữ để tương thích ngược, client thực tế không dùng.
     * Mọi chunk transfer đều được mã hoá bảo mật qua mạng LAN.
 4. **Deduplication toàn vẹn (File deduplication):** Nếu file `.mp4` 2GB được người thứ 2 tải lên với cùng SHA256, Coordinator lập tức trả về file ảo trỏ cùng meta, không tốn thêm byte lưu trữ vật lý hay lưu lượng mạng.

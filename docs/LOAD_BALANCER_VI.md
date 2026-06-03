@@ -165,7 +165,7 @@ Nếu **không bao giờ** có tin nào về: lần kế tiếp một worker kh�
 
 ### 3.3. Logic hoạt động ra sao và vì sao
 
-**Phía storage node (Java)** — mỗi lần heartbeat tính `getFreeSpace()` của ổ data, nhét vào field `freeBytes` của PING JSON.
+**Phía storage node (Java)** — mỗi lần heartbeat tính `getUsableSpace()` của ổ data, nhét vào field `freeBytes` của PING JSON (và cả STORAGE_AUTH lúc kết nối).
 
 **Phía coordinator** — handler PING (xem [`storage_node_server.py:393`](../coordinator-server/storage_node/storage_node_server.py#L393)):
 
@@ -200,7 +200,7 @@ def _upload_score(node):
 - **Tiebreaker (free_bytes desc)**: không hung hăng tới mức "luôn chọn node rỗng nhất" (sẽ phá tính cân bằng tải) — chỉ áp dụng khi `active_uploads` bằng nhau. Đây là cách dung lượng định hướng tải mềm.
 
 **Vì sao `None` được coi là vô cực?**
-- Storage node Java cũ chưa update để báo cáo `freeBytes` cũng vẫn phải hoạt động.
+- Một số storage node có thể chưa báo cáo `freeBytes` (ví dụ node phiên bản cũ) thì vẫn phải hoạt động bình thường.
 - Trộn giữa node "đã báo" và "chưa báo" mà coi None là 0 thì sẽ làm các node legacy bị tránh né — sai phạt phải.
 - Coi None là infinity = "không biết → giả định là dư dả, không can thiệp" = an toàn nhất cho rollout từng giai đoạn.
 
@@ -208,7 +208,7 @@ def _upload_score(node):
 
 - **Tránh ghi đến node đã gần đầy**: filter cứng.
 - **Cân bằng dung lượng dần dần**: tiebreaker mềm kéo upload về node có nhiều chỗ hơn khi tải ngang nhau, dần dần đồng đều mức sử dụng đĩa giữa các node.
-- **Backward-compat**: không cần đổi gì ở Java vẫn chạy được. Java có thể cập nhật từng node một mà không gián đoạn dịch vụ.
+- **Backward-compat**: node chưa báo `freeBytes` vẫn chạy được; có thể cập nhật từng node một mà không gián đoạn dịch vụ. (Storage node Java hiện tại đã gửi `freeBytes` trong mỗi PING và STORAGE_AUTH.)
 - **Operator kiểm soát được**: đổi `STORAGE_MIN_FREE_BYTES` qua env var, không cần đụng code.
 - **Quan sát được**: `freeBytes` xuất hiện trong `STATUS` response qua `to_dict()` → dùng cho dashboard / debug.
 

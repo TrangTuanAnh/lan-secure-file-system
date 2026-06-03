@@ -795,7 +795,7 @@ Subscribe to real-time events in a room.
 - `FILE_DELETED` - File deleted from room
 - `MEMBER_ADDED` - New member joined room
 - `MEMBER_REMOVED` - Member left room
-- `MEMBER_ROLE_CHANGED` - Member role updated
+- `ROLE_UPDATED` - Member role updated
 
 **Error Codes:**
 - `AUTH_REQUIRED` - Missing or invalid token

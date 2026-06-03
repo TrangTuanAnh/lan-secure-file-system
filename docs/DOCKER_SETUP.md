@@ -98,7 +98,7 @@ Expected output:
 NAME                  STATUS              PORTS
 coordinator-postgres  Up (healthy)        0.0.0.0:5432->5432/tcp
 coordinator-redis     Up (healthy)        0.0.0.0:6379->6379/tcp
-coordinator-server    Up (healthy)        0.0.0.0:8080-8082->8080-8082/tcp
+coordinator-server    Up (healthy)        0.0.0.0:8080-8081->8080-8081/tcp
 storage-node-1        Up (healthy)        0.0.0.0:9001->9001/tcp
 ```
 
@@ -279,7 +279,6 @@ pip install -r requirements.txt
 | Redis | 6379 | Cache |
 | Coordinator | 8080 | Client connections |
 | Coordinator | 8081 | Storage node control plane |
-| Coordinator | 8082 | Notification service |
 | Storage Node 1 | 9001 | Data plane |
 | Storage Node 2 | 9002 | Data plane (optional) |
 

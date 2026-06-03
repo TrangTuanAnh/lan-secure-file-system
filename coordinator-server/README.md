@@ -74,7 +74,7 @@ Key configuration options:
 
 - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL connection
 - `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`: Redis connection
-- `SERVER_CLIENT_PORT`, `SERVER_STORAGE_PORT`, `SERVER_NOTIFICATION_PORT`: Server ports
+- `SERVER_CLIENT_PORT`, `SERVER_STORAGE_PORT`: Server ports (client 8080, storage node 8081)
 - `SESSION_TTL_SECONDS`: Session expiration time (default: 24 hours)
 - `UPLOAD_CHUNK_SIZE`: Chunk size for file uploads (default: 512KB)
 

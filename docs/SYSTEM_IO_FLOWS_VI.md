@@ -503,7 +503,7 @@ Trình tự các mục lớn theo vòng đời của một phiên làm việc ph
 
 ---
 
-# VIII. LUỒNG ĐẨY SỰ KIỆN TỚI MÁY KHÁCH (cổng `8082`)
+# VIII. LUỒNG ĐẨY SỰ KIỆN TỚI MÁY KHÁCH (qua kết nối client `8080`)
 
 ## VIII.1. SUBSCRIBE_ROOM / UNSUBSCRIBE_ROOM
 
@@ -598,16 +598,15 @@ Trình tự các mục lớn theo vòng đời của một phiên làm việc ph
 
 | Cổng | Máy | Hướng | Mục trong báo cáo |
 |------|-----|-------|-------------------|
-| 8080 | Coordinator | Máy khách → Server | II.1–4, III.1–5, IV.1–4, V.1, V.6, VI.1, VIII.1, IX.2 |
+| 8080 | Coordinator | Máy khách ↔ Server (sự kiện được đẩy ngược qua cùng kết nối) | II.1–4, III.1–5, IV.1–4, V.1, V.6, VI.1, VIII.1, VIII.2 (EVENT), IX.2 |
 | 8081 | Coordinator | Storage Node ↔ Server (kết nối bền vững) | V.5, VII.1, VII.3 — STORAGE_AUTH + `freeBytes`, PING + `freeBytes`, UPLOAD_COMPLETE / FAILED, MANIFEST_DELTA |
-| 8082 | Coordinator | Server → Máy khách (đẩy sự kiện) | VIII.2 — EVENT |
 | 9001+ | Storage Node | Máy khách ↔ Storage Node | V.2–3, VI.2 — OPEN / UPLOAD_CHUNK / FINALIZE / DOWNLOAD_CHUNK |
 | 3310 | container clamd | Storage Node → clamd | V.4 — `zSCAN <path>\0` |
 | 5432 | PostgreSQL | Server → DB | mọi mục — `users, rooms, room_members, files, share_tokens, audit_logs` |
 | 6379 | Redis | Server → cache | II.2–4, V.1, VI.1 — phiên token, TTL thẻ HMAC cho tải lên/tải xuống |
 
 **Đặc tính chung của thiết kế I/O.**
-- Phân tách rõ control plane (8080 / 8081 / 8082) và data plane (9001+ / 3310): tệp lớn không đi qua Coordinator, tránh nút cổ chai.
+- Phân tách rõ control plane (8080 / 8081) và data plane (9001+ / 3310): tệp lớn không đi qua Coordinator, tránh nút cổ chai.
 - Bộ nhớ hằng số: đọc/ghi theo dòng, SHA-256 luân chuyển ở cả hai đầu.
 - Thẻ HMAC không cần round-trip: Storage Node tự xác minh tại chỗ.
 - Toàn vẹn dữ liệu hai lớp: băm theo từng chunk + băm toàn tệp.

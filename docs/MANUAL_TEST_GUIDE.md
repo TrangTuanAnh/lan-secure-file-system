@@ -23,7 +23,7 @@ docker-compose ps
 NAME                  STATUS              PORTS
 coordinator-postgres  Up (healthy)        0.0.0.0:5432->5432/tcp
 coordinator-redis     Up (healthy)        0.0.0.0:6379->6379/tcp
-coordinator-server    Up (healthy)        0.0.0.0:8080-8082->8080-8082/tcp
+coordinator-server    Up (healthy)        0.0.0.0:8080-8081->8080-8081/tcp
 storage-node-1        Up (healthy)        0.0.0.0:9001->9001/tcp
 ```
 

@@ -99,7 +99,9 @@ createdAt=2026-04-06T10:30:00Z
 
 ## Mã hóa đường truyền
 
-### RSA + AES Key Exchange
+Mặc định dùng trao khóa lai hậu lượng tử: Client và Node trao đổi **ECDH P-256 + ML-KEM-768**, rồi dẫn xuất khóa phiên **AES-256-GCM** bằng HKDF-SHA256 (tự hạ về ECDH-only khi client thiếu ML-KEM). Nhánh **RSA + AES-256-CBC** mô tả bên dưới chỉ còn để tương thích ngược với client cũ — client hiện tại không dùng.
+
+### (Legacy) RSA + AES Key Exchange
 
 ```
 Client                              Node
@@ -126,15 +128,19 @@ Client                              Node
   │                                  │
 ```
 
-### AES-256-CBC Format
+### Định dạng payload chunk
 
-Mỗi chunk data được encrypt:
+**AES-256-GCM (mặc định):**
+```
+[4 bytes "GCM1"][12 bytes nonce][ciphertext + 16 bytes tag]
+```
+Nonce ngẫu nhiên, sinh mới cho mỗi chunk; tag GCM bảo đảm cả bí mật lẫn toàn vẹn (AEAD), loại bỏ rủi ro padding-oracle.
+
+**AES-256-CBC (legacy):**
 ```
 [16 bytes IV][encrypted chunk data]
 ```
-
-- IV (Initialization Vector): random 16 bytes, sinh mới cho mỗi chunk
-- Padding: PKCS5
+- IV ngẫu nhiên 16 bytes, sinh mới cho mỗi chunk; padding PKCS5.
 
 **Lưu ý:** Hash chunk tính trên **raw bytes** (trước khi encrypt).
 Node decrypt trước, rồi mới verify hash.

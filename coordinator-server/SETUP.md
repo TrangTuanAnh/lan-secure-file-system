@@ -201,7 +201,6 @@ coordinator-server/
 |----------|---------|-------------|
 | SERVER_CLIENT_PORT | 8080 | Client connection port |
 | SERVER_STORAGE_PORT | 8081 | Storage node port |
-| SERVER_NOTIFICATION_PORT | 8082 | Notification port |
 | SESSION_TTL_SECONDS | 86400 | Session expiration (24h) |
 | UPLOAD_TICKET_TTL_SECONDS | 1800 | Upload ticket TTL (30m) |
 | DOWNLOAD_TICKET_TTL_SECONDS | 900 | Download ticket TTL (15m) |

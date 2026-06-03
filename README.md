@@ -3,7 +3,7 @@
 Hệ thống chia sẻ và lưu trữ file an toàn trong mạng LAN của doanh nghiệp, xây dựng trên
 Socket/TCP với kiến trúc tách rời **control plane** và **data plane**. Hệ thống hỗ trợ đăng
 nhập và phân quyền theo phòng, truyền file theo chunk có resume, kiểm tra toàn vẹn SHA-256,
-mã hóa đường truyền (AES + RSA), chống trùng nội dung (dedup) và quét virus trước khi lưu.
+mã hóa đường truyền AES-256-GCM (trao khóa lai ECDH P-256 + ML-KEM-768), chống trùng nội dung (dedup) và quét virus trước khi lưu.
 
 Công nghệ: Python, Java 17, PySide6, PostgreSQL, Redis, ClamAV, Socket/TCP, Docker.
 
@@ -41,7 +41,7 @@ Hai kênh giao tiếp được tách riêng để mỗi bên làm đúng việc 
 ```text
   Client (PySide6)
     |
-    |  control plane (JSON, cổng 8080 / 8082)
+    |  control plane (JSON, cổng 8080)
     +------------------------------>  Coordinator Server (Python, PostgreSQL, Redis)
     |                                   - auth, phòng, phân quyền, metadata file
     |                                   - cấp HMAC ticket, chọn storage node phù hợp
@@ -58,7 +58,7 @@ Hai kênh giao tiếp được tách riêng để mỗi bên làm đúng việc 
 **Luồng upload**
 
 1. Client đăng nhập vào `coordinator-server`.
-2. Client gọi `INIT_UPLOAD` để xin upload plan (kèm scan report).
+2. Client gọi `INIT_UPLOAD` để xin upload plan (gửi metadata: tên, kích thước, MIME, SHA-256 toàn file).
 3. Coordinator kiểm tra quyền, kiểm tra dedup, chọn `storage-node`, cấp HMAC ticket và trả `storageAddress`.
 4. Client kết nối trực tiếp đến `storage-node`, gửi từng chunk.
 5. Storage Node verify hash từng chunk và toàn file, ghép file, quét virus, commit vào store.
@@ -78,7 +78,7 @@ Hai kênh giao tiếp được tách riêng để mỗi bên làm đúng việc 
 - Phân quyền toàn cục `ADMIN` và theo phòng `OWNER` / `MEMBER` / `VIEWER`.
 - Upload/download qua socket, truyền theo chunk 512KB có resume khi rớt mạng.
 - Toàn vẹn dữ liệu: SHA-256 từng chunk và toàn file.
-- Mã hóa đường truyền: AES-256-CBC cho dữ liệu, trao khóa bằng RSA (mã hóa lai).
+- Mã hóa đường truyền: **AES-256-GCM**; khóa phiên thiết lập qua trao khóa lai **ECDH P-256 + ML-KEM-768** (hậu lượng tử) rồi dẫn xuất bằng HKDF-SHA256, tự hạ về ECDH-only khi client thiếu ML-KEM. (RSA + AES-CBC chỉ còn là nhánh legacy trong Java, client thực tế không dùng.)
 - Ticket HMAC-SHA256 do Coordinator cấp, Storage Node tự verify (không cần round-trip mỗi chunk).
 - Dedup theo nội dung (content-addressed storage theo SHA-256).
 - Quét virus trước khi commit (ClamAV / clamd).
@@ -116,7 +116,7 @@ Hai kênh giao tiếp được tách riêng để mỗi bên làm đúng việc 
 docker compose up --build
 ```
 
-Stack mặc định gồm: `postgres` (5432), `redis` (6379), `coordinator` (8080-8082),
+Stack mặc định gồm: `postgres` (5432), `redis` (6379), `coordinator` (8080, 8081),
 `storage-node-1` (9001) và `clamd`. Mở thêm node thứ hai:
 
 ```bash
@@ -186,8 +186,6 @@ run_client.bat
 **Client (coordinator-node)**
 
 - [coordinator-node/docs/BACKEND_API_REFERENCE.md](coordinator-node/docs/BACKEND_API_REFERENCE.md) - API reference cho client
-- [coordinator-node/docs/FRONTEND_INTEGRATION_GUIDE.md](coordinator-node/docs/FRONTEND_INTEGRATION_GUIDE.md) - hướng dẫn tích hợp
-- [coordinator-node/docs/FRONTEND_FOLDER_STRUCTURE.md](coordinator-node/docs/FRONTEND_FOLDER_STRUCTURE.md) - cấu trúc thư mục client
 
 ## Phân chia công việc
 
@@ -195,4 +193,4 @@ Hệ thống được chia thành ba khối dọc khá độc lập, nối với
 
 - Coordinator Server: control plane, database, auth và phân quyền, metadata, notification, share token, audit.
 - Storage Node: data plane, truyền chunk, resume, hash, mã hóa, dedup, lưu trữ.
-- Client: giao diện người dùng, luồng upload/download, virus scan local, realtime.
+- Client: giao diện người dùng, luồng upload/download, mã hóa data plane phía client, hiển thị trạng thái quét virus, realtime.

@@ -173,9 +173,8 @@ TTL: 24 giờ (86400 seconds)
 
 | Socket | Port | Mục đích | Kết nối |
 |--------|------|----------|---------|
-| Client Socket | 8080 | Client ↔ Coordinator | Nhiều connections |
+| Client Socket | 8080 | Client ↔ Coordinator (gồm cả sự kiện realtime đẩy ngược) | Nhiều connections |
 | Storage Socket | 8081 | Storage Node ↔ Coordinator | Persistent connection |
-| Notification Socket | 8082 | Client ↔ Coordinator | Long-lived connections |
 
 ---
 
@@ -628,7 +627,6 @@ services:
     ports:
       - "8080:8080"  # Client socket
       - "8081:8081"  # Storage socket
-      - "8082:8082"  # Notification socket
     environment:
       DB_HOST: postgres
       REDIS_HOST: redis
@@ -652,7 +650,6 @@ REDIS_PORT=6379
 # Server
 SERVER_CLIENT_PORT=8080
 SERVER_STORAGE_PORT=8081
-SERVER_NOTIFICATION_PORT=8082
 
 # Security
 HMAC_SECRET_KEY=your-secret-key-here
