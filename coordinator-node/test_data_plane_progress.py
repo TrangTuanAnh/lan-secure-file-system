@@ -25,12 +25,15 @@ def _frame(header, data=b""):
 class FakeSock:
     """Giả lập giao thức khung của Storage Node theo kiểu request -> response."""
 
-    def __init__(self, file_bytes, chunk_size):
+    def __init__(self, file_bytes, chunk_size, missing_chunks=None):
         self._out = bytearray()
         self._in = bytearray()
         self._file = file_bytes
         self._chunk = chunk_size
         self._total = max(1, (len(file_bytes) + chunk_size - 1) // chunk_size)
+        # When set, OPEN_UPLOAD reports these as the only chunks still missing
+        # (resume path). None means a fresh upload (no missingChunks field).
+        self._missing = missing_chunks
 
     def __enter__(self):
         return self
@@ -62,7 +65,10 @@ class FakeSock:
     def _respond(self, header):
         t = header.get("type")
         if t == "OPEN_UPLOAD":
-            self._out.extend(_frame({"type": "OPEN_UPLOAD_OK"}))
+            resp = {"type": "OPEN_UPLOAD_OK"}
+            if self._missing is not None:
+                resp["missingChunks"] = self._missing
+            self._out.extend(_frame(resp))
         elif t == "UPLOAD_CHUNK":
             self._out.extend(_frame({"type": "ACK_CHUNK", "status": "OK"}))
         elif t == "FINALIZE_UPLOAD":
@@ -147,5 +153,52 @@ def run():
     return 0 if ok else 1
 
 
+def run_resume():
+    """Resume path: the node already holds some chunks (including the partial
+    last chunk), so only interior chunks are missing. Verifies bytes_sent is
+    the TRUE cumulative transferred size at every step — the old baseline
+    `already_done_chunks * chunk_size` over-counted whenever a done chunk was
+    the short final one, inflating the percentage mid-resume.
+    """
+    chunk_size = 100
+    data = os.urandom(350)            # 4 chunks: 100, 100, 100, 50
+    total = max(1, (len(data) + chunk_size - 1) // chunk_size)
+    missing = [1, 2]                  # done = {0, 3}; chunk 3 is the partial last chunk
+    dp._negotiate_crypto = lambda sock: FakeCrypto()
+
+    fake = FakeSock(data, chunk_size, missing_chunks=missing)
+    dp.socket.create_connection = lambda *a, **k: fake
+    src = os.path.join(tempfile.gettempdir(), "prog_resume_src.bin")
+    open(src, "wb").write(data)
+    calls = []
+    client = dp.StorageNodeDataPlaneClient("127.0.0.1:9001")
+    client.upload_file(plan={"sessionId": "s1", "fileId": "f1", "chunkSize": chunk_size, "totalChunks": total},
+                       file_path=src, uploader_id="u1",
+                       progress_callback=lambda c, t, b, tb: calls.append((c, t, b, tb)))
+
+    def csize(i):
+        return min(chunk_size, len(data) - i * chunk_size)
+
+    done = [i for i in range(total) if i not in missing]
+    sent = sum(csize(i) for i in done)        # true bytes already on the node
+    expected = []
+    for n, idx in enumerate(missing, start=1):
+        sent = min(sent + csize(idx), len(data))
+        expected.append((len(done) + n, total, sent, len(data)))
+
+    ok = True
+    print("RESUME progress calls:", calls)
+    if calls != expected:
+        ok = False
+        print("FAIL resume progress", calls, "expected", expected)
+    if not calls or calls[-1] != (total, total, len(data), len(data)):
+        ok = False
+        print("FAIL resume final", calls[-1] if calls else None)
+    print("=>", "RESUME ASSERTIONS PASSED" if ok else "FAILED")
+    return 0 if ok else 1
+
+
 if __name__ == "__main__":
-    sys.exit(run())
+    rc = run()
+    rc_resume = run_resume()
+    sys.exit(rc or rc_resume)
