@@ -78,6 +78,26 @@ class DownloadService:
             ttl_seconds=self.ticket_ttl_seconds
         )
     
+    def _refund_share_download(self, token_id: Any) -> None:
+        """Return a share-token download slot consumed by the atomic increment
+        when the download cannot be delivered (file gone, not READY, or the
+        owning storage node is unavailable). Without this, a transient failure
+        permanently burns a single-use (max_downloads=1) share link.
+        """
+        if token_id is None:
+            return
+        try:
+            self.db.execute_update(
+                """
+                UPDATE share_tokens
+                SET download_count = download_count - 1
+                WHERE id = %s AND download_count > 0
+                """,
+                (token_id,)
+            )
+        except Exception as e:
+            logger.error(f"Failed to refund share download slot {token_id}: {e}")
+
     def handle_init_download_direct(
         self,
         user_id: str,
@@ -194,6 +214,7 @@ class DownloadService:
             
             # Step 5: Return DOWNLOAD_PLAN
             download_plan = {
+                'fileId': file['id'],
                 'ticket': ticket,
                 'storageAddress': storage_address,
                 'storageNodeId': storage_node_id,
@@ -349,6 +370,9 @@ class DownloadService:
         Returns:
             Tuple of (success, download_plan, error_code)
         """
+        # Tracks the token row whose download_count we atomically incremented,
+        # so an undeliverable download can refund the slot instead of burning it.
+        consumed_token_id = None
         try:
             # Step 1 & 2: Atomic UPDATE with validation
             # This ensures thread-safe increment and validation in a single query
@@ -404,7 +428,9 @@ class DownloadService:
                 return False, None, "INVALID_SHARE_TOKEN"
             
             token_data = result[0]
-            
+            # Slot is now consumed; remember it so undeliverable paths can refund.
+            consumed_token_id = token_data['id']
+
             # Get file details
             files = self.db.execute_query(
                 """
@@ -419,6 +445,7 @@ class DownloadService:
             
             if not files:
                 logger.error(f"INIT_DOWNLOAD with share token: file {file_id} not found after token validation")
+                self._refund_share_download(consumed_token_id)
                 return False, None, "FILE_NOT_FOUND"
             
             file = files[0]
@@ -426,6 +453,7 @@ class DownloadService:
             # Check file status
             if file['status'] != 'READY':
                 logger.info(f"INIT_DOWNLOAD with share token failed: file {file_id} status is {file['status']}")
+                self._refund_share_download(consumed_token_id)
                 return False, None, "FILE_NOT_READY"
 
             storage_address, storage_node_id, resolve_error = self._resolve_storage_node(file)
@@ -434,6 +462,7 @@ class DownloadService:
                     f"INIT_DOWNLOAD with share token failed: storage node unavailable "
                     f"for file={file_id}, storage_node_id={storage_node_id}"
                 )
+                self._refund_share_download(consumed_token_id)
                 return False, None, resolve_error
             
             # Step 4: Generate download ticket
@@ -463,6 +492,7 @@ class DownloadService:
             
             # Step 5: Return DOWNLOAD_PLAN
             download_plan = {
+                'fileId': file['id'],
                 'ticket': ticket,
                 'storageAddress': storage_address,
                 'storageNodeId': storage_node_id,
@@ -495,6 +525,7 @@ class DownloadService:
             
         except Exception as e:
             logger.error(f"Failed to initialize download with share token: {e}")
+            self._refund_share_download(consumed_token_id)
             return False, None, "DATABASE_ERROR"
     
     def select_file_version(

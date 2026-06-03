@@ -136,14 +136,6 @@ class UploadService:
             ttl_seconds=self.ticket_ttl_seconds
         )
 
-    def _mark_upload_started(self, node_id: Optional[str]) -> None:
-        if self.storage_registry and node_id:
-            self.storage_registry.mark_upload_started(node_id)
-
-    def _mark_upload_finished(self, node_id: Optional[str]) -> None:
-        if self.storage_registry and node_id:
-            self.storage_registry.mark_upload_finished(node_id)
-
     def _release_slot(self, reservation_id: Optional[str]) -> None:
         """Release the upload slot reservation held against a storage node.
 
